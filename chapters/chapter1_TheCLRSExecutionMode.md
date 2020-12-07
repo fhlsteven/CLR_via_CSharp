@@ -150,5 +150,6 @@ Windows检查EXE文件头，决定是创建32位还是64位进程之后，会在
 |:--:|:---:|:---:|
 |/optimize-/debug-(默认)|未优化|有优化|
 |/optimize-/debug(+/full/pdbonly)|未优化|有优化|
-|/optimize+/debug(-/+/full/pdbonly)|有优化|有优化|
+|/optimize+/debug(-/+/full/pdbonly)|有优化|有优化|  
+
 两个C#编译器开关会影响代码优化：**/optimize** 和 **/debug**。下面总了这些开关对 C#编译器生成的IL 代码的质量的影响，以及对JIT编译器生成的本机代码的质量的影响。
