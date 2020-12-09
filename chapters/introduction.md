@@ -19,14 +19,14 @@
 
 ## 勘误和支持
 我们尽最大努力保证本书的准确性。勘误或更改会添加到以下网页:  
-http://www.oreilly.com/catalog/errata.csp?isbn=0790145353665  
-http://go.microsoft.com/FWLink/?Linkid=266601  
+[http://www.oreilly.com/catalog/errata.csp?isbn=0790145353665](http://www.oreilly.com/catalog/errata.csp?isbn=0790145353665)  
+[http://go.microsoft.com/FWLink/?Linkid=266601](http://go.microsoft.com/FWLink/?Linkid=266601)
 如果发现未列出的错误，可通过相同的网页报告。  
 如需其他支持，请致函Microsoft Press Book Support部门:  
 mspinput@microsoft.com  
 注意，上述邮件地址不提供产品支持。  
 最后，本书中文版的支持（勘误和资源下载）请访问译者博客：  
-http://transbot.blog.163.com 
+[http://transbot.blog.163.com](http://transbot.blog.163.com)
 
 
 ---
