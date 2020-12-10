@@ -463,3 +463,9 @@ internal sealed class Test{
 * **托管代码能调用DLL 中的非托管函数**</br> 托管代码通过 P/Invoke(Platform Invoke)机制调用 DLL 中的函数。毕竟，FCL 中定义的许多类型都要在内部调用从 Kernel32.dll、User32.dll 等导出的函数。许多编程语言都提供了机制方便托管代码调用 DLL 中的非托管函数。例如，C# 应用程序可调用从 Kernel32.dll 导出的 **CreateSemaphore** 函数。
 
 * **托管代码可以使用现有 COM 组件(服务器)**</br>  许多公司都已经实现了大量非托管 COM 组件。利用来自这些组件的类型库，可创建一个托管程序集来描述 COM 组件。托管代码可像访问其他任何托管类型一样访问托管程序集中的类型。这方面的详情可以参考 .NET Framework SDK 提供的 [TlbImp.exe](https://docs.microsoft.com/zh-cn/dotnet/framework/tools/tlbimp-exe-type-library-importer) 工具。有时可能没有类型库，或者想对 TlbImp.exe 生成的内容进行更多控制。这时可在源代码中手动构建一个类型，使 CLR 能用它实现正确的互操作性，例如可从 C# 应用程序中使用 DirectX COM 组件。
+
+* **非托管代码可以使用托管类型(服务器)**</br>  许多现有的非托管代码要求提供 COM 组件来确保代码正确工作。使用托管代码可以更简单地实现这些组件，避免所有代码都不得不和引用计数以及接口打交道。例如，可用C# 创建 ActiveX 控件或 shell 扩展。这方面的详情可以参考 .NET Framework SDK 提供的 [TlbExp.exe](https://docs.microsoft.com/zh-cn/dotnet/framework/tools/tlbexp-exe-type-library-exporter) 和 [RegAsm.exe](https://docs.microsoft.com/zh-cn/dotnet/framework/tools/regasm-exe-assembly-registration-tool) 工具。
+
+> 注意 为了方便需要与本机代码交互的开发人员。Microsoft 公开了 Type Library Importer 工具和 P/Invoke Interop Assistant 工具的源代码。访问[http://CLRInterop.CodePlex.com](http://CLRInterop.CodePlex.com) 下载这些工具及其源代码。
+
+Microsoft 随同 Windows 8 引入了称为 Windows Runtime(WinRT) 的新 Windows API。该 API 内部通过 COM 组件来实现。但不是使用类型库文件，COM 组件是通过 .NET Framework 团队创建的元数据 ECMA 标准描述其 API。好处是用一种 .NET 语言写的代码(在很大程度上)能与 WinRT API 无缝对接。 CLR 在幕后执行需要的所有 COM 互操作性，不要求你使用任何额外的工具。第 25 章“与WinRT组件互操作”将进一步详细讲解。
