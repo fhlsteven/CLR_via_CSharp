@@ -432,7 +432,7 @@ internal sealed class Test{
 }
 ```
 
-编译上述代码得到含有大量字段和方法的一个类型。可用 .NET Framework SDK 提供的 IL 反汇编器工具(ILDasm.exe)检查最终生成的托管代码，如图 1-7 所示。
+编译上述代码得到含有大量字段和方法的一个类型。可用 .NET Framework SDK 提供的 IL 反汇编器工具(ILDasm.exe)检查最终生成的托管代码，如图 1-7 所示。  
 ![1_7](../resources/images/1_7.png)  
   图 1-7 ILDasm 显示了 Test 类型的字段和方法(从元数据中获取)
 
