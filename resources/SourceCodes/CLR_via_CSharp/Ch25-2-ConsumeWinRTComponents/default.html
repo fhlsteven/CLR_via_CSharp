@@ -1,0 +1,98 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>JavaScript Client using WinRT Component</title>
+
+    <!-- WinJS references -->
+    <link href="//Microsoft.WinJS.1.0/css/ui-dark.css" rel="stylesheet" />
+    <script src="//Microsoft.WinJS.1.0/js/base.js"></script>
+    <script src="//Microsoft.WinJS.1.0/js/ui.js"></script>
+
+    <!-- _05c_WinRT_Comp_via_JS references -->
+    <link href="/css/default.css" rel="stylesheet" />
+    <script src="/js/default.js"></script>
+</head>
+<body>
+    <div style="text-align:center">
+        <br />
+        <br />
+        <br />
+        <br />
+        <br />
+        <button id="b">Access WinRT Components (step in debugger to see it work)</button>
+    </div>
+    <script>
+        b.onclick = function () {
+            // Make accessing the namespace more convenient in the code
+            var WinRTComps = Wintellect.WinRTComponents;
+
+            // NOTE: The JavaScript VM projects WinRT APIs via camel casing
+
+            // Access WinRT type's static method & property 
+            var s = WinRTComps.WinRTClass.staticMethod(null); // NOTE: JavaScript pass "null" here!
+            var struct = { anumber: 123, astring: "Jeff", aenum: WinRTComps.WinRTEnum.notNone };
+            WinRTComps.WinRTClass.staticProperty = struct;
+            s = WinRTComps.WinRTClass.staticProperty;  // Read it back
+
+            // If the method has out parameters, they and the return value 
+            // are returned as an object's properties
+            var s = WinRTComps.WinRTClass.outParameters();
+            var name = s.value; // Return value
+            var struct = s.x;   // an 'out' parameter
+            var year = s.year;  // another 'out' parameter
+
+            // Construct an instance of the WinRT component
+            var winRTClass = new WinRTComps.WinRTClass(null);
+            s = winRTClass.toString();  // Call ToString()
+
+            // Demonstrate throw and catch
+            try {
+                winRTClass.throwingMethod();
+            }
+            catch (err) {
+                s = err;
+            }
+
+            // Array passing
+            var a = [1, 2, 3, 4, 5];
+            var sum = winRTClass.passArray(a);
+
+            // Array filling
+            var arrayOut = [7, 7, 7];   // NOTE: fillArray sees all zeros!
+            var length = winRTClass.fillArray(arrayOut); // On return, arrayOut = [0, 1, 2]
+
+            // Array returning
+            a = winRTClass.returnArray();   // a = [ 1, 2, 3]
+
+            // Pass a collection and have its elements modified
+            var localSettings = Windows.Storage.ApplicationData.current.localSettings;
+            localSettings.values["Key1"] = "Value1";
+            winRTClass.passAndModifyCollection(localSettings.values);
+            // On return, localSettings.values has 2 key/value pairs in it
+
+            // Call overloaded method
+            winRTClass.someMethod(5);       // Actually calls SomeMethod(String) passing "5"
+
+            // Consume the automatically implemented event
+            var f = function (v) { return v.target; };
+            winRTClass.addEventListener("autoevent", f, false);
+            s = winRTClass.raiseAutoEvent(7);
+
+            // Consume the manually implemented event
+            winRTClass.addEventListener("manualevent", f, false);
+            s = winRTClass.raiseManualEvent(8);
+
+            // Invoke asynchronous method supporting progress, cancelation, & error handling
+            var promise = winRTClass.doSomethingAsync();
+            promise.then(
+                function (result) { console.log("Async op complete: " + result); },
+                function (error) { console.log("Async op error: " + error); },
+                function (progress) {
+                    console.log("Async op progress: " + progress);
+                    //if (progress == 30) promise.cancel();   // To test cancelation
+                });
+        }
+    </script>
+</body>
+</html>

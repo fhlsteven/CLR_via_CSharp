@@ -8,7 +8,7 @@
 * <a href="#1_6">Framework类库入门</a>
 * <a href="#1_7">通用类型系统</a>
 * <a href="#1_8">公共语言规范（CLS）</a>
-* 与非托管代码的互操作性
+* <a href="#1_9">与非托管代码的互操作性</a>
 
 Microsoft .NET Framework引入许多新概念、技术和术语。本章概述了.NET Framework如何设计，介绍了Framework包含的一些新技术，并定义了今后要用到的许多术语。还要展示如何将源代码生成为一个应用程序，或者生成为一组可重新分发的组件(文件)——这些组件(文件)中包含类型(类和结构等)。最后，本章解释了应用程序如何执行。
 
@@ -222,10 +222,10 @@ Microsoft 提供了一个名为PEVerify.exe 的实用程序，它检测一个程
 
 使用.NET Framework 提供的NGen.exe 工具，可以在应用程序安装到用户的计算机上时，将 IL代码编译成本机代码。由于代码在安装时已经编译好，所以 CLR 的 JIT 编译器不需要运行时编译 IL 代码，这有助于提升应用程序的性能。NGen.exe 能在以下两种情况下发挥重要作用。
 
-1. 提高应用程序的启动速度 </br>
-运行 NGen.exe 能提高启动速度，因为代码已编译成本机代码，运行时不需要再花时间编译。
-2. 减小应用程序的*工作集*  </br>
-如果一个程序集同时加载到多个进程中，对该程序集运行NGen.exe 可减小应用程序的工作集。NGen.exe 将 IL 编译成本机代码，并将这些代码保存到单独的文件中。该文件可以通过“内存映射”的方式，同时映射到多个进程地址空间中，使代码得到了共享，避免每个进程都需要一份单独的代码拷贝。
+1. 提高应用程序的启动速度 </br>运行 NGen.exe 能提高启动速度，因为代码已编译成本机代码，运行时不需要再花时间编译。
+
+2. 减小应用程序的*工作集* </br>如果一个程序集同时加载到多个进程中，对该程序集运行NGen.exe 可减小应用程序的工作集。NGen.exe 将 IL 编译成本机代码，并将这些代码保存到单独的文件中。该文件可以通过“内存映射”的方式，同时映射到多个进程地址空间中，使代码得到了共享，避免每个进程都需要一份单独的代码拷贝。
+
 > 所谓工作集(working set)，是指在进程的所有内存中，已映射的物理内存那一部分(即这些内存块全在物理内存中，并且 CPU 可以直接访问)；进程还有一部分虚拟内存，它们可能在转换列表中(CPU 不能通过虚地址访问，需要 Windows 映射之后才能访问)；还有一部分内存在磁盘上的分页文件中。——译注
 
 安装程序为应用程序或程序集调用 NGen.exe 时，应用程序的所有程序集(或者那个指定的程序集)的 IL 代码会编译成本机代码。 NGen.exe 新建一个程序集文件，其中只包含这种本机代码，不含任何 IL。新文件会放到 `%SystemRoot%\Assembly\NativeImages_v4.0.#####_64` 这样的一个目录下的文件夹中。目录名称除了包含CLR版本号，还会描述本机代码是为32位还是64位 Windows 编译的。
@@ -246,7 +246,7 @@ CLR 加载 NGen 生成的文件时，会将预编译代码的许多特征与当�
   + 引用的程序集的版本ID：重新编译引用的程序集后改变
   + 安全性：吊销了之前授予的权限之后，安全性就会发生改变。这些权限包括*声明性继承(declarative inheritance)、声明性链接时(declarative link-time)*、 **SkipVerification** 或者 **UnmanagedCode** 权限。
   > 注意 可以用更新(update)模式运行 NGen.exe，为以前用 NGen 生成的所有程序集再次运行 NGen.exe。 用户一旦安装了.NET Framework 的新Service Pack，这个 Service Pack 的安装程序就会自动用更新模式运行 NGen.exe，使 NGen 生成的文件与新安装的 CLR 版本同步。
-  
+
   > declarative inheritance 权限是派生出程序集的那个类所要求的；declarative link-time 权限是程序集调用的方法所要求的。另外，虽然文档将 declarative 翻译成“声明性”，但个人更喜欢“宣告式”。 —— 译注
 
 * 较差的执行时性能</br>
@@ -433,3 +433,33 @@ internal sealed class Test{
 ```
 
 编译上述代码得到含有大量字段和方法的一个类型。可用 .NET Framework SDK 提供的 IL 反汇编器工具(ILDasm.exe)检查最终生成的托管代码，如图 1-7 所示。
+![1_7](../resources/images/1_7.png)  
+  图 1-7 ILDasm 显示了 Test 类型的字段和方法(从元数据中获取)
+
+表 1-4 总结了编程语言的各种构造与 CLR 字段/方法的对应关系。
+
+  表 1-4 Test 类型的字段和方法(从元数据中获取)
+|类型的成员|成员的类型|对应的编程语言|
+|:---:|:----:|:----:|
+|**AnEvent**       |字段|事件：字段名是 **AnEvent**，类型是 **System.EventHandler**|
+|**.ctor**         |方法|构造器|
+|**Finalize**      |方法|终结器|
+|**add_AnEvent**   |方法|事件的 add 访问器方法|
+|**get_Aproperty** |方法|属性的 get 访问器方法|
+|**get_Item**      |方法|索引器的 get 访问器方法|
+|**op_Addition**   |方法|+操作符|
+|**op_Equality**   |方法|==操作符|
+|**op_Inequality** |方法|!=操作符|
+|**remove_AnEvent**|方法|事件的 remove 访问器方法|
+|**set_AProperty** |方法|属性的 set 访问器方法|
+|**set_Item**      |方法|索引器的 set 访问器方法|
+
+**Test** 类型还有另一些节点未在表 1-4 中列出，包括 **.class**，**.custom**，**AnEvent**，**AProperty**以及**Item** —— 它们标识了类型的其他元数据。这些节点不映射到字段或方法，只是提供了类型的一些额外信息，供 CLR 、编程语言或者工具访问。例如，工具可以检测到 **Test** 类型提供了一个名为 **AnEvent** 的事件，该事件借由两个方法(**add_AnEvent** 和 **remove_AnEvent**)公开。
+
+## <a name="1_9">1.9 与非托管代码的互操作性</a>
+
+.NET Framework 提供了其他开发平台没有的许多优势。但是，能下定决定重新设计和重新实现全部现有代码的公司并不多。Microsoft 也知道这个问题，并通过 CLR 来提供了一些机制，允许在应用程序中同时包含托管和非托管代码。具体地说，CLR 支持三种互操作情形。[C# 互操作性入门系列(四)：在C# 中调用COM组件](https://www.cnblogs.com/zhili/archive/2013/01/27/COMInterop.html)
+
+* **托管代码能调用DLL 中的非托管函数**</br> 托管代码通过 P/Invoke(Platform Invoke)机制调用 DLL 中的函数。毕竟，FCL 中定义的许多类型都要在内部调用从 Kernel32.dll、User32.dll 等导出的函数。许多编程语言都提供了机制方便托管代码调用 DLL 中的非托管函数。例如，C# 应用程序可调用从 Kernel32.dll 导出的 **CreateSemaphore** 函数。
+
+* **托管代码可以使用现有 COM 组件(服务器)**</br>  许多公司都已经实现了大量非托管 COM 组件。利用来自这些组件的类型库，可创建一个托管程序集来描述 COM 组件。托管代码可像访问其他任何托管类型一样访问托管程序集中的类型。这方面的详情可以参考 .NET Framework SDK 提供的 [TlbImp.exe](https://docs.microsoft.com/zh-cn/dotnet/framework/tools/tlbimp-exe-type-library-importer) 工具。有时可能没有类型库，或者想对 TlbImp.exe 生成的内容进行更多控制。这时可在源代码中手动构建一个类型，使 CLR 能用它实现正确的互操作性，例如可从 C# 应用程序中使用 DirectX COM 组件。
