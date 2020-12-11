@@ -13,7 +13,7 @@ CLR Via C# 第四版
 第一部分
 
 [第一章 CLR的执行模型](./chapters/chapter1_TheCLRSExecutionMode.md)  
-[第二章 生成、打包、部署和管理应用程序及类型](./chapters/chapter2_Building.md)
+[第二章 生成、打包、部署和管理应用程序及类型](./chapters/chapter2_Building.md)  
 第三章 共享程序集和强命名程序集  
 
 ---

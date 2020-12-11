@@ -1,0 +1,6 @@
+D:\Projects\GitHub\CLR_via_CSharp\resources\SourceCodes\CLR_via_CSharp\bin\Debug\Ch02-1-SimpleProgram.exe
+D:\Projects\GitHub\CLR_via_CSharp\resources\SourceCodes\CLR_via_CSharp\bin\Debug\Ch02-1-SimpleProgram.pdb
+D:\Projects\GitHub\CLR_via_CSharp\resources\SourceCodes\CLR_via_CSharp\obj\Debug\Ch02-1-SimpleProgram.csprojAssemblyReference.cache
+D:\Projects\GitHub\CLR_via_CSharp\resources\SourceCodes\CLR_via_CSharp\obj\Debug\Ch02-1-SimpleProgram.csproj.CoreCompileInputs.cache
+D:\Projects\GitHub\CLR_via_CSharp\resources\SourceCodes\CLR_via_CSharp\obj\Debug\Ch02-1-SimpleProgram.exe
+D:\Projects\GitHub\CLR_via_CSharp\resources\SourceCodes\CLR_via_CSharp\obj\Debug\Ch02-1-SimpleProgram.pdb

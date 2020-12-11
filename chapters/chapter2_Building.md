@@ -65,3 +65,342 @@ C# 编译器处理源文件时，发现代码引用了 `System.Console`类型的
 >`csc.exe /out:Program.exe /t:exe /nostdlib Program.cs`
 
 现在更深入地思考一下 C# 编译器生成的 `Program.exe` 文件。这个文件到底是什么？首先，它是标准PE (可移植执行体，Potable Executable)文件。这意味着运行 32 位或 64 位 Windows 的计算机能加载它，并通过执行某些操作。 Windows 文件支持三种应用程序。生成控制台用户界面(Console User Interface，CUI)应用程序使用`/t:exe` 开关；生成图形用户界面(Graphical User Interface，GUI)应用程序使用`/t:winexe` 开关；生成 Windows Store 应用使用 `/t:appcontainerexe` 开关。
+
+### 响应文件
+
+结束对编译器开关的讨论之前，让我们花点时间了解一下**响应文软**，响应文件是包含一组编译器命令行开关的文本文件。执行 CSC.exe 时，编译器打开响应文件，并使用其中包含的所有开关，感觉就像是这些开关直接在命令行上传递给 CSC.exe。要告诉编译器使用响应文件，在命令行中，请在 @ 符号之后指定响应文件的名称。例如，假定响应文件 MyProject.rsp 包含以下文本：  
+
+```cmd
+/out:MyProject.exe
+/tartget:winexe
+```
+
+ 为了让 CSC.exe 使用这些设置，可以像下面这样调用它：
+
+ >`csc.exe @MyProject.rsp CodeFile1.cs CodeFile2.cs`
+
+这就告诉了C# 编译器输出文件的名称和要创建哪种类型的应用程序。可以看出，响应文件能带来一些便利，不必每次编译项目时都手动指定命令行参数。
+
+C# 编译器支持多个响应文件。除了在命令行上显式指定的文件，编译器还会自动查找名为 CSC.rsp 的文件。 CSC.exe运行时，会在 CSC.exe 所在的目录查找全局 CSC.rsp文件。想应用于自己所有项目的设置应放到其中。编译器汇总并使用所有响应文件中的设置。本地和全局响应文件中的某个设置发生冲突，将以本地设置为准。类似地，命令行上显示指定的设置将覆盖本地响应文件中的设置。
+
+.NET Framework 安装时会在`%SystemRoot%\Microsoft.NET\Framework(64)\vX.X.X` 目录中安装默认全局 CSC.rsp 文件(X.X.X是你安装的 .NET Framework 的版本号)。这个文件的最新版本包含以下开关:
+
+> 我搜的`C:\Program Files (x86)\MSBuild\14.0\Bin`
+
+```rsp
+# Copyright (c)  Microsoft.  All Rights Reserved.  Licensed under the Apache License, Version 2.0.  See License.txt in the project root for license information.
+
+# This file contains command-line options that the C#
+# command line compiler (CSC) will process as part
+# of every compilation, unless the "/noconfig" option
+# is specified. 
+
+# Reference the common Framework libraries
+/r:Accessibility.dll
+/r:Microsoft.CSharp.dll
+/r:System.Configuration.dll
+/r:System.Configuration.Install.dll
+/r:System.Core.dll
+/r:System.Data.dll
+/r:System.Data.DataSetExtensions.dll
+/r:System.Data.Linq.dll
+/r:System.Data.OracleClient.dll
+/r:System.Deployment.dll
+/r:System.Design.dll
+/r:System.DirectoryServices.dll
+/r:System.dll
+/r:System.Drawing.Design.dll
+/r:System.Drawing.dll
+/r:System.EnterpriseServices.dll
+/r:System.Management.dll
+/r:System.Messaging.dll
+/r:System.Runtime.Remoting.dll
+/r:System.Runtime.Serialization.dll
+/r:System.Runtime.Serialization.Formatters.Soap.dll
+/r:System.Security.dll
+/r:System.ServiceModel.dll
+/r:System.ServiceModel.Web.dll
+/r:System.ServiceProcess.dll
+/r:System.Transactions.dll
+/r:System.Web.dll
+/r:System.Web.Extensions.Design.dll
+/r:System.Web.Extensions.dll
+/r:System.Web.Mobile.dll
+/r:System.Web.RegularExpressions.dll
+/r:System.Web.Services.dll
+/r:System.Windows.Forms.dll
+/r:System.Workflow.Activities.dll
+/r:System.Workflow.ComponentModel.dll
+/r:System.Workflow.Runtime.dll
+/r:System.Xml.dll
+/r:System.Xml.Linq.dll
+```
+
+由于全局 CSC.rsp 文件引用了列出的所有程序集，所以不必使用 C# 编译器的 `/reference` 开关显示引用这些程序集。这个响应文件为开发人员带来了极大的方便，因为可以直接使用 Microsoft 发布的各个程序集中定义的类型和命名空间，不必每次编译时都指定 `/reference` 编译器开关。
+
+引用所有这些程序集对编译器的速度有一点影响。但是，如果源代码没有引用上述任何程序集定义的类型和成员，就不会影响最终的程序集文件，也不会影响程序的执行性能。
+
+当然，要进一步简化操作，还可在全局 CSC.rsp 文件中添加自己的开关。但这样一来，在其他机器上重现代码的生成环境就比较困难了：在每台用于生成的机器上，都必须以相同方式更新 CSC.rsp。 另外，指定 `/noconfig` 命令开关，编译器将忽略本地和全局 CSC.rsp 文件。
+
+## <a name="2_3">元数据概述</a>
+
+现在，我们知道了创建的是什么类型的 PE 文件。但是， Program.exe 文件中到底有什么？托管 PE 文件由 4 部分构成：PE32(+)头、CLR头、元数据以及 IL。PE32(+)头是 Windows 要求的标准信息。CLR 头是一个小的信息块，是需要 CLR 的模块(托管模块)特有的。这个头包含模块生成时所面向的 CLR 的 major(主)和 minor(次)版本号；一些标志(flag)；一个 **MethodDef** token(稍后详述)，该 token 指定了模块的入口方法(前提是该模块是CUI、GUI 或 Windows Store 执行体)；一个可选的强名称数字签名(将在第3章讨论)。最后，CLR 头还包含模块内部的一些元数据表的大小和偏移量。可以查看 `CorHdr.h` 头文件定义的 `IMAGE_COR20_HEADER` 来了解 CLR 头的具体格式。
+
+元数据是有几个表构成的二级制数据块。有三种表，分别是定义表(definition table)、引用表(reference table)和清单表(manifest table)。表 2-1 总结了模块元数据块中常用的定义表。  
+
+  表 2-1 常用的数据定义表
+|元数据定义表名称|说明|
+|:---:|:---:|
+|ModuleDef|总是包含对模块进行标识的一个记录项。该记录项包含模块文件名和扩展名(不含路径)，以及模块版本ID(形式为编译器创建的GUID)。这样可在保留原始名称记录的前提下自由重命名文件。但强烈反对重命名文件，因为可能妨碍 CLR 在运行时正确定位程序集|
+|TypeDef|模块定义的每个类型在这个表中都有一个记录项。每个记录项都包含类型的名称、基类型、一些标志(`public`，`private`等)以及一些索引，这些索引指向 MethodDef 表中该类型的方法、FieldDef 表中该类型的字段、PropertyDef 表中该类型的属性以及 EventDef 表中该类型的事件|
+|MethodDef|模块定义的每个方法在这个表中都有一个记录项。每个记录项都包含方法的名称、一些标志(`private`，`public`，`virtual`，`abstract`，`static`，`final` 等)、签名以及方法的 IL 代码在模块中的偏移量。每个记录项还引用了 ParamDef 表中的一个记录项，后者包括与方法参数有关的更多信息|
+|FieldDef|模块定义的每个字段在这个表中都有一个记录项。每个记录项都包含标志(`private`，`public`等)、类型和名称|
+|ParamDef|模块定义的每个参数在这个表中都有一个记录项。每个记录项都包含标志(`in`，`out`，`retval` 等)、类型和名称|
+|EventDef|模块定义的每个事件在这个表中都有一个记录项。每个记录项都包含标志和名称|
+
+```txt
+===========================================================
+ScopeName : Ch02-1-SimpleProgram.exe
+MVID      : {EE1268E9-583A-4AE3-9404-B3439DA8AEB8}
+===========================================================
+Global functions
+-------------------------------------------------------
+
+Global fields
+-------------------------------------------------------
+
+Global MemberRefs
+-------------------------------------------------------
+
+TypeDef #1 (02000002)
+-------------------------------------------------------
+	TypDefName: Program  (02000002)
+	Flags     : [Public] [AutoLayout] [Class] [Sealed] [AnsiClass] [BeforeFieldInit]  (00100101)
+	Extends   : 01000006 [TypeRef] System.Object
+	Method #1 (06000001) [ENTRYPOINT]
+	-------------------------------------------------------
+		MethodName: Main (06000001)
+		Flags     : [Public] [Static] [HideBySig] [ReuseSlot]  (00000096)
+		RVA       : 0x00002050
+		ImplFlags : [IL] [Managed]  (00000000)
+		CallCnvntn: [DEFAULT]
+		ReturnType: Void
+		No arguments.
+
+	Method #2 (06000002) 
+	-------------------------------------------------------
+		MethodName: .ctor (06000002)
+		Flags     : [Public] [HideBySig] [ReuseSlot] [SpecialName] [RTSpecialName] [.ctor]  (00001886)
+		RVA       : 0x0000205e
+		ImplFlags : [IL] [Managed]  (00000000)
+		CallCnvntn: [DEFAULT]
+		hasThis 
+		ReturnType: Void
+		No arguments.
+
+
+TypeRef #1 (01000001)
+-------------------------------------------------------
+Token:             0x01000001
+ResolutionScope:   0x23000001
+TypeRefName:       System.Runtime.CompilerServices.CompilationRelaxationsAttribute
+	MemberRef #1 (0a000001)
+	-------------------------------------------------------
+		Member: (0a000001) .ctor: 
+		CallCnvntn: [DEFAULT]
+		hasThis 
+		ReturnType: Void
+		1 Arguments
+			Argument #1:  I4
+
+TypeRef #2 (01000002)
+-------------------------------------------------------
+Token:             0x01000002
+ResolutionScope:   0x23000001
+TypeRefName:       System.Runtime.CompilerServices.RuntimeCompatibilityAttribute
+	MemberRef #1 (0a000002)
+	-------------------------------------------------------
+		Member: (0a000002) .ctor: 
+		CallCnvntn: [DEFAULT]
+		hasThis 
+		ReturnType: Void
+		No arguments.
+
+TypeRef #3 (01000003)
+-------------------------------------------------------
+Token:             0x01000003
+ResolutionScope:   0x23000001
+TypeRefName:       System.Diagnostics.DebuggableAttribute
+	MemberRef #1 (0a000003)
+	-------------------------------------------------------
+		Member: (0a000003) .ctor: 
+		CallCnvntn: [DEFAULT]
+		hasThis 
+		ReturnType: Void
+		1 Arguments
+			Argument #1:  ValueClass DebuggingModes
+
+TypeRef #4 (01000004)
+-------------------------------------------------------
+Token:             0x01000004
+ResolutionScope:   0x01000003
+TypeRefName:       DebuggingModes
+
+TypeRef #5 (01000005)
+-------------------------------------------------------
+Token:             0x01000005
+ResolutionScope:   0x23000001
+TypeRefName:       System.Runtime.Versioning.TargetFrameworkAttribute
+	MemberRef #1 (0a000004)
+	-------------------------------------------------------
+		Member: (0a000004) .ctor: 
+		CallCnvntn: [DEFAULT]
+		hasThis 
+		ReturnType: Void
+		1 Arguments
+			Argument #1:  String
+
+TypeRef #6 (01000006)
+-------------------------------------------------------
+Token:             0x01000006
+ResolutionScope:   0x23000001
+TypeRefName:       System.Object
+	MemberRef #1 (0a000006)
+	-------------------------------------------------------
+		Member: (0a000006) .ctor: 
+		CallCnvntn: [DEFAULT]
+		hasThis 
+		ReturnType: Void
+		No arguments.
+
+TypeRef #7 (01000007)
+-------------------------------------------------------
+Token:             0x01000007
+ResolutionScope:   0x23000001
+TypeRefName:       System.Console
+	MemberRef #1 (0a000005)
+	-------------------------------------------------------
+		Member: (0a000005) WriteLine: 
+		CallCnvntn: [DEFAULT]
+		ReturnType: Void
+		1 Arguments
+			Argument #1:  String
+
+Assembly
+-------------------------------------------------------
+	Token: 0x20000001
+	Name : Ch02-1-SimpleProgram
+	Public Key    :
+	Hash Algorithm : 0x00008004
+	Version: 0.0.0.0
+	Major Version: 0x00000000
+	Minor Version: 0x00000000
+	Build Number: 0x00000000
+	Revision Number: 0x00000000
+	Locale: <null>
+	Flags : [none] (00000000)
+	CustomAttribute #1 (0c000001)
+	-------------------------------------------------------
+		CustomAttribute Type: 0a000001
+		CustomAttributeName: System.Runtime.CompilerServices.CompilationRelaxationsAttribute :: instance void .ctor(int32)
+		Length: 8
+		Value : 01 00 08 00 00 00 00 00                          >                <
+		ctor args: (8)
+
+	CustomAttribute #2 (0c000002)
+	-------------------------------------------------------
+		CustomAttribute Type: 0a000002
+		CustomAttributeName: System.Runtime.CompilerServices.RuntimeCompatibilityAttribute :: instance void .ctor()
+		Length: 30
+		Value : 01 00 01 00 54 02 16 57  72 61 70 4e 6f 6e 45 78 >    T  WrapNonEx<
+                      : 63 65 70 74 69 6f 6e 54  68 72 6f 77 73 01       >ceptionThrows   <
+		ctor args: ()
+
+	CustomAttribute #3 (0c000003)
+	-------------------------------------------------------
+		CustomAttribute Type: 0a000003
+		CustomAttributeName: System.Diagnostics.DebuggableAttribute :: instance void .ctor(value class DebuggingModes)
+		Length: 8
+		Value : 01 00 07 01 00 00 00 00                          >                <
+		ctor args: ( <can not decode> )
+
+	CustomAttribute #4 (0c000004)
+	-------------------------------------------------------
+		CustomAttribute Type: 0a000004
+		CustomAttributeName: System.Runtime.Versioning.TargetFrameworkAttribute :: instance void .ctor(class System.String)
+		Length: 73
+		Value : 01 00 1a 2e 4e 45 54 46  72 61 6d 65 77 6f 72 6b >   .NETFramework<
+                      : 2c 56 65 72 73 69 6f 6e  3d 76 34 2e 35 01 00 54 >,Version=v4.5  T<
+                      : 0e 14 46 72 61 6d 65 77  6f 72 6b 44 69 73 70 6c >  FrameworkDispl<
+                      : 61 79 4e 61 6d 65 12 2e  4e 45 54 20 46 72 61 6d >ayName .NET Fram<
+                      : 65 77 6f 72 6b 20 34 2e  35                      >ework 4.5       <
+		ctor args: (".NETFramework,Version=v4.5")
+
+
+AssemblyRef #1 (23000001)
+-------------------------------------------------------
+	Token: 0x23000001
+	Public Key or Token: b7 7a 5c 56 19 34 e0 89 
+	Name: mscorlib
+	Version: 4.0.0.0
+	Major Version: 0x00000004
+	Minor Version: 0x00000000
+	Build Number: 0x00000000
+	Revision Number: 0x00000000
+	Locale: <null>
+	HashValue Blob:
+	Flags: [none] (00000000)
+
+
+User Strings
+-------------------------------------------------------
+70000001 : ( 2) L"Hi"
+
+
+Coff symbol name overhead:  0
+===========================================================
+===========================================================
+===========================================================
+```
+
+```file
+ File size            : 4096
+ PE header size       : 512 (496 used)    (12.50%)
+ PE additional info   : 1491              (36.40%)
+ Num.of PE sections   : 3
+ CLR header size     : 72                 ( 1.76%)
+ CLR meta-data size  : 872                (21.29%)
+ CLR additional info : 0                  ( 0.00%)
+ CLR method headers  : 2                  ( 0.05%)
+ Managed code         : 21                ( 0.51%)
+ Data                 : 2048              (50.00%)
+ Unaccounted          : -922              (-22.51%)
+
+ Num.of PE sections   : 3
+   .text    - 1536
+   .rsrc    - 1536
+   .reloc   - 512
+
+ CLR meta-data size  : 872
+   Module        -    1 (10 bytes)
+   TypeDef       -    2 (28 bytes)      0 interfaces, 0 explicit layout
+   TypeRef       -    7 (42 bytes)
+   MethodDef     -    2 (28 bytes)      0 abstract, 0 native, 2 bodies
+   MemberRef     -    6 (36 bytes)
+   CustomAttribute-    4 (24 bytes)
+   Assembly      -    1 (22 bytes)
+   AssemblyRef   -    1 (20 bytes)
+   Strings       -   307 bytes
+   Blobs         -   164 bytes
+   UserStrings   -     8 bytes
+   Guids         -    16 bytes
+   Uncategorized -   167 bytes
+
+ CLR method headers : 2
+   Num.of method bodies  - 2
+   Num.of fat headers    - 0
+   Num.of tiny headers   - 2
+
+ Managed code : 21
+   Ave method size - 10
+```
