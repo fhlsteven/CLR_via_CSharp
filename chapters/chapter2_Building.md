@@ -514,5 +514,18 @@ RUT.netmodule 文件包含编译 RUT.cs 所生成的 IL 代码。该文件还包
 
 ```file
 File #1 (26000001)
------------------------------------- 
+-------------------------------------------------------
+	Token: 0x26000001
+	Name : Ch02-3-RUT.netmodule
+	HashValue Blob : 7c cb 12 a5 81 66 2b f8  86 78 e5 df e3 74 e0 1f  55 56 d4 f4 
+	Flags : [ContainsMetaData]  (00000000)
+
+
+ExportedType #1 (27000001)
+-------------------------------------------------------
+	Token: 0x27000001
+	Name: ARarelyUsedType
+	Implementation token: 0x26000001
+	TypeDef token: 0x02000002
+	Flags     : [Public] [AutoLayout] [Class] [Sealed] [AnsiClass] [BeforeFieldInit]  (00100101)
 ```
