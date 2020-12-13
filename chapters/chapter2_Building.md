@@ -529,3 +529,175 @@ ExportedType #1 (27000001)
 	TypeDef token: 0x02000002
 	Flags     : [Public] [AutoLayout] [Class] [Sealed] [AnsiClass] [BeforeFieldInit]  (00100101)
 ```
+
+可以看出， RUT.netmodule 文件已被视为程序集的一部分，它的 token 是 `0x26000001`。在 ExportedTypesDef 表中可以看到一个公开导出的类型，名为 `ARarelyUsedType`。该类型的实现 token 是 `0x27000001`，表明类型的 IL 代码包含在 RUT.netmodule 文件中。
+
+客户端代码必须使用 `/r[eference]:MultiFileLibrary.dll` 编译器开关生成，才能使用 MultiFileLibrary.dll 程序集的类型。该开关指示编译器在搜索外部类型时加载 MultiFileLibrary.dll 程序集以及 FileDef 表中列出的所有文件。要求程序集的所有文件都已安装，而且能够访问。删除 RUT.netmodule 文件导致 C# 编译器会报告以下错误：`fatal error CS0009:未能打开元数据文件“c:\MultifileLibrary.dll” —— “导入程序集 “c:\MultiFileLibrary.dll”的模块”RUT.netmodule“时出错 —— 系统找不到指定的文件。”`  
+> 注意 以下内容供技术宅参考。元数据 token 是一个 4 字节的值。其中，高位字节指明 token 的类型(0x01=TypeRef，0x02=TypeDef，0x23=AssemblyRef， 0x26=File(文件定义)，0x27=ExportedType)。要获取完整列表，请参见 .NET Framework SDK 包含的 `CorHdr.h` 文件中的 `CorTokenType` 枚举类型。token 的三个低位字节指明对应的元数据表中的行。例如，0x26000001 这个实现 token 引用的是 File 表的第一行。大多数表的行从 1 而不是 0 开始编号。 TypeDef 表的行号实际从2 开始。
+
+这意味着为了生成新程序集，所引用的程序集中的所有文件都必须存在。
+
+客户端代码执行时会调用方法。一个方法首次调用时，CLR 检测作为参数、返回值或者局部变量而被方法引用的类型。然后，CLR 尝试加载所引用程序集中含有清单的文件。如果要访问的类型恰好在这个文件中， CLR 会执行其内部登记工作，允许使用该类型。如果清单指出被引用的类型在不同的文件中， CLR 会尝试加载需要的文件，同样执行内部登记，并允许使用该类型。注意，CLR 并非一上来就加载所有可能用到的程序集。只有在调用的方法确实引用了未加载程序集中对的类型时，才会加载程序集。换言之，为了让应用程序运行起来，并不要求被引用程序集的所有文件都存在。
+
+### 2.4.1 使用 Visual Studio IDE 将程序集添加到项目中
+
+用 Visual Studio IDE 创建项目时，想引用的所有程序集都必须添加到项目中。为此，请打开解决方案资源管理器，右击想添加引用的项目，选择“添加引用”来打开“引用管理器”对话框，如图 2-2 所示。  
+![2_2](../resources/images/2_2.png)   
+图 2-2 Visual Studio 的引用管理器  
+
+从列表中选择想让项目引用的程序集。如果程序集不在列表中，就单击“浏览”按钮，选择目标程序集(含清单的文件)并添加程序集引用。利用“解决方案”选项，当前项目可以引用同一个解决方案中的另一个项目创建的程序集。“COM”选项允许从托管源代码中访问一个非托管COM 服务器，这是通过 Visual Studio 自动生成的一个托管代理类实现的。利用“项目”选项，可以选择最近添加到其他项目的程序集。
+
+按照 *[http://msdn.microsoft.com/en-us/library/wkze6zky(v=vs.110).aspx](https://docs.microsoft.com/en-us/visualstudio/ide/how-to-add-or-remove-references-by-using-the-reference-manager?view=vs-2019)* 的指令进行操作，可以使自己的程序集出现在“引用管理器”中。
+
+### 2.4.2 使用程序集链接器
+
+除了使用 C#编译器，还可以使用“程序集链接器”使用程序 [AL.exe](https://docs.microsoft.com/zh-cn/dotnet/framework/tools/al-exe-assembly-linker) 来创建程序集。如果程序集要包含由不同编译器生成的模块(而且这些编译器不支持与 C# 编译器的 `/addmodule` 开关等价的机制)，或者在生成时不清楚程序集的打包要求，程序集链接器就显得相当有用。还可用 AL.exe 生成只含资源的程序集，也就是所谓的**附属程序集(satellite assembly)**，它们通常用于本地化。本章稍后会讨论附属程序集的问题。
+
+AL.exe 实用程序能生成 EXE 文件，或者生成只包含清单(对其他模块中的类型进行描述)的 DLL PE 文件。为了理解 AL.exe 的工作原理，让我们改变一下 MultiFileLibrary.dll 程序集的生成方式：  
+
+```cmd
+csc /t:module RUT.cs
+csc /t:module FUT.cs
+al /out:MultiFileLibrary.dll /t:library FUT.netmodule RUT.netmodule
+```
+
+ 图 2-3 展示了执行这些命令后生成的文件。  
+ ![2_3](../resources/images/2_3.png)  
+ 图 2-3 由三个托管模块构成的多文件程序集，其中一个含有清单  
+
+ 这个例子首先创建两个单独的模块，即 RUT.netmodule 和 FUT.netmodule。两个模块都不是程序集，因为都不包含清单元数据表。然后生成第三个文件 MultiFileLibrary.dll，它是 DLL PE 文件(因为使用了 `/t[arget]:library` 开关)，其中不包含 IL 代码，但包含清单元数据表。清单元数据表指出 RUT.netmodule 和 FUT.netmodule 是程序集的一部分。最终的程序集由三个文件构成：MultiFileLibrary.dll， RUT.netmodule 和 FUT.netmodule。程序集链接器不能将多个文件合并成一个文件。
+
+ 使用 `/t[arget]:exe`，`/t[arget]:winexe` 或者 `/t[arget]:appcontainerexe` 命令行开关， AL.exe 实用程序还可生成 CUI，GUI 或者 Windows Store 应用 PE 文件。但很少需要这样做，因为这意味着在得到的 EXE PE 文件中，IL 代码唯一做的事情就是调用另一个模块中的方法。调用 AL.exe 时添加 `/main` 命令行开关，可指定模块的那个方法是入口。例如：  
+ 
+ ```cmd
+ csc /t:module /r:MultiFileLibrary.dll Program.cs
+ al /out:Program.exe /t:exe /main:Program.Main Program.netmodule
+ ```
+
+ 第一行将 Program.cs 文件生成为 Program.netmodule 文件。第二行生成包含清单元数据表的 Program.exe PE 文件。此外，由于使用了 `/mian:Program.Main` 命令行开关，AL.exe 还会生成一个小的全局函数，名为`__EntryPoint`，其中包含以下 IL 代码： 
+
+ ```c#
+ .method privateescope static void __EntryPoint$PST06000001() cil managed
+ {
+    .entrypoint
+	// Code size       8  (0x8)
+	.maxstack 8
+	IL_0000: tail.
+	IL_0002: call   void [.module 'Program.netmodule']Program::Main()
+	IL_0007: ret 	 
+ }  // end of method 'Global Functions'::__EntryPoint
+ ```
+
+可以看出，上述代码只是调用了一下在 Program.netmodule 文件定义的 **Program** 类型中包含的 **Main** 方法。 AL.exe 的 `/main` 开关实际没有多大用处，因为假如一个应用程序的入口不在清单元数据表所在的 PE 文件中，为它创建程序集有什么意义呢？开发人员只需知道有这个开关就可以了。
+
+本书配套代码有一个 ch02-3-BuildMultiFileLibrary.bat 文件，它封装了生成多文件程序集所需的全部步骤。作为生成前的命令行步骤，Ch02-4-APPUsingMultiFileLibrary 项目会调用该批处理文件。可参考这个项目来体会如何在 Visual Studio 中生成和引用多文件程序集。
+
+### 2.4.3 为程序集添加资源文件
+
+用 AL.exe 创建程序集时，可用 `/embed[resource]`开关将文件作为资源添加到程序集。该开关获取任意文件，并将文件内容嵌入最终的 PE 文件。清单的 ManifestResourceDef 表会更新以反映新资源的存在。
+
+AL.exe 还支持`/link[resource]`开关，它同样获取包含资源的文件，但只是更新清单的 ManifestResourceDef 和 FileDef 表以反映新资源的存在，指出资源包含在程序集的那个文件中。资源文件不会嵌入程序集 PE 文件中；相反，它保持独立，而且必须和其他程序集文件一起打包和部署。
+
+与 AL.exe 相似，C# 编译器 CSC.exe 也允许将资源合并到编译器生成的程序集中。 `/resource` 开关将指定的资源文件嵌入最终生成的程序集 PE 文件中，并更新 ManifestResourceDef 表。`/linkresource` 开关在 ManifestResourceDef 和 FileDef 清单表中添加记录项来引用独立存在的资源文件。
+
+关于资源，最后注意可在程序集中嵌入标准的 Win32 资源。为此，只需在使用 AL.exe 或者 CSC.exe 时使用`/win32res` 开关指定一个 .res 文件的路径名。还可在使用 AL.exe 或者 CSC.exe 时使用`/win32icon` 开关指定 .ico 文件的路径名，从而在程序集中快速、简单地嵌入标准的 Win32 图标资源。要在 Visual Studio 中将资源文件添加资源文件。嵌入图标的目的是一般是在 Windows 资源管理器中为托管的可执行文件显示特色图标。
+
+> 注意 托管的程序集文件还包含 Win32 清单资源信息。C# 编译器默认生成这种清单信息，但可用`/nowin32manifest` 开关告诉它不生成。C# 编译器生成的默认清单是下面这样的：
+```xml
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.vl" manifestVersion="1.0">
+	<assemblyIdentity version="1.0.0.0" name="MyApplication.app" />
+	   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
+	   	  <security>
+			 <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
+			   <requestedExecutionLevel level="asInvoker" uiAccess="false">
+			 </requestedPrivileges>
+		  </security>
+	   </trustInfo>
+</assembly>
+```
+
+## <a name="2_5">2.5 程序集版本资源信息</a>
+
+AL.exe 或 CSC.exe 生成 PE 文件程序集时，还会在 PE 文件中嵌入标准的 Win32 版本资源。可查看文件属性来检查该资源。在应用程序代码中调用 `System.Diagnostics.FileVersionInfo` 的静态方法 `GetVersionInfo`，并传递程序集的路径作为参数，就可以获取并检查这些信息。图 2-4 显示的是 Ch02-3-MultiFileLibrary.dll 属性对话框的“详细信息”选项卡。 `csc /t:library Ch02-3-AssemblyVersionInfo.cs`
+
+![2_4](../resources/images/2_4.png)  
+图 2-4 “Ch02-3-MultiFileLibrary.dll属性“ 对话框的”详细信息“选项卡
+
+> 重要提示 Windows 资源管理器的属性对话框明显遗漏了一些特性值。最遗憾的是没有显示 **AssemblyVersion** 这个特性的值，因为 CLR 加载程序集时会使用这个值，详情将在第 3 章讨论。  
+
+生成程序集时，应该使用定制特性设置各种版本资源字段，这些特性在源代码中应用于 assembly 级别。图 2-4 的版本信息用以下代码生成：  
+
+```C#
+using System.Reflection;
+
+// FileDescription 版本信息:
+[assembly: AssemblyTitle("MultiFileLibrary.dll")]
+
+// Comments 版本信息:
+[assembly: AssemblyDescription("This assembly contains MultiFileLibrary's types")]
+
+// CompanyName 版本信息:
+[assembly: AssemblyCompany("Wintellect")]
+
+// ProductName 版本信息:
+[assembly: AssemblyProduct("Wintellect (R) MultiFileLibrary's Type Library")]
+
+// LegalCopyright 版本信息:
+[assembly: AssemblyCopyright("Copyright (c) Wintellect 2013")]
+
+// LegalTrademarks 版本信息:
+[assembly:AssemblyTrademark("MultiFileLibrary is a registered trademark of Wintellect")]
+
+// AssemblyVersion 版本信息:
+[assembly: AssemblyVersion("3.0.0.0")]
+
+// FILEVERSION/FileVersion 版本信息:
+[assembly: AssemblyFileVersion("1.0.0.0")]
+
+// PRODUCTVERSION/ProductVersion 版本信息:
+[assembly: AssemblyInformationalVersion("2.0.0.0")]
+
+// 设置 Language 字段(参见 2.6 节”语言文化“)
+[assembly:AssemblyCulture("")]
+```
+
+表 2-4 总结了版本资源字段和对应的定制特性。如果用 AL.exe 生成程序集，可以用命令行开关设置这些信息，而不必使用定制特性。表 2-4 的第二列显示了与每个版本资源字段对应的 AL.exe 命令行开关。注意，C# 编译器没有提供这些命令行开关。在这种情况下，最好是用定制特性设置这些信息。  
+表 2-4 版本资源字段和对应的 AL.exe 开关/定制特性  
+|版本资源|AL.exe开关|定制特性/说明|
+|:---:|:---:|:----:|
+|FILEVERSION|`/fileversion`|`System.Reflecction.AssemblyFileVersionAttribute`|
+|PRODUCTVERSION|`/productversion`|`System.Reflection.AssemblyInformationalVersionAttribute`|
+|FILEFLAGSMASK|(无)|总是设为 `VS_FFI_FILEFLAGSMASK`(在 WinVer.h 中定义为 `0x0000003F`)|
+|FILEFLAGS|(无)|总是0|
+|FILEOS|(无)|目前总是 `VOS__WINDOWS32`|
+|FILETYPE|`/target`|如果指定了`/target:exe` 或 `/target:winexe`,就设为`VFT_APP;`如果制定了`/target:library`,就设为`VFT_DLL`|
+|FILESUBTYPE|(无)|总是设为 `VFT2_UNKNOWN`(该字段对于`VFT_APP`和 `VFT_DLL`)|
+|AssemblyVersion|`/version`|`System.Reflection.AssemblyVersionAttribute`|
+|Comments|`/description`|`System.Reflection.AssemblyDescriptionAttribute`|
+|CompanyName|`/company`|`System.Reflection.AssemblyCompanyAttribute`|
+|FileDescription|`/title`|`System.Reflection.AssemblyTitleAttribute`|
+|FileVersion|`/version`|`System.Reflection.AssemblyFileVersionAttribute`|
+|InternalName|`/out`|设为指定的输出文件的名称(无扩展名)|
+|LegalCopyright|`/copyright`|`System.Reflection.AssemblyCopyrightAttribute`|
+|LegalTrademarks|`/trademark`|`System.Reflection.AssemblyTrademarkAttribute`|
+|OriginalFilename|`/out`|设为输出文件的名称(无路径)|
+|PrivateBuild|(无)|总是空白|
+|ProductName|`/product`|`System.Reflection.AssemblyProductAttribute`|
+|ProductVersion|`productversion`|`System.Reflection.AssemblyInformationalVersionAttribute`|
+|SpecialBuild|(无)|总是空白|
+  
+> 重要提示 Visual Studio 新建 C# 项目时会在一个 Properties 文件夹中自动创建 AssemblyInfo.cs 文件。该文件除了包含本节描述的所有程序集版本特性，还包含要在第 3 章讨论的几个特性。可直接打开 AssemblyInfo.cs 文件并修改自己的程序集特有信息。 Visual Studio 还提供了对话框来帮你编辑该文件。要打开这个对话框，请打开项目的属性页，在”应用程序“选项卡中单击”程序集信息“。随后会看到如图 2-5 所示的对话框。 
+![2_5](../resources/images/2_5.png)  
+图 2-5 Visual Studio 的 ”程序集信息“对话框
+
+#### 版本号
+
+上一节指出可向程序集应用几个版本号。所有这些版本号都具有相同的格式，每个都包含4个以句点分隔的部分，如表 2-5 所示。  
+
+ 表 2-5 *版本号格式*
+ ||major(主版本号)|minor(次版本号)|build(内部版本号)|revision(修订号)|
+ |:---:|:---:|:---:|:---:|:---:|
+ |示例|2|5|719|2| 
+> 根据习惯，本书保留了版本号 4 个组成部分的英文原文，即 major，minor，build，revision。——译注
+
