@@ -753,3 +753,112 @@ Windows Store 应用程序集的打包有一套很严格的规则， Visual Stud
 对于非 Windows Store 的桌面应用，程序集的打包方式没有任何特殊要求。打包一组程序集最简单的方式就是直接复制所有文件。例如，可将所有程序集文件放到一张光盘上，将光盘分发给用户，执行上面的一个批处理程序，将光盘上的文件复制到用户硬盘上的一个目录。由于已经包含了所有依赖的程序集和类型，所以用户能直接运行应用程序，“运行时”会在应用程序目录查找引用的程序集。不需要对注册表进行任何任何修改就能运行程序。要卸载应用程序，删除所有文件就可以了——就是那么简单！
 
 也可使用其他机制打包和安装程序集文件，比如使用.cab 文件(从 Internet 下载时使用，旨在压缩文件并缩短下载时间)。还可将程序集文件打包成一个 MSI 文件，以便由 Windows Installer 服务(MSIExec.exe)使用。使用 MSI 文件可实现程序集的“按需安装”——CLR首次尝试加载一个程序集时才安装它。这不是 MSI 的新功能；非托管 EXE 和 DLL 文件也能这么加载。
+> 注意 使用批处理程序或其他简单的“安装软件”，足以将应用程序“弄”到用户的机器上。但要在用户桌面和“开始”菜单上创建快捷方式，仍需使用一款较高级的安装软件。除此之外，可以方便地备份和还原应用程序，或者在机器之间移动，但快捷方式仍需特殊处理。  
+
+当然，也可使用 Visual Studio 内建的机制发布应用程序。具体做法是打开项目属性页并点击“发布”标签。利用其中的选项，可以让 Visual Studio 生成 MSI 文件并将它复制到网站、FTP 服务器或者文件路径。这个 MSI 文件还能安装必备组件，比如 .NET Framework 或 Microsoft SQL Server Express Edition。最后，利用 ClickOnce 技术，应用程序还能自动检查更新，并在用户的机器上安装更新。
+
+在应用程序基目录或者子目录部署的程序集称为**私有部署的程序集(privately deployed assembly)**，这是因为程序集文件不和其他任何程序共享(除非其他应用程序也部署到该目录)。私有部署的程序集为开发人员、最终用户和管理员带来了许多便利，因为只需把它们复制到一个应用程序的基目录， CLR 便会加载它们并执行其中的代码。除此之外，要卸载应用程序，从目录中删除程序集即可。这使备份和还原也变得简单了。
+
+之所以能实现这种简单的安装/移动/卸载，是因为每个程序集都用元数据注明了自己引用的程序集，不需要注册表设置。另外，引用(别的程序集的)程序集先定了每个类型的作用域。也就是说，一个应用程序总是和它生成和测试时的类型绑定。即便另一个程序集恰好提供了同名类型，CLR 也不可能加载那个程序集。这一点有别于 COM。 在 COM 中，类型是在注册表中登记的，造成机器上运行的任何应用程序都能使用那些类型。
+
+第 3 章将讨论如何部署可由多个应用程序访问的共享程序集。
+
+## <a name="2_8">2.8 简单管理控制(配置)</a>
+
+用户或管理员经常需要控制应用程序的执行。例如，管理员可能决定移动用户硬盘上的程序集文件，或者覆写程序集清单中的信息。还有一些情形涉及版本控制，第 3 章将进一步讨论。
+
+为了实现对应用程序的管理控制，可在应用程序目录放入一个配置文件。应用程序的发布者可创建并打包该文件。安装程序会将配置文件安装到应用程序的基目录。另外，就算计管理员或最终用户也能创建或修改该文件。CLR 会解析文件内容来更改程序集文件的定位和加载策略。
+
+配置文件包含 XML 代码，它既能和应用程序关联，也能和机器关联。由于使用的是一个单独的文件(而不是注册表设置)，用户可以方便地备份文件，管理员也能将应用程序方便地复制到其他机器——只要把必要的文件复制过去，管理策略就会被复制过去。
+
+第 3 章将更详细探讨这个配置文件，目前只需对它有一个基本的认识。例如，假定应用程序的发布者想把 MultiFileLibrary 的程序集文件部署到和应用程序的程序集文件不同的目录，要求目录结构如下：
+```C#
+AppDir 目录(包含应用程序的程序集文件)
+  Program.exe 
+  Program.exe.config(在下面讨论)
+
+  AuxFiles 子目录(包含 MultiFileLibrary 的程序集文件)
+    MultiFileLibrary.dll
+	FUT.netmodule
+	RUT.netmodule
+```
+
+由于 MultiFileLibrary 的文件不在应用程序的基目录，所以 CLR 无法定位并加载这些文件。运行程序将抛出 `System.IO.FileNotFoundException` 异常。为了解决问题，发布者创建了 XML 格式的配置文件，把它部署到应用程序的基目录。文件名必须是应用程序主程序集文件的名称，附加 .config 扩展名，也就是 Program.exe.config。配置文件内容如下：
+```xml
+<configuration>
+	<runtime>
+	   <assemblyBinding xmlns="urn:schemas-microsoft-com:asm.v1">
+	     <probing privatePath="AuxFiles">
+	   </assemblyBinding>
+	</runtime> 
+</configuration>
+```
+
+CLR 尝试定位程序集文件时，总是先在应用程序基目录查找。如果没有找到，就查找 AuxFiles 子目录。可为 `probing` 元素的 `privatePath` 特性指定多个以分号分隔的路径。每个路径都相对于应用程序基目录。不能用绝对或相对路径指定在应用程序基目录外部的目录。这个设计的出发点是应用程序能控制它的目录及其子目录，但不能控制其他目录。
+
+这个 XML 配置文件的名称和位置取决于应用程序的类型。
+
+* 对于可执行应用程序(EXE)，配置文件必须在应用程序的基目录，而且必须采用 EXE 文件全名作为文件名，再附加.config扩展名。
+
+* 对于 Microsoft ASP.NET Web 窗体应用程序，文件必须在 Web 应用程序的虚拟根目录中，而且总是命名为 Web.config。除此之外，子目录可以包含自己的 Web.config，而且配置设置会得到继承。例如，位于 [http://Wintellect.com/Training](https://www.wintellect.com/Training/) 的 Web 应用程序既会使用虚拟根目录的 Web.config 设置，也会使用 Training 子目录的。
+
+本节开头说过，配置设置既可应用于程序，也可应用于机器。.NET Framework 在安装时会创建一个 Machine.config。机器上安装的每个版本的 CLR 都有一个对应的 Machine.config。
+
+Machine.config 文件在以下目录中：  
+`%SystemRoot%\Microsoft.NET\Framework\version\CONFIG`  
+其中，`%SystemRoot%`是 Windows 目录(一般是 `C:\WINDOWS`)，*version* 是 .NET Framework 的版本号(形如 v4.0.#####)。
+
+Machine.config 文件的设置是机器上运行的所有应用程序的默认设置。所以，管理员为了创建适用于整个机器的策略，修改一个文件即可。然而，管理员和用户一般应该避免修改该文件，因为该文件的许多设置都有着太多的牵连，使我们难免顾此失彼。另外，我们经常都要对应用成怒的设置进行备份和还原，只有将这些设置保存到应用程序专用的配置文件，才能方便地做到这一点。
+
+---
+**探测程序集文件**  
+
+CLR 定位程序集时会扫描几个子目录。以下是加载一个语言文化中性的程序集时的目录探测顺序(其中，firstPrivatePath 和 secondPrivatePath 通过配置文件的 privatePath 特性指定)：
+
+```file
+AppDir\AsmName.dll
+AppDir\AsmName\AsmName.dll
+AppDir\firstPrivatePath\AsmName.dll
+AppDir\firstPrivatePath\AsmName\AsmName.dll
+AppDir\secondPrivatePath\AsmName.dll
+AppDir\secondPrivatePath\AsmName\AsmName.dll
+……
+```
+在这个例子中，如果 MultiFileLibrary 程序集的文件部署到 MultiFileLibrary 子目录，就不需要配置文件，因为 CLR 能自动扫描与目标程序集名称相符的子目录。
+
+如果在上述任何子目录都找不到目标程序集， CLR 会从头再来， 用.exe 扩展名替换.dll 扩展名，再找不到就抛出 **FileNotFoundException** 异常。
+
+附属程序集(statellite assembly)遵循类似的规则，只是 CLR 会在应用程序基目录下的一个子目录中查找，子目录名称和语言文化相符。例如，假定向 AsmName.dll 应用了“en-US”语言文化，那么会探测以下子目录：
+```file
+C:\AppDir\en-US\AsmName.dll
+C:\AppDir\en-US\AsmName\AsmName.dll
+C:\AppDir\firstPrivatePath\en-US\AsmName.dll
+C:\AppDir\firstPrivatePath\en-US\AsmName\AsmName.dll
+C:\AppDir\secondPrivatePath\en-US\AsmName.dll
+C:\AppDir\secondPrivatePath\en-US\AsmName\AsmName.dll
+
+C:\AppDir\en-US\AsmName.exe
+C:\AppDir\en-US\AsmName\AsmName.exe
+C:\AppDir\firstPrivatePath\en-US\AsmName.exe
+C:\AppDir\firstPrivatePath\en-US\AsmName\AsmName.exe
+C:\AppDir\secondPrivatePath\en-US\AsmName.exe
+C:\AppDir\secondPrivatePath\en-US\AsmName\AsmName.exe
+
+C:\AppDir\en\AsmName.dll
+C:\AppDir\en\AsmName\AsmName.dll
+C:\AppDir\firstPrivatePath\en\AsmName.dll
+C:\AppDir\firstPrivatePath\en\AsmName\AsmName.dll
+C:\AppDir\secondPrivatePath\en\AsmName.dll
+C:\AppDir\secondPrivatePath\en\AsmName\AsmName.dll
+
+C:\AppDir\en\AsmName.exe
+C:\AppDir\en\AsmName\AsmName.exe
+C:\AppDir\firstPrivatePath\en\AsmName.exe
+C:\AppDir\firstPrivatePath\en\AsmName\AsmName.exe
+C:\AppDir\secondPrivatePath\en\AsmName.exe
+C:\AppDir\secondPrivatePath\en\AsmName\AsmName.exe
+```
+
+如你所见， CLR 会探测具有.exe 或 .dll扩展名的文件。由于探测可能很耗时(尤其是 CLR 需要通过网络查找文件的时候)，所以最好在 XML 配置文件中指定一个或多个 culture 元素，限制 CLR 查找附属程序集时的探测动作。 Microsoft 提供了 FusLogVw.exe 工具来帮助你了解 CLR 在运行时与程序集的绑定。访问 [http://msdn.microsoft.com/en-us/ibrary/e74a18c4(v=vs.110).aspx](https://docs.microsoft.com/en-us/dotnet/framework/tools/fuslogvw-exe-assembly-binding-log-viewer?redirectedfrom=MSDN) 了解详情。
+
+---
