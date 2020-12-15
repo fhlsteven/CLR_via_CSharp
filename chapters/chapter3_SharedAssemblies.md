@@ -52,3 +52,91 @@ CLR 支持两种程序集：**弱命名程序集**(weakly named assembly)和**�
 "MyTypes,Version=2.0.1234.0, Culture=neutral, PublicKeyToken=b77a5c561934e089"
 "MyTypes,Version=1.0.8123.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a"
 ```
+
+第一个标识的是程序集文件 MyTypes.exe 或 MyTypes.dll (无法根据“程序集标识字符串”判断文件扩展名)。生成该程序集的公司为其分配的版本号是 1.0.8123.0，而且程序集中没有任何内容与一种特定语言文化关联，因为 **Culture** 设为 **neutral** 。当然，任何公司都可以生成 MyTypes.dll(或 MyTypes.exe)程序集文件，为其分配相同的版本号 1.0.8123.0，并将语言文化设为中性。
+
+所以，必须有一种方式区分恰好具有相同特性的两个公司的程序集。出于几方面的考虑，Microsoft 选择的是标准的公钥/私钥加密技术，而没有选择其他唯一性标识技术，如 GUID(Globally Unique Identifier，全局唯一标识符)、URL(Uniform Resource Locator，统一资源定位符)和URN(Uniform Resource Name，统一资源名称)。具体地说，使用加密技术，不仅能在程序集安装到一台机器上时检查其二进制数据的完整性，还允许每个发布者授予一套不同的权限。本章稍后会讨论这些技术。所以，一个公司要想唯一性地标识自己的程序集，必须创建一对公钥/私钥。然后，公钥可以和程序集关联。没有任何两家公司有相同的公钥/私钥对。这样一来，两家公司可以创建具有相同名称、版本和语言文化的程序集，同时不会产生任何冲突。  
+> 注意 可以利用辅助类 `System.Reflection.AssemblyName` 轻松构造程序集名称，并获取程序集名称的各个组成部分。该类提供了几个公共实例属性，比如 **CultureInfo**，**FullName**，**KeyPair**，**Name** 和 **Version**，还提供了几个公共实例方法，比如 **GetPublicKey**，**GetPublicKeyToken**，**SetPublicKey** 和 **SetPublicKeyToken**。
+
+第 2 章介绍了如何命名程序集文件，以及如何应用程序集版本号和语言文化。弱命名程序集可在清单元数据中嵌入程序集版本和语言文化；然而，CLR 通过探测子目录查找附属程序集(satellite assembly)时，会忽略版本号，只用语言文化信息。由于弱命名程序集总是私有部署，所以 CLR 在应用程序基目录或子目录(具体子目录由 XML 配置文件的 `probing` 元素的 `privatePath` 特性指定)中搜索程序集文件时只使用程序集名称(添加.dll 或 .exe扩展名)。
+
+强命名程序集除了有文件名、程序集版本号和语言文化，还用发布者私钥进行了签名。
+
+创建强命名程序集第一步是用 .NET Framework SDK 和 Microsoft Visual Studio 随带的  Strong Name 实用程序(SN.exe)获取密钥。SN.exe 允许通过多个命令行开关都区分大小写。为了生成公钥/私钥对，像下面这样运行 SN.exe：  
+`SN -k MyCompany.snk`
+
+这告诉 SN.exe 创建 MyCompany.snk 文件。文件中包含二进制形式的公钥和私钥。
+
+公钥数字很大；如果愿意，创建 .snk 文件后可再次使用 SN.exe 查看实际公钥。这需要执行两次 SN.exe(C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8 Tools)。 第一次用 `-p` 开关创建只含公钥的文件 *(MyCompany.PublicKey)*:  
+`SN –p MyCompany.snk MyCompany.PublicKey sha256`
+> 本例使用 .NET Framework 4.5 引入的增强型强命名(Enhanced Strong Naming)。要生成和以前版本的 .NET Framework 兼容的程序集，还必须用 `AssemblySignatureKeyAttribute` 创建联署签名(counter-signature)。详情参见 *[http://msdn.microsoft.com/en-us/library/hh415055(v=vs.110).aspx](https://docs.microsoft.com/en-us/dotnet/standard/assembly/enhanced-strong-naming?redirectedfrom=MSDN)*
+
+第二次用`-tp`开关执行，传递只含公钥的文件：  
+
+`SN -tp MyCompany.PublicKey`  
+
+执行上述命令，在我的机器上得到的输出如下：
+
+```txt
+
+Microsoft(R) .NET Framework 强名称实用工具 版本 4.0.30319.0
+版权所有(C) Microsoft Corporation。保留所有权利。
+
+公钥(哈希算法: sha256):
+002400000c8000009400000006020000002400005253413100040000010001002d326e81541132
+a1526fde64c6bd8ec89d7cc87e8c66513c6539b15de901995838f25360b35c4a0112521cd004e3
+27498b439d3747026ad0cf5bb62ff3c031bbc8a21c28d4b282f20171e9387190dbb891e2d7186d
+500ae7753b89e93790137d3c26e381a7120ea8459ef835ee11905447771dbc763017e3da297ac1
+a9d843be
+
+公钥标记为 10561fa1662d41b8
+```
+注意， SN.exe 实用程序未提供任何显示私钥的途径。
+
+公钥太大，难以使用。为了简化开发人员的工作(也为了方便最终用户)，人们设计了 **公钥标记**(public key token)。公钥标记是公钥的 64 位哈希值。SN.exe 的 `-tp` 开关在输出结果的末尾显示了与完整公钥对应的公钥标记。
+
+知道了如何创建公钥/私钥对，创建强命名程序集就简单了。编译程序集时使用 `/keyfile:<file>` 编译器开关：
+
+`csc /keyfile:MyCompany.snk Program.cs`
+
+C# 编译器看到这个开关会打开指定文件(MyCompany.snk)，用私钥对程序集进行签名，并将公钥嵌入清单。注意只能对含清单的程序集文件进行签名；程序集其他文件不能被显式签名。
+
+要在 Visual Studio 中新建公钥/私钥文件，可显示项目属性，点击“签名”标签，勾选“为程序集签名”，然后从“选择强名称密钥文件”选择框中选择“<新建···>”。
+
+“对文件进行签名”的准确含义是：生成强命名程序集时，程序集的 FileDef 清单元数据表列出构成程序集的所有文件。每将一个文件名添加到清单，都对文件内容进行哈希处理。哈希值和文件名一道存储到 FileDef 表中。要覆盖默认哈希算法，可使用 AL.exe 的 `/algid` 开关，或者在程序集的某个源代码文件中，在 assembly 这一级上应用定制特性 `System.Reflection.AssemblyAlgorithmIdAttribute`。默认使用 SHA-1 算法。
+
+生成包含清单的 PE 文件后，会对 PE 文件的完整内容(除去 Authenticode Signature、程序集强名称数据以及 PE 头校验和)进行哈希处理，如图 3-1 所示。哈希值用发布者的私钥进行签名，得到的 RSA 数字签名存储到 PE 文件的一个保留区域(进行哈希处理时，会忽略这个区域)。PE 文件的 CLR 头进行更新，反映数字签名在文件中的嵌入位置。
+
+![3_1](../resources/images/3_1.png)  
+图 3-1 对程序集进行签名 
+
+发布者公钥也嵌入 PE 文件的 AssemblyDef 清单元数据表。文件名、程序集版本号、语言文化和公钥的组合为这个程序集赋予了一个强名称，它保证是唯一的。两家公司除非共享密钥对，否则即使都生成了名为 OurLibrary 的程序集，公钥/私钥也不能相同。
+
+到此为此，程序集及其所有文件就可以打包和分发了。
+
+如第 2 章所述，编译器在编译源代码时会检测引用的类型和成员。必须向编译器指定要引用的程序集——C#编译器是用`/reference` 编译器开关。编译器的一项工作是在最终的托管模块中生成 AssemblyRef 元数据表，其中每个记录项都指明被引用程序集的名称(无路径和扩展名)、版本号、语言文化和公钥信息。  
+> 重要提示 由于公钥是很大的数字，而一个程序集可能引用其他大量程序集，所以在最终生成的文件中，相当大一部分会被公钥信息占据。为了节省存储空间， Microsoft 对公钥进行哈希处理，并获取哈希值的最后 8 个字节。 AssemblyRef 表实际存储的是这种简化的公钥值(称为“公钥标记”)。开发人员和最终用户一般看到的都是公钥标记，而不是完整公钥。    
+> 但要注意，CLR 在做出安全或信任决策时，永远都不会使用公钥标记，因为几个公钥可能在哈希处理之后得到同一个公钥标记。
+
+下面是一个简单类库 DLL 文件的 AssemblyRef 元数据信息(使用 ILDasm.exe 获得)：
+
+```C#
+AssemblyRef #1 (23000001)
+-------------------------------------------------------
+	Token: 0x23000001
+	Public Key or Token: b7 7a 5c 56 19 34 e0 89 
+	Name: mscorlib
+	Version: 4.0.0.0
+	Major Version: 0x00000004
+	Minor Version: 0x00000000
+	Build Number: 0x00000000
+	Revision Number: 0x00000000
+	Locale: <null>
+	HashValue Blob:
+	Flags: [none] (00000000)
+```
+
+可以看出，这个 DLL 程序集引用了具有以下特性的一个程序集中的类型：  
+`"MSCorLib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089"`  
+
+遗憾的是， ILDasm.exe 在本该使用术语"Culture"的地方使用了“Locale”。检查 DLL 程序集的 AssemblyDef 元数据表看到以下内容：
