@@ -91,6 +91,7 @@ a9d843be
 
 公钥标记为 10561fa1662d41b8
 ```
+
 注意， SN.exe 实用程序未提供任何显示私钥的途径。
 
 公钥太大，难以使用。为了简化开发人员的工作(也为了方便最终用户)，人们设计了 **公钥标记**(public key token)。公钥标记是公钥的 64 位哈希值。SN.exe 的 `-tp` 开关在输出结果的末尾显示了与完整公钥对应的公钥标记。
@@ -108,7 +109,7 @@ C# 编译器看到这个开关会打开指定文件(MyCompany.snk)，用私钥�
 生成包含清单的 PE 文件后，会对 PE 文件的完整内容(除去 Authenticode Signature、程序集强名称数据以及 PE 头校验和)进行哈希处理，如图 3-1 所示。哈希值用发布者的私钥进行签名，得到的 RSA 数字签名存储到 PE 文件的一个保留区域(进行哈希处理时，会忽略这个区域)。PE 文件的 CLR 头进行更新，反映数字签名在文件中的嵌入位置。
 
 ![3_1](../resources/images/3_1.png)  
-图 3-1 对程序集进行签名 
+图 3-1 对程序集进行签名  
 
 发布者公钥也嵌入 PE 文件的 AssemblyDef 清单元数据表。文件名、程序集版本号、语言文化和公钥的组合为这个程序集赋予了一个强名称，它保证是唯一的。两家公司除非共享密钥对，否则即使都生成了名为 OurLibrary 的程序集，公钥/私钥也不能相同。
 
@@ -123,20 +124,113 @@ C# 编译器看到这个开关会打开指定文件(MyCompany.snk)，用私钥�
 ```C#
 AssemblyRef #1 (23000001)
 -------------------------------------------------------
-	Token: 0x23000001
-	Public Key or Token: b7 7a 5c 56 19 34 e0 89 
-	Name: mscorlib
-	Version: 4.0.0.0
-	Major Version: 0x00000004
-	Minor Version: 0x00000000
-	Build Number: 0x00000000
-	Revision Number: 0x00000000
-	Locale: <null>
-	HashValue Blob:
-	Flags: [none] (00000000)
+Token: 0x23000001
+Public Key or Token: b7 7a 5c 56 19 34 e0 89 
+Name: mscorlib
+Version: 4.0.0.0
+Major Version: 0x00000004
+Minor Version: 0x00000000
+Build Number: 0x00000000
+Revision Number: 0x00000000
+Locale: <null>
+HashValue Blob:
+Flags: [none] (00000000)
 ```
 
 可以看出，这个 DLL 程序集引用了具有以下特性的一个程序集中的类型：  
 `"MSCorLib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089"`  
 
 遗憾的是， ILDasm.exe 在本该使用术语"Culture"的地方使用了“Locale”。检查 DLL 程序集的 AssemblyDef 元数据表看到以下内容：
+
+```C#
+Assembly
+-------------------------------------------------------
+Token: 0x20000001
+Name : SomeClassLibrary
+Public Key :
+Hash Algorithm : 0x00008004
+Version: 3.0.0.0
+Major Version: 0x00000003
+Minor Version: 0x00000000
+Build Number: 0x00000000
+Revision Number: 0x00000000
+Locale: <null>
+Flags : [none] (00000000)
+```
+
+它等价于：
+`"SomeClassLibrary, Version=3.0.0.0, Culture=neutral, PublicKeyToken=null"`  
+
+之所以没有公钥标记，是由于 DLL 程序集没有用公钥/私钥对进行签名，这使它成为弱命名程序集。如果用 SN.exe 创建密钥文件，再用`/keyfile` 编译器开关进行编译，最终的程序集就是经过签名的。使用 ILDasm.exe 查看新程序集的元数据， AssemblyDef 记录项就会在 Public Key 字段之后显示相应的字节，表明它是强命名程序集。顺便说一句，AssemblyDef 的记录项总是存储完整公钥，而不是公钥标记，这是为了保证文件没有被篡改。本章后面将解释强命名程序集如何防篡改。
+
+## <a name="3_3">3.3 全局程序集缓存</a>
+
+知道如何创建强命名程序集之后，接着学习如何部署它，以及 CLR 如何利用信息来定位并加载程序集。
+
+由多个应用程序访问的程序集必须放到公认的目录，而且 CLR 检测到对程序集的引用时，必须知道检查该目录。这个公认位置就是**全局程序集缓存(Global Assembly Cache,GAC)**。GAC 的具体位置是一种实现细节，不同版本会有所变化。但是，一般能在以下目录发现它：
+`%SystemRoot%\Microsoft.NET\Assembly`
+
+GAC 目录是结构化的：其中包含许多子目录，子目录名称用算法生成。永远不要将程序集文件手动复制到 GAC 目录；相反，要用工具完成这项任务。工具知道 GAC 的内部结构，并知道如何生成正确的子目录名。
+
+开发和测试时在 GAC 中安装强命名程序集最常用的工具是 [GACUtil.exe](https://docs.microsoft.com/zh-cn/dotnet/framework/tools/gacutil-exe-gac-tool)。`C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8 Tools`如果直接运行，不添加任何命令行参数，就会自动显示用法：
+
+```C#
+Microsoft (R) .NET Global Assembly Cache Utility.  Version 4.0.30319.0
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+Usage: Gacutil <command> [ <options> ]
+Commands:
+  /i <assembly_path> [ /r <...> ] [ /f ]
+    Installs an assembly to the global assembly cache.  //将某个程序集安装到全局程序集缓存中
+
+  /il <assembly_path_list_file> [ /r <...> ] [ /f ]
+    Installs one or more assemblies to the global assembly cache. // 讲一个或多个程序集安装到全局程序集缓存中
+
+  /u <assembly_display_name> [ /r <...> ]
+    Uninstalls an assembly from the global assembly cache. // 将某个程序集从全局程序集缓存卸载
+
+  /ul <assembly_display_name_list_file> [ /r <...> ]
+    Uninstalls one or more assemblies from the global assembly cache. // 将一个或多个程序集从全局程序集缓存卸载
+
+  /l [ <assembly_name> ]
+    List the global assembly cache filtered by <assembly_name> // 列出通过 <assembly_name> 筛选出的全局程序集缓存
+
+  /lr [ <assembly_name> ]
+    List the global assembly cache with all traced references. // 列出全局程序集缓存以及所有跟踪引用
+
+  /cdl
+    Deletes the contents of the download cache  // 删除下载缓存的内容
+
+  /ldl
+    Lists the contents of the download cache   // 列出下载缓存的内容
+
+  /?
+    Displays a detailed help screen  // 显示详细帮助屏幕
+
+ Options:
+  /r <reference_scheme> <reference_id> <description>
+    Specifies a traced reference to install (/i, /il) or uninstall (/u, /ul). // 指定要安装 (/i, /il) 或卸载(/u, /ul) 的跟踪引用
+
+  /f
+    Forces reinstall of an assembly.  // 强制重新安装程序集
+
+  /nologo
+    Suppresses display of the logo banner  // 取消显示徽标版权标志
+
+  /silent
+    Suppresses display of all output    // 取消显示所有输出
+```
+
+使用 GACUtil.exe 的`/i` 开关将程序集安装到 GAC，`/u`开关从 GAC 卸载程序集。注意不能将弱命名程序集放到 GAC 。向 GACUtil.exe 传递弱命名程序集的文件名会报错：**“将程序集添加到缓存失败：尝试安装没有强名称的程序集。”**  **Failure adding assembly to the cache: Attempt to install an assembly without a strong name.**
+> 注意  GAC 默认只能由 Windows Administrator 用户组的成员操作。如果执行 GACUtil.exe 用户不是该组的成员， GACUtil.exe 将无法安装或卸载程序集。
+
+.NET Framework 重分发包不随带提供 GACUtil.exe 工具。如果应用程序含有需要部署到 GAC 的程序集，应该使用 Windows Installer(MSI)，因为 MSI 使用户机器上肯定会安装，又能将程序集安装到 GAC 的工具。
+> 重要提示 在GAC 中全局部署是对程序集进行注册的一种形式，虽然这个过程对 Windows 注册表没有半点影响。将程序集安装到 GAC 破坏了我们想要达到的一个基本目标，即：简单地安装、备份、还原、移动和卸载应用程序。所以，建议尽量进行私有而不是全局部署。
+
+为什么要在 GAC 中“注册”程序集？假定两家公司都生成了名为 OurLibrary 的程序集，两个程序集都由一个 OurLibrary.dll 文件构成。这两个文件显然不能存储到同一个目录，否则最后一个安装的会覆盖第一个，造成应用程序被破坏。相反，将程序集安装到 GAC ，就会在 `%SystemRoot%\Microsoft.NET\Assembly` 目录下创建专门的子目录，程序集文件会复制到其中一个子目录。
+
+一般没人去检查 GAC 的子目录，所以 GAC 的结构对你来说并不重要。只要使用的工具和 CLR 知道这个结构就可以了。
+
+## <a name="3_4">3.4 在生成的程序集中引用强命名程序集</a>
+
+你生成的任何程序集都包含对其他

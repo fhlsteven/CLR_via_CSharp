@@ -1,0 +1,6 @@
+D:\Projects\GitHub\CLR_via_CSharp\resources\SourceCodes\CLR_via_CSharp\bin\Debug\Ch01-1-SomeLibrary.dll
+D:\Projects\GitHub\CLR_via_CSharp\resources\SourceCodes\CLR_via_CSharp\bin\Debug\Ch01-1-SomeLibrary.pdb
+D:\Projects\GitHub\CLR_via_CSharp\resources\SourceCodes\CLR_via_CSharp\obj\Debug\Ch01-1-SomeLibrary.csprojAssemblyReference.cache
+D:\Projects\GitHub\CLR_via_CSharp\resources\SourceCodes\CLR_via_CSharp\obj\Debug\Ch01-1-SomeLibrary.csproj.CoreCompileInputs.cache
+D:\Projects\GitHub\CLR_via_CSharp\resources\SourceCodes\CLR_via_CSharp\obj\Debug\Ch01-1-SomeLibrary.dll
+D:\Projects\GitHub\CLR_via_CSharp\resources\SourceCodes\CLR_via_CSharp\obj\Debug\Ch01-1-SomeLibrary.pdb
