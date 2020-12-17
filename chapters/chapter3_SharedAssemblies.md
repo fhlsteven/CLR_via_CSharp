@@ -355,3 +355,97 @@ public sealed class Program {
 在上例中，CLR 发现 `System.Console` 在和调用者不同的程序集中实现。所以，CLR 必须查找那个程序集，加载包含程序集清单的 PE 文件。然后扫描清单，判断是哪个 PE 文件实现了类型。如果被引用的类型就在清单文件中，一切都很简单。如果类型在程序集的另一个文件中，CLR 必须加载那个文件，并扫描其元数据来定位类型。然后，CLR 创建它的内部数据结构来表示类型，JIT 编译器完成 `Main` 方法的编译。最后， `Main` 方法开始执行。图 3-2 演示了类型绑定过程。
 > 重要提示 严格意义上，刚才的例子并非百分之百正确。如果引用的不是.NET Framework 程序集定义的类型和方法，刚才的讨论没有任何问题。但是，.NET Framework程序集(MSCorLib.dll就是其中之一)和当前运行的 CLR 版本紧密绑定。引用 .NET Framework 程序集的任何程序集总是绑定到与 CLR 版本对应的那个版本(的 .NET Framework 程序集)。这就是所谓的“统一”(Unification)。之所以要“统一”，是因为所有.NET Framework 程序集都是针对一个特定版本的 CLR 来完成测试的。因此，“统一”代码结构(code stack)可确保应用程序正确工作。
 > 所以在前面的例子中，对 `System.Console`的`WriteLine` 方法的引用必然绑定到与当前 CLR 版本对应的 MSCorLib.dll 版本——无论程序集 AssemblyRef 元数据表引用哪个版本的 MSCorLib.dll。
+
+![3_2](../resources/images/3_2.png)  
+
+图 3-2 对于引用了方法或类型的 IL 代码， CLR 怎样通过元数据来定位定义了类型的程序集文件  
+
+还要注意，对于 CLR ，所有程序集都根据名称、版本、语言文化和公钥来识别。但 GAC 根据名称、版本、语言文化、公钥和 CPU 架构来识别。在 GAC 中搜索程序集时，CLR 判断应用程序当前在什么类型的进程中运行，是 32 位 x64(可能使用 WoW64技术)，64位 x64，还是 32 位 ARM 。然后，在 GAC 在中
+搜索程序集时，CLR 首先搜索程序集的 CPU 架构专用版本。如果没有找到符合要求的，就搜索不区分 CPU 的版本。
+
+本节描述的是 CLR 定位程序集的默认策略，但管理员或程序集发布者可能覆盖默认策略。接着两节将讨论如何更改 CLR 默认绑定策略。
+> 注意 CLR 提供了将类型(类、结构、枚举、接口或委托)从一个程序集移动到另一个程序集的功能。例如，.NET 3.5 的 `System.TimeZoneInfo` 类在 System.Core.dll 程序集中定义。但在 .NET 4.0 中，Microsoft 将这个类移动到了 MSCorLib.dll 程序集。将类型从一个程序集移动到另一个程序集，一般情况下会造成应用程序集“中断”。但 CLR 提供了名为 `System.Runtime.CompilerServices.TypeForwardedToAttribute` 的特性，可将它应用于原始程序集(比如 System.Core.dll)。要向该特性的构造器传递一个 `System.Type` 类型的参数，指出应用程序要使用的新类型(现在是在 MSCorLib.dll 中定义)。CLR 的绑定器(binder)会利用到这个信息。由于 `TypeForwardedToAttribute` 的构造器获取的是 `Type`，所以包含该特性的程序集*要依赖于*现在定义类型的程序集。
+> 为了使用这个功能，还要向新程序集中的类型应用名为 `System.Runtime.CompilerServices.TypeForwardedFromAttribute` 的特性，向该特性的构造传递一个字符串来指出定义类型的旧程序集的全名。该特性一般由工具、实用程序和序列化使用。由于 `TypeForwardedFromAttribute` 的构造器获取的是 `String`，所以包含该特性的程序集不依赖于过去定义类型的程序集。
+
+## <a name="3_9">3.9 高级管理控制(配置)</a>
+
+2.8 节“简单管理控制(配置)”简要讨论了管理员如何影响 CLR 搜索和绑定程序集的方式。那一节演示了如何将被引用程序集的文件移动到应用程序基目录下的一个子目录，以及 CLR 如何通过应用程序的 XML 配置文件来定位发生移动的文件。
+
+第 2 章只讨论了 `probing` 元素的 `privatePath` 属性，本节要讨论 XML 配置文件的其他元素。以下是一个示例 XML 配置文件：
+
+```xml
+<?xml version="1.0"?> 
+<configuration>
+  <runtime>
+    <assemblyBinding xmlns="urn:schemas-microsoft-com:asm.v1">
+      <probing privatePath="AuxFiles;bin\subdir" /> 
+      <dependentAssembly>
+        <assemblyIdentity name="SomeClassLibrary" publicKeyToken="32ab4ba45e0a69a1" culture="neutral"/>
+        <bindingRedirect oldVersion="1.0.0.0" newVersion="2.0.0.0" />
+        <codeBase version="2.0.0.0" href="http://www.Wintellect.com/SomeClassLibrary.dll" />
+      </dependentAssembly> 
+      <dependentAssembly>
+        <assemblyIdentity name="TypeLib" publicKeyToken="1f2e74e897abbcfe" culture="neutral"/>
+        <bindingRedirect oldVersion="3.0.0.0-3.5.0.0" newVersion="4.0.0.0" />
+        <publisherPolicy apply="no" /> 
+      </dependentAssembly>
+    </assemblyBinding>
+  </runtime>
+</configuration>
+```
+
+这个 XML 文件为 CLR 提供了丰富的信息。具体如下所示。
+
+* probing 元素
+  查找弱命名程序集时，检查应用程序基目录下的 AuxFiles 和 bin\subdir 子目录。对于强命名程序集， CLR 检查 GAC 或者由 `codeBase` 元素指定的 URL。只有在未指定 `codeBase` 元素时，CLR 才会在应用程序的私有路径中检查强命名程序集。
+* 第一个 dependentAssembly，assemblyIdentity 和 bindingRedirect 元素
+  查找由控制着公钥标记 32ab4ba45e0a69a1 的组织发布的、语言文化为中性的 SomeClassLibrary 程序集的 1.0.0.0 版本时，改为定位同一个程序集的 2.0.0.0 版本。
+* codeBase 元素
+  查找由控制着公钥标记 32ab4ba45e0a69a1 的组织发布的、语言文化为中性的 SomeClassLibrary 程序集的 2.0.0.0 版本时，尝试在以下 URL 处发现它：*www.Wintellect.com/SomeClassLibrary.dll*。虽然第 2 章没有特别指出，但 **codeBase** 元素也能用于弱命名程序集。如果是这样，程序集版本号会被忽略，而且根本就不应该在 XML **codeBase** 元素中写这个版本号。另外，**codeBase**定义的 URL 必须指向应用程序基目录下的一个子目录。
+* 第二个 dependentAssembly， assemblyIdentity 和 bindingRedirect 元素  
+  查找由控制着公钥标记 1f2e74e897abbcfe 的组织发布的、语言文化为中性的 TypeLib 程序集的 3.0.0.0 到 3.5.0.0 版本时(包含 3.0.0.0 和 3.5.0.0 在内)，改为定位同一程序集的 4.0.0.0 版本。
+* publisherPolicy 元素
+  如果生成 TypeLib 程序集的组织部署了发布者策略文件(详情在一节讲述)，CLR 应忽略该文件。
+
+编译方法时，CLR 判断它引用了哪些类型和成员。根据这些信息，“运行时”检查进行引用的程序集的 AssemblyRef 表，判断程序集生成时引用了哪些程序集。然后，CLR 在应用程序配置文件中检查程序集/版本，进行指定的版本号重定向操作。随后，CLR 查找新的、重定向的程序集/版本。
+
+如果 `publisherPolicy` 元素的 `apply` 特性设为 `yes`，或者该元素被省略，CLR 会在 GAC 中检查新的程序集/版本，并进行程序集发布者认为有必要的任何版本号重定向操作。随后，CLR 查找新的、重定向的程序集/版本。(下一节将更详细讨论发布者策略。) 最后，CLR 在机器的 Machine.config 文件中检查新的程序集/版本并进行指定的版本号重定向操作。
+
+到此为止，CLR 已知道了它应加载的程序集版本，并尝试从 GAC 中加载。如果程序集不在 GAC 中，也没有 `codeBase` 元素， CLR 会像第 2 章描述的那样探测程序集。如果执行最后一次重定向操作的配置文件同时包含 `codeBase` 元素， CLR 会尝试从 `codeBase` 元素指定的 URL 处加载程序集。
+
+利用这些配置文件，管理员可以实际地控制 CLR 加载的程序集。如果应用程序出现 bug，管理员可以和有问题的程序集的发布者取得联系。发布者将新程序集发送给管理员，让管理员安装。 CLR 默认不加载新程序集，因为已生成的程序集并没有引用新版本。不过，管理员可以修改应用程序的 XML 配置文件，指示 CLR 加载新程序集。
+
+如果管理员希望机器上的所有应用程序都使用新程序集，可以修改机器的 Machine.config 文件。这样每当应用程序引用旧程序集时，CLR 都自动加载新程序集。
+
+如果发现新程序集没有修复 bug，管理员可以从配置文件中删除 `bindingRedirect` 设置，应用程序会恢复如初。说了这么多，其实重点只有一个：系统允许使用和元数据所记录的不完全匹配的程序集版本。这种额外的灵活性非常有用。
+
+### 发布者策略控制
+
+在上一节的例子中，是由程序集发布者将程序集的新版本发送给管理员，后者安装程序集，并手动编辑应用程序或机器的 XML 配置文件。通常，发布者希望在修复了程序集的 bug 之后，采用一种容易的方式将新程序集打包并分发给所有用户。但是，发布者还需要一种方式告诉每个用户的 CLR 使用程序集新版本，而不是继续使用旧版本。当然，可以指示每个用户手动修改应用程序或机器的 XML 配置文件，但这相当不便，而且容易出错。因此，发布者需要一种方式创建策略信息。新程序集安装到用户机器上时，会安装这种策略信息。本节将描述程序集的发布者如何创建这种策略信息。
+
+假定你是程序集的发布者，刚刚修复了几个 bug，创建了程序集的新版本。打包要发送给所有用户的新程序集时，应同时创建一个 XML 配置文件。这个配置文件和以前讨论过的配置文件差不多。下面是用于 SomeClassLibrary.dll 程序集的示例文件(名为 SomeClassLibrary.config)：
+
+```xml
+<configuration> 
+  <runtime>
+    <assemblyBinding xmlns="urn:schemas-microsoft-com:asm.v1"> 
+      <dependentAssembly>
+        <assemblyIdentity name="SomeClassLibrary" publicKeyToken="32ab4ba45e0a69a1" culture="neutral"/>
+        <bindingRedirect oldVersion="1.0.0.0" newVersion="2.0.0.0" />
+        <codeBase version="2.0.0.0" href="http://www.Wintellect.com/SomeClassLibrary.dll"/>
+      </dependentAssembly> 
+    </assemblyBinding>
+  </runtime> 
+</configuration>
+```
+
+当然，发布者只能为自己创建的程序集设置策略。另外，发布者策略配置文件只能使用列出的这些元素：例如, `probing` 或 `publisherPolicy` 元素是不能使用的。
+
+该配置文件告诉 CLR 一旦发生对 SomeClassLibrary 程序集的 1.0.0.0 版本的引用，就自动加载 2.0.0.0 版本。现在，发布者就可以创建包含该发布者策略配置文件的程序集，像下面这样运行 AL.exe ：
+```cmd
+AL.exe /out:Policy.1.0.SomeClassLibrary.dll /version:1.0.0.0 
+/keyfile:MyCompany.snk /linkresource:SomeClassLibrary.config
+```
+下面是对 AL.exe 的命令行开关的解释。
+
+* `/out` 告诉 AL.exe 创建新 PE 文件，本例是 Policy.1.0.SomeClassLibrary.dll，其中除了一个清单什么都没有。程序集名称很重要。名称第一部分(Policy)告诉 CLR 这个发布者策略程序集适用于 major 和 minor 版本为 1.0 的任何版本的 SomeClassLibrary 程序集。发布者策略只能
