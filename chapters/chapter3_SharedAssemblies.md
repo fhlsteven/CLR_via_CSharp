@@ -237,6 +237,7 @@ GACUtil.exe 的 `/i` 开关方便开发人员在测试时使用。但如果是�
 ## <a name="3_4">3.4 在生成的程序集中引用强命名程序集</a>
 
 你生成的任何程序集都包含对其他强命名程序集的引用，这是因为 `System.Object` 在 MSCorLib.dll 中定义，后者就是强命名程序集。此外，程序集中还可引用由 Microsoft、第三方厂商或者你自己公司发布的其他强命名程序集。第 2 章介绍了如何使用 CSC.exe 的 `/reference` 编译器开关指定想引用的程序集文件名。如果文件名是完整路径， CSC.exe 会加载指定文件，并根据它的元数据生成程序集。如第 2 章所述，如果指定不含路径的文件名，CSC.exe 会尝试在以下目录查找程序集(按所列顺序)。
+
 1. 工作目录。
 2. CSC.exe 所在的目录，目录中还包含 CLR 的各种 DLL 文件。
 3. 使用 `/lib` 编译器开关指定的任何目录。
@@ -304,10 +305,53 @@ CSC.exe 编译器之所以不在 GAC 中查找引用的程序集，是因为你�
 ## <a name="3_8">3.8 “运行时”如何解析类型引用</a>
 
 第 2 章开头展示了以下代码：
+
 ```C#
 public sealed class Program {
-	public static void Main(){
-		System.Console.WriteLine("Hi");
-	}
+  public static void Main(){
+   System.Console.WriteLine("Hi");
+  }
 }
 ```
+
+编译这些代码并生成程序集(假定名为 Program.exe)。运行应用程序，CLR 会加载并初始化自身，读取程序集的 CLR 头，查找标识了应用程序入口方法(**Main**) 的 MethodDefToken，检索 MethodDef 元数据表找到方法的 IL 代码在文件中的偏移量，将 IL 代码 JIT 编译成本机代码(编译时会对代码进行验证以确保类型安全)，最后执行本机代码。下面就是 **Main** 方法的 IL 代码。要查看代码，请对程序集运行 ILDasm.exe 并选择“视图”|“显示字节”，双击树形视图的 **Main** 方法。
+
+```IL
+.method public hidebysig static void  Main() cil managed
+// SIG: 00 00 01
+{
+  .entrypoint
+  // Method begins at RVA 0x2050
+  // Code size       13 (0xd)
+  .maxstack  8
+  IL_0000:  /* 00   |                  */ nop
+  IL_0001:  /* 72   | (70)000001       */ ldstr      "Hi"
+  IL_0006:  /* 28   | (0A)000005       */ call       void [mscorlib]System.Console::WriteLine(string)
+  IL_000b:  /* 00   |                  */ nop
+  IL_000c:  /* 2A   |                  */ ret
+} // end of method Program::Main
+```
+
+对这些代码进行 JIT 编译，CLR 会检测所有类型和成员引用，加载它们的定义程序集(如果尚未加载)。上述 IL 代码包含对 `System.Console.WriteLine` 的引用。具体地说，IL `call` 指令引用了元数据 token 0A000003。该 token 标识 MemberRef 元数据表(表 0A)中的记录项3。CLR 检查该 MemberRef 记录项，发现它的字段引用了 TypeRef 表中的记录项(`System.Console` 类型)。按照 TypeRef 记录项， CLR 被引导至一个 AssemblyRef 记录项："mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089"。这时 CLR 就知道了它需要的是哪个程序集。接着， CLR 必须定位并加载该程序集。
+> 元数据token的详情请参加 2.4 节。——译注
+
+解析引用的类型时， CLR 可能在以下三个地方找到类型。
+
+* **相同文件**
+  编译时便能发现对相同文件中的类型的访问，这称为**早期绑定(early binding)**。类型直接从文件中加载，执行继续。
+  > 对应地，在运行时通过反射机制绑定到类型并调用方法，就称为晚期绑定(late binding)。 ——译注
+
+* **不同文件，相同程序集**  
+  “运行时”确保被引用的文件在当前程序集元数据的 FileDef 表中，检查加载程序集清单文件的目录，加载被引用的文件，检查哈希值以确保文件完整性。发现类型的成员，执行继续。
+
+* **不同文件，不同程序集**
+  如果引用的类型在其他程序集的文件中，“运行时”会加载被引用程序集的清单文件。如果需要的类型不在该文件中，就继续加载包含了类型的文件。发现类型的成员，执行继续。
+
+> 注意 ModuleDef，ModuleRef 和 FileDef 元数据表在引用文件时使用了文件名和扩展名名。但 AssemblyRef 元数据表只使用文件名，无扩展名。和程序集绑定时，系统通过探测目录来尝试定位文件，自动附加 .dll 和 exe 扩展名，详见 2.8 节“简单管理控制(配置)”。
+
+解析类型引用时有任何错误(找不到文件、文件无法加载、哈希值不匹配等)都会抛出相应异常。
+> 注意 可以向`System.AppDomain` 的 `AssemblyResolve`，`ReflectionOnlyAssemblyResolve`和`TypeResolve` 事件注册回调方法。在回调方法中执行解决绑定问题的代码，使应用程序不抛出异常而继续运行。
+
+在上例中，CLR 发现 `System.Console` 在和调用者不同的程序集中实现。所以，CLR 必须查找那个程序集，加载包含程序集清单的 PE 文件。然后扫描清单，判断是哪个 PE 文件实现了类型。如果被引用的类型就在清单文件中，一切都很简单。如果类型在程序集的另一个文件中，CLR 必须加载那个文件，并扫描其元数据来定位类型。然后，CLR 创建它的内部数据结构来表示类型，JIT 编译器完成 `Main` 方法的编译。最后， `Main` 方法开始执行。图 3-2 演示了类型绑定过程。
+> 重要提示 严格意义上，刚才的例子并非百分之百正确。如果引用的不是.NET Framework 程序集定义的类型和方法，刚才的讨论没有任何问题。但是，.NET Framework程序集(MSCorLib.dll就是其中之一)和当前运行的 CLR 版本紧密绑定。引用 .NET Framework 程序集的任何程序集总是绑定到与 CLR 版本对应的那个版本(的 .NET Framework 程序集)。这就是所谓的“统一”(Unification)。之所以要“统一”，是因为所有.NET Framework 程序集都是针对一个特定版本的 CLR 来完成测试的。因此，“统一”代码结构(code stack)可确保应用程序正确工作。
+> 所以在前面的例子中，对 `System.Console`的`WriteLine` 方法的引用必然绑定到与当前 CLR 版本对应的 MSCorLib.dll 版本——无论程序集 AssemblyRef 元数据表引用哪个版本的 MSCorLib.dll。
