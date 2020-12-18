@@ -442,10 +442,27 @@ public sealed class Program {
 当然，发布者只能为自己创建的程序集设置策略。另外，发布者策略配置文件只能使用列出的这些元素：例如, `probing` 或 `publisherPolicy` 元素是不能使用的。
 
 该配置文件告诉 CLR 一旦发生对 SomeClassLibrary 程序集的 1.0.0.0 版本的引用，就自动加载 2.0.0.0 版本。现在，发布者就可以创建包含该发布者策略配置文件的程序集，像下面这样运行 AL.exe ：
+
 ```cmd
 AL.exe /out:Policy.1.0.SomeClassLibrary.dll /version:1.0.0.0 
 /keyfile:MyCompany.snk /linkresource:SomeClassLibrary.config
 ```
+
 下面是对 AL.exe 的命令行开关的解释。
 
-* `/out` 告诉 AL.exe 创建新 PE 文件，本例是 Policy.1.0.SomeClassLibrary.dll，其中除了一个清单什么都没有。程序集名称很重要。名称第一部分(Policy)告诉 CLR 这个发布者策略程序集适用于 major 和 minor 版本为 1.0 的任何版本的 SomeClassLibrary 程序集。发布者策略只能
+* `/out` 告诉 AL.exe 创建新 PE 文件，本例是 Policy.1.0.SomeClassLibrary.dll，其中除了一个清单什么都没有。程序集名称很重要。名称第一部分(Policy)告诉 CLR 这个发布者策略程序集适用于 major 和 minor 版本为 1.0 的任何版本的 SomeClassLibrary 程序集。发布者策略只能和程序集的 major 和 minor 版本号关联；不能和 build 或 revision 号关联。名称第四部分(SomeClassLibrary)指出与发布者策略对应的程序集名称。名称第五部分(dll)是现在要生成的发布者策略程序集文件的扩展名。
+
+* `/version` 标识发布者策略程序集的版本；这个版本号与 SomeClassLibrary 程序集本身没有任何关系。看的出来，发布者策略程序集本身也有一套版本机制。例如，发布者今天创建一个发布者策略，将 SomeClassLibrary 的版本 1.0.0.0 重定向到版本 2.5.0.0。未来，发布者可能将 SomeClassLibrary 的版本 1.0.0.0 重定向到版本 2.5.0.0。CLR 根据 `/version` 开关指定的版本号来选择最新版本的发布者策略程序集。
+
+* `/keyfile` 告诉 AL.exe 使用发布者的“公钥/私钥对”对发布者策略程序集进行签名。这一对密钥还必须匹配所有版本的 SomeClassLibrary 程序集使用的密钥对。毕竟，只有这样，CLR 才知道 SomeClassLibrary 程序集和发布者策略文件由同一个发布者创建。
+
+* `/linkresource` 告诉 AL.exe 将 XML 配置文件作为程序集的一个单独的文件。最后的程序集由两个文件构成，两者必须随同新版本 SomeClassLibrary 程序集打包并部署到用户机器。顺便说一句，不能使用 AL.exe 的 `/embedresource` 开关将 XML 配置文件嵌入程序集文件，从而获得一个单文件程序集。因为 CLR 要求 XML 文件独立。
+
+一旦生成这个发布者策略程序集，就可随同新的 SomeClassLibrary.dll 程序集文件打包并部署到用户机器。发布者策略程序集必须安装到 GAC。 虽然 SomeClassLibrary 程序集也能安装到 GAC ，但并不是必须的 —— 它可以部署到应用程序基目录，也可部署到由 `codeBase` URL 标识的其他目录。
+> 重要提示 只有部署程序集更新或 Service Pack 时才应创建发布者策略程序集。执行应用程序的全新安装不应安装发布者策略程序集。
+
+关于发布者策略最后注意一点。假定发布者推出发布者策略程序集时，因为某种原因，新程序集引入的 bug 比它能修复的 bug 还要多，那么管理员可指示 CLR 忽略发布者策略程序集。这要求编辑应用程序的配置文件并添加以下 `publisherPolicy` 元素：
+`<publisherPolicy apply="no" />`
+
+该元素可作为应用程序配置文件的 `<assemblyBinding>` 元素的子元素使用，使其应用于所有程序集；也可作为应用程序配置文件的 `<dependantAssembly>` 元素的子元素使用，使其应用于特定程序集。当 CLR 处理应用程序配置文件时，就知道自己不应在 GAC 中检查发布者策略程序集。CLR 会沿用旧版本程序集。但要注意，CLR 仍会检查并应用 Machine.config 文件指定的任何策略。
+> 重要提示 创建发布者策略程序集，发布者相当于肯定了程序集不同版本的兼容性。如果新版本程序集不兼容某个老版本，就不应创建发布者策略程序集。通常，如果需要生成程序集的 bug 修复版本，就应该提供发布者策略程序集。作为发布者，应主动测试新版本程序集的向后兼容性。相反，如果要在程序集中增添新功能，就应该把它视为与之前版本没有关联的程序集，不要随带发布者策略程序集。另外，也不必测试这类程序集的向后兼容性。
