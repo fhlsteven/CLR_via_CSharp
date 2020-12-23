@@ -491,6 +491,238 @@ public static void Main() {
 }
 ```
 
-最后三行代码唯一的目的就是将 Point 的 x 字段从 **1** 变成 **2**。为此，首先要执行一次拆箱，再执行一次字段复制，再更改字段(在栈上)，最后执行一次装箱(在托管堆上创建全新的已装箱实例)。想必你已体会到了装箱和拆箱/复制对应用程序性能的影响。
+最后三行代码唯一的目的就是将 `Point` 的 `x` 字段从 **1** 变成 **2**。为此，首先要执行一次拆箱，再执行一次字段复制，再更改字段(在栈上)，最后执行一次装箱(在托管堆上创建全新的已装箱实例)。想必你已体会到了装箱和拆箱/复制对应用程序性能的影响。
 
 有的语言(比如 C++/CLI)允许在不复制字段的前提下对已装箱的值类型进行拆箱。拆箱返回已装箱对象中的未装箱部分的地址(忽略对象的“类型对象指针”和“同步块索引”这两个额外的成员)。接着可利用这个指针来操纵未装箱实例的字段(这些字段恰好在堆上的已装箱对象中)。例如，上述代码用 C++/CLI 来写，效率会高很多，因为可直接在已装箱 `Point` 实例中修改 `Point` 的 `x` 字段的值。这就避免了在堆上分配新对象和复制所有字段两次！
+
+>  重要提示 如果关心应用程序的性能，就应清楚编译器何时生成代码执行这些操作。遗憾的是，许多编译器都隐式生成代码来装箱对象，所以有时并不知道自己的代码会造成装箱。如果关心特定算法的性能，可用 ILDasm.exe 这样的工具查看方法的 IL 代码，观察 IL 指令 box 都在哪些地方出现。
+
+再来看几个装箱和拆箱的例子：
+
+```C#
+public static void Main() {
+  Int32 v = 5;       // 创建未装箱值类型变量
+  Object o = v;      // o 引用已装箱的、包含值 5 的 Int32
+  v = 123;           // 将未装箱的值修改成 123
+
+  Console.WriteLine(v + "," + (Int32)o);     // 显示 "123,5"
+}
+```
+
+能从上述代码中看出发生了多少次装箱吗？如果说 3 次，会不会觉得意外？让我们仔细分析一下代码，理解具体发生的事情。为了帮助理解，下面列出为这个 `Main` 方法生成的 IL 代码。我为这些代码加上了注释，方便你看清楚发生的每个操作：
+
+```C#
+.method public hidebysig static void  Main() cil managed
+{
+  .entrypoint
+  // 代码大小       45 (0x2d)
+  .maxstack  3
+  .locals init ([0] int32 v,
+           [1] object o)
+  // 将 5 加载到 v 中
+  IL_0000:  ldc.i4.5
+  IL_0001:  stloc.0
+
+  // 将 v 装箱，将引用指针存储到 o 中
+  IL_0002:  ldloc.0
+  IL_0003:  box        [mscorlib]System.Int32
+  IL_0008:  stloc.1
+
+  // 将 123 加载到 v 中
+  IL_0009:  ldc.i4.s   123
+  IL_000b:  stloc.0
+
+  // 对 v 装箱，将指针保留在栈上以进行 Concat (连接)操作
+  IL_000c:  ldloca.s   v
+  IL_000d:  box       [mscorlib]System.Int32
+
+  // 将字符串加载到栈上以执行 Concat 操作
+  IL_0012:  ldstr      ","
+
+  // 对 o 拆箱：获取一个指针，它指向栈上的 Int32 字段
+  IL_0017:  ldloc.1
+  IL_0018:  unbox.any  [mscorlib]System.Int32
+
+  // 对 Int32 装箱，将指针保留在栈上以进行 Concat 操作
+  IL_001d:  box       [mscorlib]System.Int32
+
+  // 调用 Concat
+  IL_0022:  call       string [mscorlib]System.String::Concat(object,
+                                                              object,
+                                                              object)
+
+  // 将从 Concat 返回的字符串传给 WriteLine
+  IL_0027:  call       void [mscorlib]System.Console::WriteLine(string)
+  
+  // 从 Main 返回，终止应用程序
+  IL_002c:  ret
+} // end of method App::Main 
+```
+
+首先在栈上创建一个 `Int32` 未装箱值类型实例( `v` )，将其初始化为 `5` 。再创建 `Object` 类型的变量( `o` )并初始化，让它指向 v 。但由于引用类型的变量始终指向堆中的对象，所以 C# 生成正确的 IL 代码对 `v` 进行装箱，将 `v` 的已装箱拷贝的地址存储到 `o` 中。接着，值 `123` 被放到未装箱值类型实例 `v` 中，但这个操作不会影响已装箱的 `Int32` ，后者的值依然为 `5`。
+
+接着调用 `WriteLine` 方法， `WriteLine` 要求获取一个 `String` 对象，但当前没有 `String` 对象。相反，现在有三个数据项：一个未装箱的 `Int32` 值类型实例( `v` )，一个 `String` (它是引用类型)，以及对已装箱 `Int32` 值类型实例的引用( `o` )，它要转型为未装箱的 `Int32` 。必须以某种方法合并这些数据项来创建一个 `String` 。
+
+为了创建一个 `String` ，C# 编译器生成代码来调用 `String` 的静态方法 `Concat` 。 该方法有几个重载版本，所有版本执行的操作都一样，只是参数的数量不同。由于需要连接三个数据项来创建字符串，所以编译器选择 `Concat` 方法的以下版本：
+
+```C#
+public static String Concat(Object arg0, Object arg1, Object arg2);
+```
+
+为第一个参数 `arg0` 传递的是 `v`。但 `v` 是未装箱的值参数，而 `arg0` 是 `Object`，所以必须对 `v` 进行装箱，并将已装箱的 `v` 的地址传给 `arg0` 。 对于 `arg1` 参数，字符串`“,”`作为 `String` 对象引用传递。对于 `arg2` 参数， `o` (一个 `Object` 引用)会转型为 `Int32` 。这要求执行拆箱(但不紧接着执行复制)，从而获取包含在已装箱 `Int32` 中的未装箱 `Int32` 的地址。这个未装箱的 `Int32` 实例必须再次装箱，并将新的已装箱实例的内存地址传给 `Concat` 的 `arg2` 参数。
+
+`Concat` 方法调用指定的每个对象的 `ToString` 方法，将每个对象的字符串形式连接起来。从 `Concat` 返回的 `String` 对象传给 `WriteLine` 方法以显示最终结果。
+
+应该指出，如果像下面这样写 `WriteLine` 调用，生成的 IL 代码将具有更高的执行效率：
+
+```c#
+Console.WriteLine(v + "," + o);     // 显示 "123,5"
+```
+
+这和前面的版本几乎完全一致，只是移除了变量 `o` 之前的( `Int32` )强制转型。之所以效率更高，是因为 `o` 已经是指向一个 `Object` 的引用类型，它的地址可直接传给 `Concat` 方法。所以，移除强制转型避免了两次操作：一次拆箱和一次装箱。不妨重新生成应用程序，观察 IL 代码来体会避免的额外操作：
+
+```C#
+.method public hidebysig static void  Main() cil managed
+{
+  .entrypoint
+  // 代码大小       35 (0x23)
+  .maxstack  3
+  .locals init ([0] int32 v,
+           [1] object o)
+  // 将 5 加载到 v 中
+  IL_0000:  ldc.i4.5
+  IL_0001:  stloc.0
+
+  // 将 v 装箱，将引用指针存储到 o 中
+  IL_0002:  ldloc.0
+  IL_0003:  box        [mscorlib]System.Int32
+  IL_0008:  stloc.1
+
+  // 将 123 加载到 v 中
+  IL_0009:  ldc.i4.s   123
+  IL_000b:  stloc.0
+
+  // 对 v 装箱，将指针保留在栈上以进行 Concat (连接)操作
+  IL_000c:  ldloca.s   v
+  IL_000d:  box       [mscorlib]System.Int32
+
+  // 将字符串加载到栈上以执行 Concat 操作
+  IL_0012:  ldstr      ","
+
+  // 将已装箱 Int32 的地址加载到栈上以执行 Concat 操作
+  IL_0017:  ldloc.1
+
+  // 调用 Concat
+  IL_0018:  call       string [mscorlib]System.String::Concat(object,
+                                                              object,
+                                                              object)
+
+  // 将从 Concat 返回的字符串传给 WriteLine
+  IL_001d:  call       void [mscorlib]System.Console::WriteLine(string)
+  
+  // 从 Main 返回，终止应用程序
+  IL_0022:  ret
+} // end of method App::Main 
+```
+
+简单对比一下两个版本的 `Main` 方法的 IL 代码，会发现没有( `Int32` )转型的版本比有转型的版本小了 10 字节。第一个版本额外的拆箱/装箱步骤显然会生成更多的代码。更大的问题是，额外的装箱步骤会从托管堆中分配一个额外的对象，将来必须对其进行垃圾回收。这两个版本的结果一样，速度上的差别也并不明显。但是，假如在循环中发生额外的、不必要的装箱操作，就会严重影响应用程序的性能和内存消耗。
+
+甚至可以这样调用 `WriteLine` ，进一步提升上述代码的性能：
+
+```C#
+ Console.WriteLine(v.ToString() + "," + (Int32)o);     // 显示 "123,5"
+```
+
+这会为未装箱的值类型实例 `v` 调用 `ToString` 方法，它返回一个 `String` 。 `String` 对象已经是引用类型，所以能直接传给 `Concat` 方法，不需要任何装箱操作。
+
+下面是演示装箱和拆箱的另一个例子：
+
+```C#
+public static void Main() {
+    Int32 v = 5;              // 创建未装箱的值类型变量
+    Object o = v;             // o 引用 v 的已装箱版本
+
+    v = 123;                  // 将未装箱的值类型修改成 123
+    Console.WriteLine(v);     // 显示 “123”
+    v = (Int32)o;             // 拆箱并将 o 复制到 v
+    Console.WriteLine(v);     // 显示 “5”
+}
+```
+
+上述代码发生了多少次装箱？答案是一次。之所以只发生一次装箱，是因为 `System.Console` 类已定义了获取单个 `Int32` 参数的 `WriteLine` 方法：
+
+```C#
+public static void WriteLine(Int32 value);
+```
+
+在前面对 `WriteLine` 的两次调用中，变量 `v` ( `Int32` 未装箱值类型实例)以传值方式传给方法。虽然 `WriteLine` 方法也许会在它自己内部对 `Int32` 装箱，但这已经不在我们的控制范围之内了。最重要的是，我们已尽可能地在*自己*的代码中减少了装箱。
+
+仔细研究一下 FCL，会发现许多方法都针对不同的值类型参数进行了重载。例如， `System.Console` 类型提供了 `WriteLine` 方法的几个重载版本：
+
+```C#
+public static void WriteLine(Boolean);
+public static void WriteLine(Char);
+public static void WriteLine(Char[]);
+public static void WriteLine(Int32);
+public static void WriteLine(UInt32);
+public static void WriteLine(Int64);
+public static void WriteLine(UInt64);
+public static void WriteLine(Single);
+public static void WriteLine(Double);
+public static void WriteLine(Decimal);
+public static void WriteLine(Object);
+public static void WriteLine(String);
+```
+
+以下几个方法也有一组类似的重载版本：`System.Console` 的 `Write` 方法， `System.IO.BinaryWriter` 的 `Write` 方法， `System.IO.TextWriter` 的 `Write` 和 `WriteLine` 方法， `System.Runtime.Serialization.SerializationInfo` 的 `AddValue` 方法， `System.Text.StringBuilder` 的 `Append` 和 `Insert` 方法。大多数方法进行重载唯一的目的就是减少常用类型的装箱次数。
+
+但这些 FCL 类的方法不可能接受你自己定义的值类型。另外，即使是 FCL 中定义好的值类型，这些方法也可能没有提供对应的重载版本。调用方法并传递值类型时，如果不存在与值类型对应的重载版本，那么调用的肯定是获取一个 `Object` 参数的重载版本。将值类型实例作为 `Object` 传递会造成装箱，从而对性能造成不利影响。定义自己的类时，可将类中的方法定义为泛型(通过类型约束将类型参数限制为值类型)。这样方法就可获取任何值类型而不必装箱。泛型主题将在第 12 章讨论。
+
+关于装箱最后注意一点：如果知道自己的代码会造成编译器反复对一个值类型装箱，请改成用手动方式对值类型进行装箱。这样代码会变得更小、更快。下面是一个例子：
+
+```C#
+using System;
+
+public sealed class Program {
+  public static void Main() {
+    Int32 v = 5;      // 创建未装箱的值类型变量
+
+  #if INEFFICIENT
+    // 编译下面这一行， v 被装箱 3 次，浪费时间和内存
+    Console.WriteLine("{0}, {1}, {2}", v, v, v);
+  #else
+    // 下面的代码结果一样，但无论执行速度，还是内存利用，都比前面的代码更胜一筹
+    Object o = v;     // 对 v 进行手动装箱(仅 1 次)
+
+    // 编译下面这一行不发生装箱
+    Console.WriteLine("{0}, {1}, {2}", o, o, o);
+  #endif
+  }
+}
+```
+
+在定义了 `INEFFICIENT` 符号的前提下编译，编译器会生成代码对 `v` 装箱 3 次，造成在堆上分配 3 个对象！这太浪费了，因为每个对象都是完全相同的内容：**5**。在没有定义 `INEFFICIENT` 符号的前提下编译， `v` 只装箱一次，所以只在堆上分配一个对象。随后，在对 `Console.WriteLine` 方法的调用中，对同一个已装箱对象的引用被传递 3 次。第二个版本执行起来快得多，在堆上分配的内存也要少得多。
+
+通过这些例子，很容易判断在什么时候一个值类型的实例需要装箱。简单地说，要获取对值类型实例的引用，实例就必须装箱。将值类型实例传给需要获取引用类型的方法，就会发生这种情况。但这并不是要对值类型实例装箱的唯一情况。
+
+前面说过，未装箱值类型比引用类型更“轻”。这要归结于以下两个原因。
+
+* 不在托管堆上分配。
+* 没有堆上的每个对象都有的额外成员：“类型对象指针” 和 “同步块索引”。
+
+由于未装箱值类型没有同步块索引，所以不能使用 `System.Threading.Monitor` 类型的方法(或者 C# `lock` 语句)让多个线程同步对实例的访问。
+
+虽然未装箱值类型没有类型对象指针，但仍可调用由类型继承或重写的虚方法(比如 `Equals`，`GetHashCode` 或者 `ToString`)。如果值类型重写了其中任何虚方法，那么 CLR 可以非虚地调用该方法，因为值类型隐式密封，不可能有类型从它们派生，而且调用虚方法的值类型实例没有装箱。然而，如果重写的虚方法要调用方法在基类中的实现，那么在调用基类的实现时，值类型实例会装箱，以便能够通过 `this` 指针将对一个堆对象的引用传给基方法。
+
+但在调用非虚的、继承的方法时(比如 `GetType` 或 `MemberwiseClone`)，无论如何都要对值类型进行装箱。因为这些方法由 `System.Object` 定义，要求 `this` 实参是指向堆对象的指针。
+
+此外，将值类型的未装箱实例转型为类型的某个接口时要对实例进行装箱。这是因为接口变量必须包含对堆对象的引用(接口主题将在第 13 章“接口”中讨论)。以下代码对此进行了演示：
+
+```C#
+
+```
+
+上述代码演示了涉及装箱和拆箱的几种情形。
+
+1. 调用 `ToString`
+  调用 `ToString` 时 `p1` 不必装箱。表面看 `p1` 似乎必须装箱，因为 `ToString` 是从基类型 `System.ValueType` 继承的虚方法。通常`````
