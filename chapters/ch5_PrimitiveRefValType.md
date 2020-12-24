@@ -380,7 +380,7 @@ internal struct SomeValType {
 
 ## <a name="5_3">5.3 值类型的装箱和拆箱</a>
 
-值类型比引用类型”轻“，原因是它们不作为对象在托管堆中分配，不被垃圾回收，也不通过指针进行引用。但许多时候都需要获取对值类型实例的引用。例如，假定要创建 `ArrayList` (`System.Collections` 命名空间中定义的一个类型)对象来容纳一组 `Point` 结构，代码如下：
+值类型比引用类型“轻”，原因是它们不作为对象在托管堆中分配，不被垃圾回收，也不通过指针进行引用。但许多时候都需要获取对值类型实例的引用。例如，假定要创建 `ArrayList` (`System.Collections` 命名空间中定义的一个类型)对象来容纳一组 `Point` 结构，代码如下：
 
 ```C#
 // 声明值类型
@@ -495,7 +495,7 @@ public static void Main() {
 
 有的语言(比如 C++/CLI)允许在不复制字段的前提下对已装箱的值类型进行拆箱。拆箱返回已装箱对象中的未装箱部分的地址(忽略对象的“类型对象指针”和“同步块索引”这两个额外的成员)。接着可利用这个指针来操纵未装箱实例的字段(这些字段恰好在堆上的已装箱对象中)。例如，上述代码用 C++/CLI 来写，效率会高很多，因为可直接在已装箱 `Point` 实例中修改 `Point` 的 `x` 字段的值。这就避免了在堆上分配新对象和复制所有字段两次！
 
->  重要提示 如果关心应用程序的性能，就应清楚编译器何时生成代码执行这些操作。遗憾的是，许多编译器都隐式生成代码来装箱对象，所以有时并不知道自己的代码会造成装箱。如果关心特定算法的性能，可用 ILDasm.exe 这样的工具查看方法的 IL 代码，观察 IL 指令 box 都在哪些地方出现。
+> 重要提示 如果关心应用程序的性能，就应清楚编译器何时生成代码执行这些操作。遗憾的是，许多编译器都隐式生成代码来装箱对象，所以有时并不知道自己的代码会造成装箱。如果关心特定算法的性能，可用 ILDasm.exe 这样的工具查看方法的 IL 代码，观察 IL 指令 box 都在哪些地方出现。
 
 再来看几个装箱和拆箱的例子：
 
@@ -719,10 +719,149 @@ public sealed class Program {
 此外，将值类型的未装箱实例转型为类型的某个接口时要对实例进行装箱。这是因为接口变量必须包含对堆对象的引用(接口主题将在第 13 章“接口”中讨论)。以下代码对此进行了演示：
 
 ```C#
+using System;
+
+internal struct Point : IComparable {
+    private Int32 m_x, m_y;
+    
+    // 构造器负责初始化字段
+    public Point(Int32 x, Int32 y)
+    {
+        m_x = x;
+        m_y = y;
+    }
+    
+    // 重写从 System.ValueType 继承的 ToString 方法
+    public override string ToString()
+    {
+        // 将 point 作为字符创返回。注意：调用 ToString 以避免装箱
+        return String.Format("({0}, {1})", m_x.ToString(), m_y.ToString());
+    }
+     
+    // 实现类型安全的 CompareTo 方法
+    public Int32 CompareTo(Point other)
+    {
+        // 利用勾股定理计算哪个 point 距离原点 (0, 0) 更远
+        return Math.Sign(Math.Sqrt(m_x * m_x + m_y * m_y) - Math.Sqrt(other.m_x * other.m_x + other.m_y * other.m_y));
+    }
+
+    // 实现 IComparable 的 CompareTo 方法
+    public Int32 CompareTo(Object o) {
+        if(GetType() != o.GetType()) {
+            throw new ArgumentException("o is not a Point");
+        }
+        // 调用类型安全的 CompareTo 方法
+        return CompareTo((Point)o);
+    }
+}
+
+public static class Program
+{
+    public static void Main()
+    {
+        // 在栈上闯将两个 Point 实例
+        Point p1 = new Point(10, 10);
+        Point p2 = new Point(20, 20);
+
+        // 调用 ToString (虚方法)不装箱 p1
+        Console.WriteLine(p1.ToString());      // 显示 "(10, 10)"
+
+        // 调用 GetType (非虚方法)时，要对 p1 进行装箱
+        Console.WriteLine(p1.GetType());       // 显示 "Point"
+
+        // 调用 CompareTo 不装箱 p1 
+        // 由于调用的是 CompareTo(Point) ，所以 p2 不装箱
+        Console.WriteLine(p1.CompareTo(p2));   // 显示 "-1"
+
+        // p1 要装箱，引用放到 c 中
+        IComparable c = p1;
+        Console.WriteLine(c.GetType());        // 显示 "Point"
+
+        // 调用 CompareTo 不装箱 p1
+        // 由于向 CompareTo 传递的不是 Point 变量，
+        // 所以调用的是 CompareTo(Object) ，它要求获取对已装箱 Point 的引用
+        // c 不装箱是因为它本来就引用已装箱 Point
+        Console.WriteLine(p1.CompareTo(c));    // 显示 "0"
+
+        // c 不装箱，因为它本来就引用已装箱 Point
+        // p2 要装箱，因为调用的是 CompareTo(Object)
+        Console.WriteLine(c.CompareTo(p2));    // 显示 "-1"
+
+        // 对 c 拆箱，字段复制到 p2 中
+        p2 = (Point) c;
+        
+        // 证明字段已复制到 p2 中
+        Console.WriteLine(p2.ToString());      // 显示 "(10, 10)"
+    }
+}
 
 ```
 
 上述代码演示了涉及装箱和拆箱的几种情形。
 
 1. 调用 `ToString`
-  调用 `ToString` 时 `p1` 不必装箱。表面看 `p1` 似乎必须装箱，因为 `ToString` 是从基类型 `System.ValueType` 继承的虚方法。通常`````
+  调用 `ToString` 时 `p1` 不必装箱。表面看 `p1` 似乎必须装箱，因为 `ToString` 是从基类型 `System.ValueType` 继承的虚方法。通常，为了调用虚方法，CLR 需要判断对象的类型来定位类型的方法表。由于 `p1` 是未装箱的值类型，所以不存在“类型对象指针”。但 JIT 编译器发现 `Point` 重写了 `ToString` 方法，所以会生成代码来直接(非虚地)调用 `ToString` 方法，而不必进行任何装箱操作。编译器知道这里不存在多态性问题，因为 `Point` 是值类型，没有类型能从它派生以提供虚方法的另一个实现。但假如 `Point` 的 `ToString` 方法在内部调用 `base.ToString()` ，那么在调用 `System.ValueType` 的 `ToString` 方法时，值类型的实例会被装箱。
+
+2. 调用`GetType`
+  调用非虚方法 `GetType` 时 `p1` 必须装箱。`Point` 的 `GetType` 方法是从 `System.Object` 继承的。所以，为了调用 `GetType` ，CLR 必须使用指向类型对象的指针，而这个指针只能通过装箱 `p1` 来获得。
+
+3. 调用 `CompareTo` (第一次)
+   第一次调用 `CompareTo` 时 `p1` 不必装箱，因为 `Point` 实现了 `CompareTo` 方法，编译器能直接调用它。注意向 `CompareTo` 传递的是一个 `Point` 变量(`p2`)，所以编译器调用的是获取一个 `Point` 参数的 `CompareTo` 重载版本。这意味着 `p2` 以传值方式传给 `CompareTo`，无需装箱。
+
+4. 转型为 `IComparable`
+   `p1`转型为接口类型的变量 `c` 时必须装箱，因为接口被定义为引用类型。装箱 `p1` 后，指向已装箱对象的指针存储到变量 `c` 中。后面对 `GetType` 的调用证明 `c` 确实引用堆上的已装箱 `Point`。
+
+5. 调用 `CompareTo` (第二次)
+   第二次调用 `CompareTo` 时 `p1` 不必装箱，因为 `Point` 实现了 `CompareTo` 方法，编译器能直接调用。注意向 `CompareTo` 传递的是 `IComparable` 类型的变量 `c` ，所以编译器调用的是获取一个 `Object` 参数的 `CompareTo` 重载版本。这意味着传递的实参必须是指针，必须引用堆上一个对象。幸好， `c` 确实引用一个已装箱 `Point`， 所以 `c` 中的内存地址直接传给 `CompareTo` ，无需额外装箱。
+
+6. 调用 `CompareTo` (第三次)
+   第三次调用 `CompareTo` 时， `c` 本来就引用堆上的已装箱 `Point` 对象，所以不装箱。由于 `c` 是 `IComparable` 接口类型，所以只能调用接口的获取一个 `Object` 参数的 `CompareTo` 方法。这意味着传递的实参必须是引用了堆上对象的指针。所以 `p2` 要装箱，指向这个已装箱对象的指针将传给 `CompareTo`。
+
+7. 转型为`Point`
+   将 `c` 转型为 `Point` 时， `c` 引用的堆上对象被拆箱，其字段从堆复制到 `p2`。`p2` 是栈上的 `Point` 类型实例。
+
+我知道，对于引用类型、值类型和装箱的所有这些讨论很容易让人产生挫败感。但是，任何 .NET Framework 开发人员只有在切实了解了这些概念之后，才能保障自己的长期成功。相信我，只有深刻理解了之后，才能更快、更轻松地构建高效率的应用程序。
+
+### 5.3.1 使用接口更改已装箱值类型中的字段(以及为什么不应该这样做)
+
+下面通过一些例子来验证自己对值类型、装箱和拆箱的理解程度。请研究以下代码，判断它会在控制台上显示什么：
+
+```C#
+using System;
+
+// Point 是值类型
+internal struct Point {
+    private Int32 m_x, m_y;
+
+    public Point(Int32 x, Int32 y) {
+        m_x = x;
+        m_y = y;
+    }
+    public void Change(Int32 x, Int32 y) {
+        m_x = x; m_y = y;
+    }
+
+    public override string ToString() {
+        return String.Format("({0}, {1})", m_x.ToString(), m_y.ToString());
+    }
+}
+
+public sealed class Program {
+    public static void Main() {
+        Point p = new Point(1, 1);
+
+        Console.WriteLine(p);
+
+        p.Change(2, 2);
+        Console.WriteLine(p);
+
+        Object o = p;
+        Console.WriteLine(o);
+
+        ((Point)o).Change(3, 3);
+        Console.WriteLine(o);
+    }
+}
+```
+
+程序其实很简单。 `Main` 在栈上创建 `Point` 值类型的实例(`p`)，将它的 `m_x` 和 `m_y` 字段设为 `1` 。然后，第一次调用 `WriteLine` 之前 `p` 要装箱。 `WriteLine` 在已装箱 `Point` 上调用 `ToString` ，并像预期的那样显示 `(1, 1)`。然后用 `p` 调用 `Change` 方法，该方法将 `p` 在栈上的 `m_x` 和 `m_y` 字段值都更改为 `2` 。第二次调用 `WriteLine` 时，再次对 `p` 进行装箱，像预料之中的那样显示 `(2, 2)`。
