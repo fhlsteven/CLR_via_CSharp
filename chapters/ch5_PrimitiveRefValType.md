@@ -865,3 +865,167 @@ public sealed class Program {
 ```
 
 程序其实很简单。 `Main` 在栈上创建 `Point` 值类型的实例(`p`)，将它的 `m_x` 和 `m_y` 字段设为 `1` 。然后，第一次调用 `WriteLine` 之前 `p` 要装箱。 `WriteLine` 在已装箱 `Point` 上调用 `ToString` ，并像预期的那样显示 `(1, 1)`。然后用 `p` 调用 `Change` 方法，该方法将 `p` 在栈上的 `m_x` 和 `m_y` 字段值都更改为 `2` 。第二次调用 `WriteLine` 时，再次对 `p` 进行装箱，像预料之中的那样显示 `(2, 2)`。
+
+现在， `p` 进行第 3 次装箱，`o` 引用已装箱的 `Point` 对象。第 3 次调用 `WriteLine` 再次显示 `(2, 2)`， 这同样是预料之中的。最后，我们希望调用 `Change` 方法来更新已装箱的 `Point` 对象中的字段。然而，`Object` (变量 `o` 的类型)对 `Change` 方法一无所知，所以首先必须将 `o` 转型为 `Point` 。将 `o` 转型为 `Point` 要求对 `o` 进行拆箱，并将已装箱 `Point` 中的字段复制到线程栈上的一个临时 `Point` 中！这个临时 `Point` 的 `m_x` 和 `m_y` 字段会变成 `3`和`3`，但已装箱的 `Point` 不受这个 `Change` 调用的影响。第四次调用 `WriteLine` 方法，会再次显示 `(2, 2)`。这是许多开发人员预料不到的。
+
+有的语言(比如 C++/CLI) 允许更改已装箱值类型中的字段，但 C# 不允许。不过，可以用接口欺骗 C#，让它允许这个操作。下面是上例的修改版本：
+
+```C#
+using System;
+
+// 接口定义了 Change 方法
+internal interface IChangeBoxedPoint {
+    void Change(Int32 x, Int32 y);
+}
+
+// Point 是值类型
+internal struct Point : IChangeBoxedPoint {
+    private Int32 m_x, m_y;
+
+    public Point(Int32 x, Int32 y) {
+        m_x = x;
+        m_y = y;
+    }
+
+    public void Change(int x, int y) {
+        m_x = x; m_y = y;
+    }
+
+    public override string ToString() {
+        return String.Format("({0}, {1})", m_x.ToString(), m_y.ToString());
+    }
+}
+
+public sealed class Program {
+    public static void Main() {
+        Point p = new Point(1, 1);
+
+        Console.WriteLine(p);
+
+        p.Change(2, 2);        
+        Console.WriteLine(p);
+
+        Object o = p;
+        Console.WriteLine(o);
+
+        ((Point)o).Change(3, 3);  
+        Console.WriteLine(o);
+
+        // 对 p 进行装箱，更改已装箱的对象，然后丢弃它
+        ((IChangeBoxedPoint)p).Change(4, 4);
+        Console.WriteLine(p);
+
+        // 更改已装箱的对象，并显示它
+        ((IChangeBoxedPoint)o).Change(5, 5);
+        Console.WriteLine(o);
+    }
+}
+```
+
+上述代码和上一个版本几乎完全一致，主要区别是 `Change` 方法由 `IChangeBoxedPoint` 接口定义， `Point` 类型现在实现了该接口。 `Main` 中的前 4 个 `WriteLine` 调用和前面的例子相同，生成的结果也一样(这是我们预期的)。然而， `Main` 最后新增了两个例子。
+
+在第一个例子中，未装箱的 `Point p` 转型为一个 `IChangeBoxedPoint`。这个转型造成对 `p` 中的值进行装箱。然后在已装箱值上调用 `Change` ，这确实会将其 `m_x` 和 `m_y` 字段分别变成 `4`和`4`。但在 `Change` 返回之后，已装箱对象立即准备好进行垃圾回收。所以，对 `WriteLine` 的第 5 个调用会显示 `(2, 2)`。许多开发人员预期的并不是这个结果。
+
+在最后一个例子中， `o` 引用的已装箱 `Point` 转型为一个 `IChangeBoxedPoint`。这不需要装箱，因为 `o` 本来就是已装箱 `Point`。然后调用 `Change`，它能正确修改已装箱 `Point` 的 `m_x` 和 `m_y` 字段。接口方法 `Change` 使我能够更已装箱 `Point` 对象中的字段！现在调用`WriteLine` ，会像预期的那样显示`(5,5)`。本例旨在演示接口方法如何修改已装修值类型中的字段。在 C# 中，不用接口方法便无法做到。
+
+> 重要提示 本章前面提到，值类型应该“不可变”(immutable)。也就是说，我们不应该定义任何会修改实例字段的成员。事实上，我建议将值类型的字段都标记为 `readonly`。这样，一旦不留神写一个视图更改字段的方法，编译时就会报错。前面的例子清楚揭示了我们为什么应该这样做。假如方法试图修改值类型的实例字段，调用这个方法就会产生非预期的行为。构造好值类型后，如果不调用任何会修改其状态的方法(或者如果根本不存在这样的方法)，就用不着操心什么时候发生装箱和拆箱/字段复制。如果值类型不可变，简单复制相同的状态就可以了(不用担心有方法会修改这些状态)，代码的任何行为都在你的掌控之中。
+
+> 有许多开发人员审阅了本书内容。在阅读我的部分示例代码之后(比如前面的代码)，他们告诉我以后再也不敢使用值类型了。我必须声明，值类型的这些玄妙之处着实花了我好几天功夫进行调试，痛定思痛之余，我必须在之里着重强调，提醒大家注意，希望大家记住我描述的问题。这样，当代码真正出现这些问题的时候，我们就能够做到心中有数。虽然如此，但也不要因噎废食而惧怕值类型。它们很有用，有自己的适用场景。毕竟，程序偶尔还是需要 `Int32` 的。只是要注意，值类型和引用类型的行为会因为使用方式的不同而有明显差异。事实上，前例将 `Point` 声明为 `class` 而不是 `struct`，即可获得令人满意的结果。最后还要告诉你一个好消息，FCL 的核心值类型(`Byte`，`Int32`，`UInt32`，`Int64`，`UInt64`，`Single`, `Double` ,`Decimal`,`BigInteger`,`Complex` 以及所有枚举)都是“不可变”的，所以在使用这些类型时，不会发生任何稀奇古怪的事情。
+
+### 5.3.2 对象相等性和同一性
+
+开发人员经常写代码比较对象。例如，有时要将对象放到集合，写代码对集合中的对象排序、搜索或比较。本节将讨论相等性和同一性，还将讨论如何定义正确实现了对象相等性的类型。
+
+`System.Object` 类型提供了名为 `Equals` 的虚方法，作用是在两个对象包含相同值的前提下返回`true`。`Object`的`Equals`方法是像下面这样实现的：
+
+```C#
+public class Object {
+    public virtual Boolean Equals(Object obj) {
+        // 如果两个引用指向同一个对象，它们肯定包含相同的值
+        if (this == obj) return true;
+
+        // 假定对象不包含相同的值
+        return false;
+    }
+}
+```
+
+乍一看，这似乎就是 `Equals` 的合理实现：假如 `this` 和`obj`实参引用同一个对象，就返回`true`。似乎合理是因为 `Equals` 知道对象肯定包含和它自身一样的值。但假如实参引用不同对象，`Equals` 就不肯定对象是否包含相同的值，所以返回 `false`。换言之，对于 `Object`的`Equals`方法的默认实现，它实现的实际是**同一性**(identity)，而非**相等性**(equality)。
+
+遗憾的是，`Object`的`Equals`方法的默认实现并不合理，而且永远都不应该像这样实现。研究一下类的继承层次结构，并思考如何正确重写`Equals`方法，马上会发现问题出在哪里。下面展示了`Equals`方法应该如何正确地实现。
+
+1. 如果`obj`实参为`null`，就返回`false`，因为调用非静态`Equals`方法时，`this`所标识的当前对象显然不为`null`。
+
+2. 如果`this`和`obj`实参引用同一个对象，就返回`true`。在比较包含大量字段的对象时，这一步有助于提升性能。
+
+3. 如果`this`和`obj`实参引用不同类型的对象，就返回`false`。一个`String`对象显然不等于一个`FileStream`对象。
+
+4. 针对类型定义的每个实例字段，将`this`对象中的值与`obj`对象中的值进行比较。任何字段不相等，就返回`false`。
+
+5. 调用基类的`Equals`方法来比较它定义的任何字段。如果基类的`Equals`方法返回`false`，就返回`false`；否则返回`true`。
+
+所以，Microsoft 本应像下面这样实现 `Object` 的 `Equals`方法：
+
+```C#
+public class Object {
+    public virtual Boolean Equals(Object obj) {
+        // 要比较的对象不能为 null
+        if (obj == null) return false;
+
+        // 如果对象属于不同的类型，则肯定不相等
+        if (this.GetType() != obj.GetType()) return false;
+
+        // 如果对象属于相同的类型，那么在它们的所有字段都匹配的前提下返回 true
+        // 由于 System.Object 没有定义任何字段，所以字段是匹配的
+        return true;
+    }
+}
+```
+
+但由于 Microsoft 没有像这样实现 `Equals`，所以`Equals`的实现规则远比想像的复杂。类型重写`Equals`方法时应调用其类型的 `Equals` 实现(除非基类就是 `Object`)。另外，由于类型能重写 `Object` 的 `Equals` 方法，所以不能再用它测试同一性。为了解决这个问题，`Object`提供了静态方法`ReferenceEquals`，其原型如下：
+
+```C#
+public class Object {
+    public static Boolean ReferenceEquals(Object objA, Object objB) {
+        return (objA == objB);
+    }
+}
+```
+
+检查同一性(看两个引用是否指向同一个对象)务必调用 `ReferenceEquals`，不应使用C#的 == 操作符(除非先把两个操作数都转型为 `Object`)，因为某个操作数的类型可能重载了 == 操作符，为其赋予不同于”同一性“的语义。
+
+可以看出，在涉及对象相等性和同一性的时候，.NET Framework 的设计很容易使人混淆。顺便说一下，`System.ValueType`(所有值类型的基类)就重写了 `Object` 的 `Equals` 方法，并进行了正确的实现来执行值的相等性检查(而不是同一性检查)。 `ValueType` 的 `Equals` 内部是这样实现。
+
+1. 如果 `obj` 实参为 `null`，就返回`false`。
+
+2. 如果 `this` 和 `obj` 实参引用不同类型的对象，就返回 `false`。
+
+3. 针对类型定义的每个实例字段，都将`this`对象中的值与`obj`对象中的值进行比较(通过调用字段的`Equals`方法)。任何字段不相等，就返回`false`。
+
+4. 返回 `true`。`ValueType` 的 `Equals` 方法不调用 `Object` 的 `Equals` 方法。
+
+在内部，`ValueType`的`Equals`方法利用反射(详情将在第23章”程序集加载和反射“讲述)完成上述步骤3。由于 CLR 反射机制慢，定义自己的值类型时应重写`Equals`方法来提供自己的实现，从而提供用自己类型的实例进行值相等性比较的性能。当然，自己的实现不调用 `base.Equals`。
+
+定义自己的类型时，你重写的`Equals`要符合相等性的 4 个特性。
+
+* `Equals` 必须自反；`x.Equals(x)`肯定返回 `true`。
+
+* `Equals` 必须对称；`x.Equals(y)` 和 `y.Equals(x)`返回相同的值。
+
+* `Equals` 必须可传递；`x.Equals(y)`返回`true`，`y.Equals(z)`返回`true`，则 `x.Equals(z)`肯定返回`true`。
+
+* `Equals` 必须一致。比较的两个值不变，`Equals`返回值(`true`或`false`)也不能变。
+
+如果实现的 `Equals` 不符合上述任何特征，应用程序就会行为失常。重写`Equals`方法时，可能还需要做下面几件事情。
+
+* **让类型实现`System.IEquatable<T>`接口的`Equals`方法**  
+  这个泛型接口允许定义类型安全的`Equals`方法。通常，你实现的`Equals`方法应获取一个`Object`参数，以便在内部调用类型安全的`Equals`方法。
+  
+* **重载==和!=操作符方法**  
+  通常应实现这些操作符方法，在内部调用类型安全的`Equals`。
+
+此外，如果以后要出于排序目的而比较类型的实例，类型还应实现 `System.IComparable` 的 `CompareTo` 方法和 `System.IComparable<T>`的类型安全的 `CompareTo` 方法。如果实现了这些方法，还可考虑重载各种比较操作符方法(<, <=, >, >=)，在这些方法内部调用类型安全的 `CompareTo` 方法。
+
+## <a name="5_4">5.4 对象哈希码</a>
+
+FCL 的设计者认为，如果能将任何对象的任何实例放到哈希表集合中，能带来很多好处。为此， `System.Object` 提供了虚方法 `GetHashCode`，它能获取任意对象的 `Int32` 哈希码。
