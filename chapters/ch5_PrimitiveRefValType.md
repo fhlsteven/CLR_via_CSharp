@@ -1067,6 +1067,135 @@ internal sealed class Point {
 `System.Object` 实现的 `GetHashCode` 方法对派生类型和其中的字段一无所知，所以返回一个在对象生存期保证不变的编号。
 > 重要提示 假如因为某些原因要实现自己的哈希表集合，或者要在实现的代码中调用 `GetHashCode`，记住千万不要对哈希码进行持久化，因为哈希码很容易改变。例如，一个类型未来的版本可能使用不同的算法计算对象哈希码。有个公司没有把这个警告放在心上。在他们的网站上，用户可选择用户名和密码来创建账号。然后，网站获取密码 `String`，调用 `GetHashCode` ，将哈希码持久性存储到数据库。用户重新登录网站，输入自己的密码。网站再次调用 `GetHashCode`，并将哈希码与数据库中存储的值比较，匹配就允许访问。不幸的是，公司升级到新版本 CLR 后， `String` 的 `GetHashCode` 方法发生了改变，现在返回不同的哈希码。结果是所有用户都无法登录！
 
-## <a name="5_5">`dynamic` 基元类型</a>
+## <a name="5_5">5.5 `dynamic` 基元类型</a>
 
-C# 是类型安全的编程语言。意味着所有表达式都解析成类型的实例，编译器生成的代码只执行对该类型有效的操作。和非类型安全的语言相比，类型安全的语言的优势在于：程序员会犯的许多错误都能在编译时检测到，确保代码在尝试执行前是正确的。此外，能编译出更小、更快的代码，因为能在编译时进行更多预设，并在生成的 IL 和元数据中落实预设。
+C# 是类型安全的编程语言。意味着所有表达式都解析成类型的实例，编译器生成的代码只执行对该类型有效的操作。和非类型安全的语言相比，类型安全的语言的优势在于：程序员会犯的许多错误都能在编译时检测到 ，确保代码在尝试执行前是正确的。此外，能编译出更小、更快的代码，因为能在编译时进行更多预设，并在生成的 IL 和元数据中落实预设。
+
+但程序许多时候仍需处理一些运行时才会知晓的信息。虽然可用类型安全的语言(比如 C#)和这些信息交互，但语法就会比较笨拙，尤其是在涉及大量字符串处理的时候。另外，性能也会有所损失。如果写的是纯 C# 应用程序，只有在使用反射(详情参见第 23 章“程序集加载和反射”)的时候，才需要和运行时才能确定的信息打交道。但许多开发者在使用 C# 时，都要和一些不是用 C# 实现的组件进行通信。有的组件是 .NET 动态语言，比如 Python 或 Ruby，有的是支持 `IDispatch` 接口的 COM 对象(可能用原生 C 或 C++ 实现)，也有的是 HTML 文档对象模型(Document Object Model, DOM)对象(可以用多中语言和技术实现)。构建 Microsoft Silverlight 应用程序时，与 HTML DOM 对象的通信尤其重要。
+
+为了方便开发人员使用反射或者与其他通信，C# 编译器允许将表达式的类型标记为 `dynamic`。还可将表达式的结果放到变量中，并将变量类型标记为 `dynamic`。然后，可以用这个 `dynamic` 表达式/变量调用成员，比如字段、属性/索引器、方法、委托以及一元/二元/转换操作符。代码使用 `dynamic` 表达式/变量调用成员时，编译器生成特殊 IL 代码来描述所需的操作。这种特殊的代码称为 payload(有效载荷)。在运行时，payload 代码根据 `dynamic` 表达式/变量引用的对象的实际类型来决定具体执行的操作。
+
+以下代码进行了演示。
+
+```C#
+internal static class DynamicDemo {
+    public static void Main() {
+        dynamic value;
+        for (Int32 demo = 0; demo < 2; demo++) {
+            value = (demo == 0) ? (dynamic)5 : (dynamic)"A";
+            value = value + value;
+            M(value);
+        }
+    }
+
+    public static void M(Int32 n) { Console.WriteLine("M(Int32): " + n); }
+    public static void M(String s) { Console.WriteLine("M(String): " + s); }
+}
+````
+
+执行 `Main` 会得到以下输出：
+
+```cmd
+M(Int32): 10
+M(String): AA
+```
+
+要理解发生的事情，首先旧的搞清楚 + 操作符。它的两个操作数的类型是 `dynamic`。由于 `value` 是 `dynamic`，所以 C# 编译器生成 payload 代码在运行时检查 `value` 的实际类型，决定+操作符实际要做什么。
+
+第一次对+操作符求值， `value` 包含 `5`(一个 `Int32`)，所以结果是 `10`(也是 `Int32`)。结果存回 `value` 变量。然后调用 `M` 方法，将 `value` 创给它。编译器针对 `M` 调用生成 payload 代码，以便在运行时检查传给 `M` 的实参的实际类型，并决定应该调用 `M` 方法的那个重载版本。由于 `value` 包含一个 `Int32`，所以调用获取 `Int32` 参数的版本。
+
+第二次对+操作符求值， `value` 包含 "A"(一个 `String`)，所以结果是"AA"("A"和它自己连接)。然后再次调用 `M` 方法，将 `value` 传给它。这次 payload 代码判断传给 `M` 的是一个 `String`，所以调用获取 `String` 参数的版本。
+
+如果字段，方法参数或方法返回值的类型是 `dynamic`，编译器会将该类型转换为 `System.Object` ，并在元数据中向字段、参数或返回类型应用 `System.Runtime.CompilerServices.DynamicAttribute` 的实例。如果局部变量被指定为 `dynamic`，则变量类型也会成为 `Object`，但不会向局部变量应用 `DynamicAttribute`， 因为它限制在方法内部使用。由于 `dynamic` 其实就是 `Object`，所以方法签名不能仅靠 `dynamic` 和 `Object`，所以方法签名不能仅靠 `dynamic` 和 `Object` 的变化来区分。
+
+泛型类(引用类型)、结构(值类型)、接口、委托或方法的泛型类型实参也可以是 `dynamic` 类型。编译器将 `dynamic` 转换成 `Object`，并向必要的各种元数据应用 `DynamicAttribute`。注意，使用的泛型代码是已经编译好的，会将类型视为 `Object`；编译器不在泛型代码中生成 payload 代码，所以不会执行动态调度。
+
+所有表达式都能隐式转型为 `dynamic`，因为所有表达式最终都生成从 `Object` 派生的*类型*。正常情况下，编译器不允许写代码将表达式从 `Object` 隐式转型为其他类型；必须显式转型。但是，编译器允许使用隐式转型语法将表达式从 `dynamic` 转型为其他类型：
+> 值类型当然要装箱。
+
+```C#
+Object o1 = 123;         // OK: 从 Int32 隐式转型为 Object (装箱)
+Int32 n1 = o1;           // Error: 不允许从 Object 到 Int32 的隐式转型
+Int32 n2 = (Int32) o1;   // OK: 从 Object 显式转型为 Int32 (拆箱)
+
+dynamic d1 = 123;        // OK: 从 Int32 隐式转型为 dynamic (装箱)
+Int32 n3 = d1;           // OK: 从 dynamic 隐式转型为 Int32 (拆箱)
+```
+
+从 `dynamic` 转型为其他类型时，虽然编译器允许省略显式转型，但 CLR 会在运行时验证转型来确保类型的安全性。如果对象类型不兼容要转换成的类型， CLR 会抛出 `InvalidCastException` 异常。
+
+注意， `dynamic` 表达式的求值结果是一个动态表达式。例如以下代码：
+
+```C#
+dynamic d = 123;
+var result = M(d)；     //  注意: 'var result' 等同于 'dynamic result'
+```
+
+代码之所以能通过编译，是因为编译时不知道调用那个 `M` 方法，从而不知道 `M` 的返回类型，所以编译器假定 `result` 变量具有 `dynamic` 类型。为了对此进行验证，可以在 Visual Studio 中将鼠标放在 `var` 上；“智能感知”窗口会显示 **“dynamic: 表示对象的操作将在运行时解析”**。如果运行时调用的 `M` 方法的返回类型是 `void`，将抛出 `Microsoft.CSharp.RuntimeBinder.RuntimeBinderException` 异常。
+
+> 重要提示 不要混淆 `dynamic` 和 `var` 。用 `var` 声明局部变量只是一种简化语法，它要求编译器根据表达式推断具体数据类型。`var`关键字只能在方法内部声明局部变量，而 `dynamic` 关键字可用于局部变量、字段和参数。表达式不能转型为`var`，但能转型为`dynamic`。必须显示初始化用`var`声明的变量，但无需初始化用`dynamic` 声明的变量。欲知 C# 的`var`关键字的详情，请参见 9.2 节“隐式类型的局部变量”。
+
+然而，从 `dynamic` 转换成另一个静态类型时，结果类型当然是静态类型。类似地，向类型的构造器传递一个或多个 `dynamic`实参，结果是要构造的对象的类型：
+
+```C#
+dynamic d = 123;
+var x = (Int32) d;         // 转换： 'var x' 等同于 'Int32 x'
+var dt = new DateTime(d);  // 构造： 'var dt' 等同于 'DateTime dt'
+```
+
+如果 `dynamic` 表达式被指定为 `foreach` 语句中的集合，或者被指定为 `using`语句中的资源，编译器会生成代码，分别将表达式转型为非泛型`System.IEnumerable` 接口或 `System.IDisposable` 接口。转型成功，就使用表达式，代码正常运行。转型失败，就抛出 `Microsoft.CSharp.RuntimeBinder.RuntimeBinderException` 异常。
+
+> 重要提示 `dynamic` 表达式其实是和 `System.Object` 一样的类型，编译器假定你在表达式上进行的任何操作都是合法的，所以不会生成任何警告或错误。但如果试图在运行时执行无效的操作，就会抛出异常。此外， Visual Studio 无法提供任何“智能感知”支持来帮助你写针对 `dynamic` 表达式的代码。虽然能定义对 `Object` 进行扩展方法(详情参见第 8 章“方法”)，但不能定义对 `dynamic` 进行扩展的扩展方法。另外，不能将 lambda 表达式或匿名方法(都在第 17 章 “委托” 中讨论)作为实参传给 `dynamic` 方法调用，因为编译器推断不了要使用的类型。
+
+以下示例C# 代码使用 COM `IDispatch` 创建 Microsoft Office Excel 工作薄，将一个字符串放到单元格 A1 中：
+
+```C#
+using Microsoft.Office.Interop.Excel;
+...
+public static void Main() {
+  Application excel = new Application();
+  excel.Visible = true;
+  excel.Workbooks.Add(Type.Missing);
+  ((Range)excel.Cells[1, 1]).Value = "Text in cell A1";  // 把这个字符串放到单元格 A1 中
+}
+```
+
+没有 `dynamic` 类型，`excel.Cells[1, 1]`的返回值就是 `Object` 类型，必须先转型为 `Range` 类型才能访问其 `Value`属性。但在为 COM 对象生成可由”运行时”调用的包装(wrapper)程序集时，COM 方法中使用的任何 `VARIANT` 实际都转换成 `dynamic`；这称为**动态化**(dynamification)。所以，由于 `excel.Cells[1, 1]`是`dynamic`类型，所以不必显式转型为 `Range` 类型就能访问其 `Value` 属性。动态化显著简化了与 COM 对象的互造作。下面是简化后的代码：
+
+```C#
+using Microsoft.Office.Interop.Excel;
+...
+public static void Main() {
+  Application excel = new Application();
+  excel.Visible = true;
+  excel.Workbooks.Add(Type.Missing);
+  excel.Cells[1, 1].Value = "Text in cell A1";  // 把这个字符串放到单元格 A1 中
+}
+```
+
+以下代码展示了如何利用反射在 `String` 目标("Jeffrey Richter")上调用方法("Contains")，向它传递一个 `String` 实参("ff")，并将 `Boolean` 结果存储到局部变量 `result` 中：
+
+```C#
+Object target = "Jeffrey Richter";
+Object arg = "ff";
+
+// 在目标上查找和希望的实参类型匹配的方法
+Type[] argTypes = new Type[] { arg.GetType() };
+MethodInfo method = target.GetType().GetMethod("Contains", argTypes);
+
+// 在目标上调用方法，传递希望的实参
+Object[] arguments = new Object[] { arg };
+Boolean result = Convert.ToBoolean(method.Invoke(target, arguments));
+```
+
+可利用C# 的`dynamic` 类型重写上述代码，并使用获得了显著简化的语法：
+
+```C#
+dynamic target = "Jeffrey Richter";
+dynamic arg = "ff";
+Boolean result = target.Contains(arg);
+```
+
+我早先指出 C# 编译器会生成 payload 代码，在运行时根据对象实际类型判断要执行什么操作。这些 payload 代码使用了称为**运行时绑定器**(runtime binder)的类。不同编程语言定义了不同的运行时绑定器来封装自己的规则。C#“运行时绑定器”的代码在 Microsoft.CSharp.dll 程序集中，生成使用 `dynamic` 关键字的项目必须引用该程序集。编译器的默认响应文件 CSC.rsp 中已引用了该程序集。记住是这个程序集中的代码知道在运行时生成代码，在 + 操作符应用于两个 `Int32` 对象时执行加法，在 + 操作符应用于两个 `String` 对象时执行连接。
+
+在运行时， Microsoft.CSharp.dll 程序集必须加载到 AppDomain 中，这会损害应用程序的性能，增大内存消耗。 Microsoft.CSharp.dll 还会加载 System.dll 和 System.Core.dll。如果使用 
