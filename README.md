@@ -20,8 +20,8 @@ CLR Via C# 第四版
 第二部分 设计类型  
 
 [第 4  章 类型基础](./chapters/ch4_TypeFundamentals.md)  
-[第 5  章 基元类型、引用类型和值类型](./chapters/ch5_PrimitiveRefValType.md)  
-第 6  章 类型和成员基础  
+[第 5  章 基元类型、引用类型和值类型](./chapters/ch5_PrimitiveRefValType.md)  **※**  
+[第 6  章 类型和成员基础](../chapters/ch6_Type&MemberBasics.md)  
 第 7  章 常量和字段  
 第 8  章 方法  
 第 9  章 参数  

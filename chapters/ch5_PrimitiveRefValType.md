@@ -1198,4 +1198,96 @@ Boolean result = target.Contains(arg);
 
 我早先指出 C# 编译器会生成 payload 代码，在运行时根据对象实际类型判断要执行什么操作。这些 payload 代码使用了称为**运行时绑定器**(runtime binder)的类。不同编程语言定义了不同的运行时绑定器来封装自己的规则。C#“运行时绑定器”的代码在 Microsoft.CSharp.dll 程序集中，生成使用 `dynamic` 关键字的项目必须引用该程序集。编译器的默认响应文件 CSC.rsp 中已引用了该程序集。记住是这个程序集中的代码知道在运行时生成代码，在 + 操作符应用于两个 `Int32` 对象时执行加法，在 + 操作符应用于两个 `String` 对象时执行连接。
 
-在运行时， Microsoft.CSharp.dll 程序集必须加载到 AppDomain 中，这会损害应用程序的性能，增大内存消耗。 Microsoft.CSharp.dll 还会加载 System.dll 和 System.Core.dll。如果使用 
+在运行时， Microsoft.CSharp.dll 程序集必须加载到 AppDomain 中，这会损害应用程序的性能，增大内存消耗。 Microsoft.CSharp.dll 还会加载 System.dll 和 System.Core.dll。如果使用 `dynamic` 与 COM 组件互操作，还会加载 System.Dynamic.dll。 payload 代码执行时，会在运行时生成动态代码；这些代码进入驻留于内存的程序集，即“匿名寄宿的 DynamicMethods 程序集”(Anonymously Hosted DynamicMethods Assembly)，作用是当特定 call site 使用具有相同运行时类型的动态实参发出大量调用时增强动态调度性能。
+
+> call site 是发出调用的地方，可理解成调用了一个目标方法的表达式或代码行。 —— 译注
+
+C# 内建的动态求值功能所产生的额外开销不容忽视。虽然能用动态功能简化语法，但也要看是否值得。毕竟，加载所有这些程序集以及额外的内存消耗，会对性能造成额外影响。如果程序中只是一、两个地方需要动态行为，传统做法或许更高效。即调用反射方法(如果是托管对象)，或者进行手动类型转换(如果是 COM 对象)。
+
+在运行时，C#的 “运行时绑定器” 根据对象的运行时类型分析应采取什么动态操作。绑定器首先检查类型是否实现了 `IDynamicMetaObjectProvider` 接口。如果是，就调用接口的 `GetMetaObject` 方法，它返回 `DynamicMetaObject` 的一个派生类型。该类型能处理对象的所有成员、方法和操作符绑定。 `IDynamicMetaObjectProvider` 接口和 `DynamicMetaObject` 基类都在 `System.Dynamic` 命名空间中定义，都在 System.Core.dll 程序集中。
+
+像 Python 和 Ruby 这样的动态语言，是为它们的类型赋予了从 `DynamicMetaObject` 派生的类型，以便从其他编程语言(比如 C#)中以恰当的方式访问。类似地，访问 COM 组件时，C#的“运行时绑定器”会使用知道如何与 COM 组件通信的 `DynamicMetaObject` 派生类型。 COM `DynamicMetaObject` 派生类型在 System.Dynamic.dll 程序集中定义。
+
+如果在动态表达式中使用的一个对象的类型未实现 `IDynamicMetaObjectProvider` 接口，C# 编译器会对对象视为用 C# 定义的普通类型的实例，利用反射在对象上执行操作。
+
+`dynamic` 的一个限制是只能访问对象的实例成员，因为 `dynamic` 变量必须引用对象。但有时需要动态调用运行时才能确定的一个类型的静态成员。我为此创建了 `StaticMemberDynamicWrapper` 类，它从 `System.Dynamic.DynamicObject` 派生。后者实现了 `IDynamicMetaObjectProvider` 接口。类内部使用了相当多的反射(这个主题将在第 23 章讨论)。以下是我的 `StaticMemberDynamicWrapper` 类的完整代码。
+
+```C#
+using System;
+using System.Collections.Generic;
+using System.Dynamic;
+using System.Linq;
+using System.Reflection;
+
+internal sealed class StaticMemberDynamicWrapper : DynamicObject {
+    private readonly TypeInfo m_type;
+    public StaticMemberDynamicWrapper(Type type) {
+        m_type = type.GetTypeInfo();
+    }
+
+    public override IEnumerable<string> GetDynamicMemberNames() {
+        return m_type.DeclaredMembers.Select(mi => mi.Name);
+    }
+
+    public override Boolean TryGetMember(GetMemberBinder binder, out object result) {
+        result = null;
+        var field = FindField(binder.Name);
+        if(field != null) { result = field.GetValue(null); return true; }
+
+        var prop = FindProperty(binder.Name, true);
+        if (prop != null) { result = prop.GetValue(null, null); return true; }
+        return false;
+    }
+
+    public override Boolean TrySetMember(SetMemberBinder binder, object value) {
+        var field = FindField(binder.Name);
+        if(field != null) { field.SetValue(null, value); return true; }
+
+        var prop = FindProperty(binder.Name, false);
+        if (prop != null) { prop.SetValue(null, value, null); return true; }
+        return false;
+    }
+
+    public override Boolean TryInvokeMember(InvokeMemberBinder binder, object[] args, out object result) {
+        MethodInfo method = FindMethod(binder.Name, args.Select(c => c.GetType()).ToArray());
+        if (method == null) { result = null; return false; }
+        result = method.Invoke(null, args);
+        return true;
+    }
+
+    private MethodInfo FindMethod(String name,Type[] paramTypes){
+        return m_type.DeclaredMethods.FirstOrDefault(mi => mi.IsPublic && mi.IsStatic
+                                && mi.Name == name && ParametersMatch(mi.GetParameters(), paramTypes));
+    }
+
+    private Boolean ParametersMatch(ParameterInfo[] parameters, Type[] paramTypes) {
+        if (parameters.Length != paramTypes.Length) return false;
+        for (Int32 i = 0; i < parameters.Length; i++)
+            if (parameters[i].ParameterType != paramTypes[i]) return false;
+        return true;
+    }
+
+    private FieldInfo FindField(String name) {
+        return m_type.DeclaredFields.FirstOrDefault(fi => fi.IsPublic && fi.IsStatic && fi.Name == name);
+    }
+
+    private PropertyInfo FindProperty(String name, Boolean get) {
+        if (get)
+            return m_type.DeclaredProperties.FirstOrDefault(
+                pi => pi.Name == name && pi.GetMethod != null &&
+                    pi.GetMethod.IsPublic && pi.GetMethod.IsStatic);
+
+        return m_type.DeclaredProperties.FirstOrDefault(
+            pi => pi.Name == name && pi.SetMethod != null &&
+                pi.SetMethod.IsPublic && pi.SetMethod.IsStatic);
+    }
+}
+```
+
+为了动态调用静态成员，传递想要操作的 `Type` 来构建上述的实例，将引用放到 `dynamic` 变量中，再用实例成员语法调用所需静态成员。下例展示如何调用 `String` 的静态 `Concat(String,String)` 方法。
+
+```C#
+dynamic stringType = new StaticMemberDynamicWrapper(typeof(String));
+var r = stringType.Concat("A", "B"); // 动态调用 String 的静态 Concat 方法
+Console.WriteLine(r);                // 显示 "AB"
+```
