@@ -448,8 +448,8 @@ public class Set {
 以下是我自己定义类时遵循的原则。
 
 * 定义类时，除非确定要将其作为基类，并允许派生类对它进行特化，否则总是显式地指定为 `sealed` 类。如前所述，这与 C#以及其他许多编译器的默认方式相反。另外，我默认将类指定为 `internal` 类，除非我希望在程序集外部公开这个类。幸好，如果不显式指定类型的可见性，C# 编译器默认使用的就是 `internal`。如果我真的要定义一个可由其他人继承的类，同时不希望允许特化，那么我会重写并密封继承的所有虚方法。
-> 特化(specialization)是指继承了基类的东西不算，还对这些东西进行特殊处理。 —— 译注
 
+> 特化(specialization)是指继承了基类的东西不算，还对这些东西进行特殊处理。 —— 译注
 
 * 类的内部，我总是毫不犹豫地将数据字段定义为 `private`。幸好，C#默认就将字段标记为`private`。事实上，我情愿 C# 强制所有字段都标记为 `private`，根本不允许`protected`，`internal`和`public`等等。状态一旦公开，就极易产生问题，造成对象的行为无法预测，并留下安全隐患。即使只将一些字段声明为 `internal` 也会如此。即使在单个程序集中，也很难跟踪引用了一个字段的所有代码，尤其是假如代码由几个开发人员编写，并编译到同一个程序集中。
 
@@ -492,3 +492,110 @@ namespace CompanyB {
     }
 }
 ```
+
+CompanyB 编译上述代码时，C#编译器生成以下警告消息：  
+`warning CS0108:"CompanyB.BetterPhone.Dial()"隐藏了继承的成员"CompanyA.Phone.Dial()"。如果是有意隐藏，请使用关键字 new`
+
+该警告告诉开发人员 `BetterPhone` 类正在定义个 `Dial` 方法，它会隐藏 `Phone` 类定义的 `Dial`。新方法可能改变 `Dial` 的语义(这个语义是 CompanyA 最初创建 `Dial` 方法时定义的)。
+
+编译器就潜在的语言不匹配问题发出警告，这是一个令人欣赏的设计。编译器甚至贴心地告诉你如何消除这条警告，办法是在 `BetterPhone` 类中定义 `Dial` 时，在前面加一个 `new` 关键字。以下是改正的 `BetterPhone` 类：
+
+```C#
+namespace CompanyB {
+    public class BetterPhone : CompanyA.Phone {
+
+        // 新的 Dial 方法变得与 Phone 的 Dial 方法无关了
+        public new void Dial() {
+            Console.WriteLine("BetterPhone.Dial");
+            EstablishConnection();
+            base.Dial();
+        }
+
+        protected virtual void EstablishConnection() {
+            Console.WriteLine("BetterPhone.EstablishConnection");
+            // 在这里执行简历连接的操作
+        }
+    }
+}
+```
+
+现在，CompanyB 能在其应用程序中使用 `BetterPhone.Dial`。以下是 CompanyB 可能写的一些示例代码：
+
+```C#
+public sealed class Program {
+    public static void Main() {
+        CompanyB.BetterPhone phone = new Company.BetterPhone();
+        phone.Dial();
+    }
+}
+```
+
+运行上述代码，输出结果如下所示：
+
+```cmd
+BetterPhone.Dial
+BetterPhone.EstablishConnection
+Phone.Dial
+```
+
+输出符合 CompanyB 的预期。调用 `Dial` 方法时，会调用由 `BetterPhone` 类定义的新 `Dial`。在新 `Dial` 中，先调用虚方法 `EstablishConnection`，再调用基类型 `Phone`中的 `Dial` 方法。
+
+现在，假定几家公司计划使用 CompanyA 的 `Phone` 类型。再假定这几家公司都认为在 `Dial` 方法中建立连接的主意非常好。CompanyA 收到这个反馈，决定对 `Phone` 类进行修订： 
+
+```C#
+namespace CompanyA {
+    public class Phone {
+        public void Dial() {
+            Console.WriteLine("Phone.Dial");
+            EstablishConnection();
+            // 在这里执行拨号操作
+        }
+
+        protected virtual void EstablishConnection() {
+            Console.WriteLine("Phone.EstablishConnection");
+            // 在这里执行建立连接的操作
+        }
+    }
+}
+```
+
+现在，一旦 CompanyB 编译它的 `BetterPhone` 类型(从 CompanyA 的新版本 `Phone`派生)，编译器将生成以下警告消息：  
+`warning CS0114:"CompanyB.BetterPhone.EstablishConnection()" 将隐藏继承的成员"CompanyA.Phone.EstablishConnection()"。若要使当前成员重写该实现，请添加关键字 override。否则，添加关键字 new。`  
+
+编译器警告 `Phone` 和 `BetterPhone` 都提供了 `EstablishConnection` 方法，而且两者的语义可能不一致。只是简单地重新编译`BetterPhone` ，可能无法获得和使用第一个版本的 `Phone` 类型时相同的行为。
+
+如果CompanyB 认定 `EstablishConnection` 方法在两个类型中的语义不一致，CompanyB 可以告诉编译器使用 `BetterPhone` 类中定义的`Dial` 和 `EstablishConnection` 方法，它们与基类型 `Phone` 中定义的 `EstablishConnection`方法没有关系。CompanyB 可以为 `EstablishConnection` 方法添加 `new` 关键字来告诉编译器这一点。
+
+```C#
+namespace CompanyB {
+    public class BetterPhone : CompanyA.Phone {
+
+        // 保留关键字 new，指明该方法与基类型的 Dial 方法没有关系
+        public new void Dial() {
+            Console.WriteLine("BetterPhone.Dial");
+            EstablishConnection();
+            base.Dial();
+        }
+
+        // 为这个方法添加关键字 new，指明该方法与基类型的
+        // EstablishConnection 方法没有关系
+        protected new virtual void EstablishConnection() {
+            Console.WriteLine("BetterPhone.EstablishConnection");
+            // 在这里执行简历连接的操作
+        }
+    }
+}
+```
+
+在这段代码中，关键字 `new` 告诉编译器生成元数据，让 CLR 知道 `BetterPhone` 类型的 `EstablishConnection` 方法应被视为由 `BetterPhone` 类型引入的新函数。这样 CLR 就知道 `Phone` 和 `BetterPhone` 这两个类中的方法无任何关系。
+
+执行相同的应用程序代码(签名列出的 `Main` 方法中的代码)，输出结果如下所示：
+
+```Cmd
+BetterPhone.Dial
+BetterPhone.EstablishConnection
+Phone.Dial
+Phone.EstablishConnection
+```
+
+这个输出表明，在 `Main` 方法中调用 `Dial`，调用的是 `BetterPhone` 类````````
