@@ -487,7 +487,7 @@ namespace CompanyB {
 
         protected virtual void EstablishConnection() {
             Console.WriteLine("BetterPhone.EstablishConnection");
-            // 在这里执行简历连接的操作
+            // 在这里执行建立连接的操作
         }
     }
 }
@@ -513,7 +513,7 @@ namespace CompanyB {
 
         protected virtual void EstablishConnection() {
             Console.WriteLine("BetterPhone.EstablishConnection");
-            // 在这里执行简历连接的操作
+            // 在这里执行建立连接的操作
         }
     }
 }
@@ -581,7 +581,7 @@ namespace CompanyB {
         // EstablishConnection 方法没有关系
         protected new virtual void EstablishConnection() {
             Console.WriteLine("BetterPhone.EstablishConnection");
-            // 在这里执行简历连接的操作
+            // 在这里执行建立连接的操作
         }
     }
 }
@@ -598,4 +598,33 @@ Phone.Dial
 Phone.EstablishConnection
 ```
 
-这个输出表明，在 `Main` 方法中调用 `Dial`，调用的是 `BetterPhone` 类````````
+这个输出表明，在 `Main` 方法中调用 `Dial`，调用的是 `BetterPhone` 类定义的新 `Dial` 方法。后者调用了同样由 `BetterPhone` 类定义的虚方法 `EstablishConnection`。`BetterPhone` 的 `EstablishConnection` 方法返回后， 将调用 `Phone` 的 `Dial` 方法调用了`EstablishConnection`，但由于 `BetterPhone` 的 `EstablishConnection` 使用 `new` 进行了标识，所以不认为 `BetterPhone` 的 `EstablishConnection` 是对 `Phone` 的虚方法 `EstablishConnection`的重写。最终结果是，`Phone` 的 `Dial` 方法调用了 `Phone` 的 `EstablishConnection` 方法——这正是我们所期望的。
+
+> 注意 如果编译器像原生 C++ 编译器那样默认将方法视为重写，`BetterPhone` 的开发者就不能使用 `Dial` 和 `EstablishConnection` 方法名了。这极有可能造成整个源代码 base 的连锁反应，破坏源代码和二进制兼容性。这种波及面太大的改变是我们不希望的，尤其是中大型的项目。但是，如果更改方法名只会造成源代码发生适度更新，就应该更改方法名，避免 `Dial` 和 `EstablishConnection` 方法的两种不同的含义使开发人员产生混淆。
+
+还有一个办法是，`CompanyB` 可以获得 `CompanyA` 的新版本 `Phone` 类型，并确定 `Dial` 和 `EstablishConnection` 在 `Phone` 中的语义正好是他们所希望的。这种情况下，`CompanyB` 可通过完全移除 `Dial` 方法来修改他们的 `BetterPhone` 类型。另外，由于 `CompanyB` 现在希望告诉编译器，`BetterPhone` 的 `EstablishConnection` 方法和 `Phone` 的 `EstablishConnection` 方法是相关的，所以必须移除`new` 关键字。但是，仅仅移除 `new` 关键字还不够，因为编译器目前还无法准确判断 `BetterPhone` 的 `EstablishConnection` 方法的意图。为了准确表示意图，`CompanyB` 的开发人员还必须将 `BetterPhone`的`EstablishConnection`方法由`virtual`改变为`override`。以下代码展示了新版本的 `BetterPhone` 类。
+
+```C#
+namespace CompanyB {
+    public class BetterPhone : CompanyA.Phone {
+
+        // 删除 Dial 方法(从基类继承 Dial)
+
+        // 移除关键字 'new'，将关键字 'virtual' 修改为 'override'，
+        // 指明该方法与基类的 EstablishConnection 方法的关系
+        protected override void EstablishConnection() {
+            Console.WriteLine("BetterPhone.EstablishConnection");
+            // 在这里执行建立连接的操作
+        }
+    }
+}
+```
+
+执行相同的应用程序代码(前面列出的 `Main` 方法中的代码)，输出结果如下所示：
+
+```cmd
+Phone.Dial
+BetterPhone.EstablishConnection
+```
+
+该输出结果表明，在 `Main` 中调用 `Dial` 方法，调用的是由 `Phone` 定义、并由 `BetterPhone` 继承的 `Dial` 方法。然后，当 `Phone` 的`Dial` 方法调用虚方法 `EstablishConnection` 时，实际调用的是 `BetterPhone` 类的 `EstablishConnection`方法，因为它重写了由`Phone`定义的虚方法`EstablishConnection`。
