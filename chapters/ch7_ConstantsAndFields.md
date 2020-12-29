@@ -1,6 +1,7 @@
 # 第 7 章 常量和字段
 
 本章内容：
+
 * <a href="#7_1">常量</a>
 * <a href="#7_2">字段</a>
 
@@ -88,3 +89,78 @@ public sealed class Program {
 如表 7-1 所示， CLR 支持类型(静态)字段和实例(非静态)字段。如果是类型字段，容纳字段数据所需的动态内存是在类型对象中分配的，而类型对象是在类型加载到一个 `AppDomain` 时创建的(参见第 22 章 “CLR 寄宿和 AppDomain”)。那么，什么时候将类型加载到一个 `AppDomain` 中呢？这通常是在引用了该类型的任何方法首次进行 JIT 斌阿姨的时候，如果是实例字段，容纳字段数据所需的动态内存是在构造类型的实例时分配的。
 
 由于字段存储在动态内存中，所以它们的值在运行时才能获取。字段还解决了常量存在的版本控制问题。此外，字段可以是任何数据类型，不像常量那样仅仅局限于编译器内置的基元类型。
+
+CLR 支持 `readonly` 字段和 `read/write` 字段。大多数字段都是 `read/write`字段，意味着在代码执行过程中，字段值可多次改变。但`readonly` 字段只能在构造器方法中写入。(构造器方法只能调用一次，即对象首次创建时。)编译器和验证机制确保 `readonly` 字段不会被构造器以外的任何方法写入。注意，可利用反射来修改`readonly`字段。
+
+现在，让我们以 7.1 节“常量”的代码为例，使用一个静态 `readonly` 字段来修正版本控制问题。下面是新版本 DLL 程序集的代码：
+
+```C#
+using System;
+
+public sealed class SomeLibraryType {
+    // 字段和类型关联必须使用 static 关键字
+    public static readonly Int32 MaxEntriesInList = 50;
+}
+```
+
+这是唯一需要修改的，应用程序的代码不必修改。但是，为了观察新的行为，必须重新生成它。当应用程序的 `Main` 方法运行时，CLR 将加载DLL 程序集(现在运行时需要该程序集了)，并从分配给它的动态内存中提取 `MaxEntriesInList` 字段的值。当然，该值是 `50`。假设 DLL 程序集的开发人员将 `50` 改为 `1000`，并重新生成程序集，当应用程序代码重新执行时，它将自定提取字段的新值 `1000`。应用程序不需要重新生成，可以直接运行(尽管性能会受到一点影响)。要注意的是，当前假定的是 DLL 程序集的新版本没有进行强命名，而且应用程序的版本策略是让CLR 加载这个新版本。
+
+下例演示了如何定义一个与类型本身关联的 `readonly` 静态字段。还定义了 `read/write` 静态字段，以及 `readonly` 和 `read/write` 实例字段。
+
+```C#
+public sealed class SomeType {
+    // 这是一个静态 readonly 字段：在运行时对这个类进行初始化时，
+    // 它的值会被计算并存储到内存中
+    public static readonly Random s_random = new Random();
+
+    // 这是一个静态 read/write 字段
+    private static Int32 s_numberOfWrites = 0;
+
+    // 这是一个实例 readonly 字段
+    public readonly String Pathname = "Untitled";
+
+    // 这是一个实例 read/write 字段
+    private System.IO.FileStream m_fs;
+
+    public SomeType(String pathname) {
+        // 改行修改只读字段 Pathname，
+        // 在构造器中可以这样做
+        this.Pathname = pathname;
+    }
+
+    public String DoSomething() {
+        // 该行读写静态 read/write 字段
+        s_numberOfWrites = s_numberOfWrites + 1;
+
+        // 改行读取 readonly 实例字段
+        return Pathname;
+    }
+}
+```
+
+在上述代码中，许多字段都是内联初始化的。C#允许使用这种简便的内联初始化语法来初始化类的常量、`read/write` 字段和 `readonly` 字段。第 8 章“方法”会讲到，C# 实际是在构造器中对字段进行初始化的，字段的内联初始化只是一种语法上的简化。另外，在 C# 中初始化字段时，如果使用内联语法，而不是在构造器中赋值，有一些性能问题需要考虑。这些性能问题也将在第 8 章讨论。
+>> 内联(inline)初始化是指在代码中直接赋值来初始化，而不是将对构造器的调用写出来。——译注
+
+> 重要提示 当某个字段是引用类型，并且该字段被标记为 `readonly` 时，不可改变的是引用，而非字段引用的对象。以下代码对此进行了演示：
+
+```C#
+public sealed class AType {
+    // InvalidChars 总是引用同一个数组对象
+    public static readonly Char[] InvalidChars = new Char[] { 'A', 'B', 'C' };
+}
+
+public sealed class AnotherType {
+    public static void M() {
+        // 下面三行代码是合法的，可通过编译，并可成功
+        // 修改 InvalidChars 数组中的字符
+        AType.InvalidChars[0] = 'X';
+        AType.InvalidChars[1] = 'Y';
+        AType.InvalidChars[2] = 'Z';
+
+        // 下一行代码是非法的，无法通过编译，
+        // 因为不能让 InvalidChars 引用别的什么东西
+        // A static readonly field cannot be assigned to(except in a static constructor or a variable initializer)
+        AType.InvalidChars = new Char[] { 'X', 'Y', 'Z' };
+    }
+}
+```
