@@ -327,3 +327,126 @@ internal sealed class SomeType {
 ```
 
 类型构造器不应调用基类型的类型构造器。这种调用之所以没必要，是因为类型不可能有静态字段是从基类型分享或继承的。
+
+> 注意 有的语言(比如 Java)希望在访问类型时自动调用它的类型构造器，并调用它的所有基类型的类型构造器。此外，类型实现的接口也必须调用接口的类型构造器。CLR 不支持这种行为。但是，使用由 `System.Runtime.CompilerServices.RuntimeHelpers` 提供的 `RunClassConstructor` 方法，编译器和开发人员可以实现这种行为。任何语言想要实现这种行为，可以告诉它的编译器在一个类型的类型构造器中生成代码，为所有基类型都调用这个方法，用 `RunClassConstructor` 方法调用一个类型构造器，CLR 就知道类型构造器之前是否执行过。如果是，CLR 不会再次调用它。
+
+最后，假定有以下代码：
+
+```C#
+internal sealed class SomeType {
+    private static Int32 s_x = 5;
+
+    static SomeType {
+        s_x = 10;
+    }
+}
+```
+
+在这个例子中，C# 编译器只生成一个类型构造器方法。它首先将 `s_x` 初始化为 `5`，再把它修改成 `10`。换言之，当 C# 编译器为类型构造器生成 IL 代码时，它首先生成的是初始化静态字段所需的代码，然后才会添加你的类型构造器方法中显式包含的代码。
+
+> 重要提示 偶尔有开发人员问我，是否可以在卸载类型时执行一些代码。首先要搞清楚的是，类型只有在 AppDomain 卸载时才会卸载。AppDomain 卸载时，用于标识类型的对象(类型对象)将成为“不可达”的对象(不存在对它的引用)，垃圾回收器会回收类型对象的内存。这个行为导致许多开发人员认为可以为类型添加一个静态 `Finalize` 方法。当类型卸载时，就自动地调用这个方法。遗憾的是，CLR 并不支持静态 `Finalize` 方法。但也不是完全没有办法，要在 AppDomain 卸载时执行一些代码，可向 `System.AppDomain` 类型的 `DomainUnload` 事件登记一个回调方法。
+
+## <a name="8_4">8.4 操作符重载方法</a>
+
+有的语言允许类型定义操作符应该如何操作类型的实例。例如，许多类型(比如`System.String`)都重载了相等(==)和不等(!=)操作符。CLR 对操作符重载一无所知，它甚至不知道什么是操作符。是编程语言定义了每个操作符的含义，以及当这些特殊符号出现时，应该生成什么样的代码。
+
+例如在 C# 中，向基元(类型的)数字应用+符号，编译器生成将两个数加到一起的代码。将+符号应用于`String` 对象，C# 编译器生成将两个字符串连接到一起的代码。测试不等性时，C# 使用!=符号，而 Microsoft Visual Basic 使用<>。最后，^在C#中的含义为异或(XOR)，在 Visual Basic 中则为求幂。
+
+虽然 CLR 对操作符一无所知，但它确实规定了语言应如何公开操作符重载，以便由另一种语言的代码使用。每种编程语言都要自行决定是否支持操作符重载。如果决定支持，还要决定用什么语法来表示和使用它们。至于 CLR，操作符重载只是方法而已。
+
+对编程语言的选择决定了你是否获得对操作符重载的支持，以及具体的语法是什么。编译源代码时，编译器会生成一个标识操作符行为的方法。CLR 规范要求操作符重载方法必须是 `public` 和 `static` 方法。另外，C# (以及其他许多语言)要求操作符重载方法至少有一个参数的类型与当前定义这个方法的类型相同。之所以要进行这样的限制，是为了使 C# 编译器能在合理的时间内找到要绑定的操作符方法。
+
+以下 C# 代码展示了在一个类中定义的操作符重载方法：
+
+```C#
+public sealed class Complex {
+    public static Complex operator+(Complex c1, Complex c2) { ... }
+}
+```
+
+编译器为名为 `op_Addition` 的方法生成元数据方法定义项；这个方法定义项还设置了 `specialname` 标志，表明这是一个“特殊”方法。编程语言的编译器(包括 C# 编译器)看到源代码中出现一个`+`操作符时，会检查是否有一个操作数的类型定义了名为 `op_Addition` 的 `specialname` 方法，而且该方法的参数兼容于操作数的类型。如果存在这样的方法，编译器就生成调用它的代码。不存在这样的方法就报告编译错误。
+
+表 8-1 和表 8-2 总结了 C# 允许重载的一元和二元操作符，以及由编译器生成的对应的 CLS(Common Language Specification，公共语言规范)方法名。下一节会解释表的第 3 列。
+
+表 8-1 C# 的一元操作符及其相容于 CLS 的方法名
+|C#操作符|特殊方法名|推荐的相容于 CLS 的方法名|
+|:---:|:---:|:----:|
+|`+`|`op_UnaryPlus`|`Plus`|
+|`-`|`op_UnaryNegation`|`Negate`|
+|`!`|`op_LogicalNot`|`Not`|
+|`~`|`op_OnesComplement`|`OnesComplement`|
+|`++`|`op_Increment`|`Increment`|
+|`--`|`op_Decrement`|`Decrement`|
+|(无)|`op_True`|`IsTrue { get; }`|
+|(无)|`op_False`|`IsFalse { get; }`|
+
+表 8-2 C# 的二元操作符及其相容于 CLS 的方法名
+|C# 操作符|特殊方法名|推荐的相容性于 CLS 的方法名|
+|:---:|:---:|:---:|
+|`+`|`op_Addition`|`Add`|
+|`-`|`op_Subtraction`|`Subtract`|
+|`*`|`op_Multiply`|`Multiply`|
+|`/`|`op_Division`|`Divide`|
+|`%`|`op_Modulus`|`Mod`|
+|`&`|`op_BitwiseAnd`|`BitwiseAnd`|
+|`|`|`op_BitwiseOr`|`BitwiseOr`|
+|`^`|`op_ExclusiveOr`|`Xor`|
+|`<<`|`op_LeftShift`|`LeftShift`|
+|`>>`|`op_RightShift`|`RightShift`|
+|`==`|`op_Equality`|`Equals`|
+|`!=`|`op_Inequality`|`Equals`|
+|`<`|`op_LessThan`|`Compare`|
+|`>`|`op_GreaterThan`|`Compare`|
+|`<=`|`op_LessThanOrEqual`|`Compare`|
+|`>=`|`op_GreaterThanOrEqual`|`Compare`|
+
+CLR 规范定义了许多额外的可重载的操作符，但 C# 不支持这些额外的操作符。由于是非主流，所以此处不列出它们。如果对完整的列表感兴趣，请访问 CLI 的[ECMA 规范](www.ecma-international.org/publications/standards/Ecma-335.htm)(www.ecma-international.org/publications/standards/Ecma-335.htm)并阅读 Partition I：Concepts and Architecture 的 Section 10.3.1(一元操作符)和 Section 10.3.2(二元操作符)。
+
+> 注意 检查 Framework 类库(FCL)的核心数值类型(`Int32`,`Int64`和`UInt32`等)，会发现它们没有定义任何操作符重载方法。之所以不定义，是因为编译器会(在代码中)专门查找针对这些基元类型执行的操作(运算)，并生成直接操作这些类型的实例的 IL指令。如果类型要提供方法，而且编译器要生成代码来调用这些方法，方法调用就会产生额外的运行时开销。另外，方法最终都要执行一些 IL 指令来完成你希望的操作。这正是核心 FCL 类型没有定义任何操作符重载方法的原因。对于开发人员，这意味着假如选择的编程语言不支持其中的某个 FCL 类型，便不能对该类型的实例执行任何操作。
+
+### 操作符和编程语言互操作性
+
+操作符重载是很有用的工具，允许开发人员用简洁的代码表达自己的想法。但并不是所有编程语言都支持操作符重载。使用不支持操作符重载的语言时，语言不知道如何解释`+`操作符(除非类型是该语言的基元类型)，编译器会报错。使用不支持操作符重载的编程语言时，语言应该允许你直接调用希望的 `op_*`方法(例如 `op_Addition`)。
+
+如果语言不支持在类型中定义`+`操作符重载，这个类型仍然可能提供了一个 `op_Addition` 方法。在这种情况下，可不可以在 C# 中使用 `+` 操作符来调用这个 `op_Addition` 方法呢？答案是否定的。C# 编译器检测到操作符 `+`时，会查找关联了 `specialname` 元数据标志的 `op_Addition` 方法，以确定 `op_Addition`方法是要作为操作符重载方法使用。但由于现在这个 `op_Addition` 方法是由不支持操作符重载的编程语言生成的，所以方法没有关联`specialname`标记。因此，C# 编译器会报告编译错误。当然，用任何编程语言写的代码都以显式调用碰巧命名为 `op_Addition` 的方法，但编译器不会将一个`+`号的使用翻译成对这个方法的调用。
+
+> 注意 FCL 的 System.Decimal 类型很好地演示了如何重载操作符并根据 Microsoft 的设计规范定义友好方法名。
+
+> Microsoft 操作符方法的命名规则之我见  
+> 操作符重载方法什么时候能调用，什么时候不能调用，这些规则会使人感觉非常迷惑。如果支持操作符重载的编译器不生成 `specialname` 元数据标记，规则会简单得多，而且开发人员使用提供了操作符重载方法的类型也会更轻松。支持操作符重载的语言都支持操作符符号语法，而且所有语言都支持显式调用各种`op_`方法。我不理解为什么 Microsoft 非要把它搞的这么复杂。希望 Microsoft 在编译器未来的版本中放宽这些限制。  
+> 如果一个类型定义了操作符重载方法，Microsoft 还建议类型定义更友好的公共静态方法，并在这种方法的内部调用操作符重载方法。例如，根据 Microsoft 的设计规范，重载了 `op_Addition` 方法的类型应定义一个公共的、名字更友好的 `Add` 方法。表 8-1 和 表 8-2 中的第 3 列展示了每个操作符推荐使用的友好名称。因此，前面的示例类型 `Complex` 应该像下面这样定义：
+
+```C#
+public sealed class Complex {
+    public static Complex operator+(Complex c1, Complex c2) { ... }
+    public static Complex Add(Complex c1, Complex c2) { return(c1 + c2); }
+}
+```
+
+> 用任何语言写的代码都能调用 `Add` 这样的友好操作符方法，这一点毋庸置疑。Microsoft 要求类型提供友好方法名的设计规范使局面进一步复杂化。在我看来，这种额外的复杂性完全没必要。而且，除非 JIT 编译器能内联(直接嵌入)友好方法的代码，否则调用它们将导致额外的性能损失。内联代码可使JIT编译器优化代码，移除额外的方法调用，并提升运行时性能。
+
+## <a name="8_5">8.5 转换操作符方法</a>
+
+有时需要将对象从一种类型转换为另一种类型(例如将 `Byte` 转换为 `Int32`)。当源类型和目标类型都是编译器识别的基元类型时，编译器自己就知道如何生成转换对象所需的代码。
+
+如果源类型或目标类型不是基元类型，编译器会生成代码，要求 CLR 执行转换(强制转型)。这种情况下，CLR 只是检查源对象的类型和目标类型(或者从目标类型派生的其他类型)是不是相同。但有时需要将对象从一种类型转换成全然不同的其他类型。例如，`System.Xml.Linq.XElement` 类允许将 XML 元素转换成 `Boolean`，`(U)Int32`，`(U)Int64`，`Single`，`Double`，`Decimal`，`String`，`DateTime`，`DateTimeOffset`，`TimeSpan`，`Guid`或者所有这些类型(`String`除外)的可空版本。另外，假设 FCL 包含了一个 `Rational`(有理数)类型，那么如果能将 `Int32`或`Single`转换成`Rational` 会显得很方便；反之亦然。
+
+为了进行这样的转换，`Rational` 类型应该定义只有一个参数的公共构造器，该参数要求是源类型的实例。还应该定义无参的公共实例方法 `ToXxx`(类似于你熟悉的`ToString`方法)，每个方法都将定义类型的实例转换成 `Xxx`类型。以下代码展示了如何为 `Rational` 类型正确定义转换构造器和方法。
+
+```C#
+public sealed class Rational {
+    // 由一个 Int32 构造一个 Rational
+    public Rational(Int32 num) { ... }
+
+    // 由一个 Single 构造一个 Rational
+    public Rational(Single num) { ... }
+
+    // 将一个 Rational 转换成一个 Int32
+    public Int32 ToInt32() { ... }
+
+    // 将一个 Rational 转换成一个 Single
+    public Single ToSingle() { ... }
+}
+```
+
+调用
