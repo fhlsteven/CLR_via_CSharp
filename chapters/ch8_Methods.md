@@ -527,4 +527,170 @@ C# 编译器提供了对转换操作符的完全支持。如果检测到代码�
 
 ## <a name="8_6">8.6 扩展方法</a>
 
-理解 C# **扩展方法**最好的办法就是从例子中学习。
+理解 C# **扩展方法**最好的办法就是从例子中学习。14.3.2 节 “`StringBuilder` 成员”会提到 `StringBuilder` 类提供的字符串处理方法比`String`类少。这是很奇怪的一件事，`StringBuilder`类是可变的(mutable)，所以它应该是进行字符串处理的首选方式。现在，假定你想自己定义一些缺失的方法以方便操作`StringBuilder`。例如，你也许想定义以下`IndexOf` 方法：
+
+```C#
+public static class StringBuilderExtensions {
+    public static Int32 IndexOf(StringBuilder sb,Char value) {
+        for (Int32 index = =0; index < sb.Length; index++)
+            if(sb[index] == value) return index;
+        return -1
+    }
+}
+```
+
+定义好这个方法后，可以在代码中使用它，如下所示：
+
+```C#
+StringBuilder sb = new StringBuilder("Hello.My name is Jeff.");     // 初始字符串
+
+// 将句点更改为感叹号，获取!字符的索引(5)
+Int32 index = StringBuilderExtensions.IndexOf(sb.Replace('.', '!'), '!');
+```
+
+上述代码工作起来没问题，但从程序员的角度看不理想。第一个问题是，要获取一个 `StringBuilder` 中的某个字符的索引，必须先知道 `StringBuilderExtensions` 类的存在。第二个问题是，代码没有反映出在 `StringBuilder` 对象上执行的操作的顺序，使代码很难写、读和维护。程序员希望先调用 `Replace`，再调用 `IndexOf` 。但从左向右读最后一行代码，先看到的是 `IndexOf`，然后才看到 `Replace`。当然，可以像下面这样重写，使代码的行为看起来更容易理解：
+
+```C#
+// 首先，将句点更改成感叹号
+sb.Replace('.', '!');
+
+// 接着，获取!字符的索引(5)
+Int32 index = StringBuilderExtensions.IndexOf(sb, '!');
+```
+
+但这两个版本都存在另一个不容忽视的问题，它影响了我们对代码行为的理解。使用 `StringBuilderExtensions` 显得“小题大做”，造成程序员无法专注于当前要执行的操作： `IndexOf` 方法，上述代码就可以重写为：
+
+```C#
+// 把句点更改为感叹号，获取!字符的索引(5)
+Int32 index = sb.Replace('.', '!').IndexOf('!');
+```
+
+哇，是不是立刻就显得高端大气上档次了？一眼就能看出在 `StringBuilder` 对象中，是先将句点更改为感叹号，再获取感叹号的索引。
+
+有了这个例子作为铺垫，就很容易理解C# 扩展方法的意义了。它允许定义一个静态方法，并用实例方法的语法来调用。换言之，现在既能定义自己的 `IndexOf` 方法，又能避免上述三个问题。要将 `IndexOf` 方法转变成扩展方法，只需在第一个参数前添加 `this` 关键字：
+
+```C#
+public static class StringBuilderExtensions {
+    public static Int32 IndexOf(this StringBuilder sb,Char value) {
+        for (Int32 index = =0; index < sb.Length; index++)
+            if(sb[index] == value) return index;
+        return -1
+    }
+}
+```
+
+现在，当编译器看到以下代码：
+
+```C#
+Int32 index = sb.IndexOf('X');
+```
+
+就首先检查 `StringBuilder` 类或者它的任何基类是否提供了获取单个 `Char` 参数、名为 `IndexOf` 的一个实例方法。如果是，就生成 IL 代码来调用它。如果没有找到匹配的实例方法，就继续检查是否有任何静态类定义了名为 `IndexOf` 的静态方法，方法的第一个参数的类型和当前用于调用方法的那个表达式的类型匹配，而且该类型必须用 `this` 关键字标识。在本例中，表达式是 `sb`，类型是 `StringBuilder`。所以编译器会查找一个 `IndexOf` 方法，它有两个参数：一个 `StingBuilder`(用`this`关键字标记)，以及一个 `Char`。编译器找到了这个 `IndexOf` 方法，所以生成相应的 IL 代码来调用这个静态方法。
+
+OK——这解释了编译器如何解决前面提到的、会影响代码理解的最后两个问题。但是，还没有说第一个问题是如何解决的：程序员怎么知道有这样的一个 `IndexOf` 方法，可以用它操作 `StringBuilder` 对象呢？这个问题是通过 Microsoft Visual Studio 的“智能感知”功能来解决的。在编辑器中输入句点符号，会弹出 Visual Studio 的“智能感知”窗口，列出当前可用的实例方法。现在，这个窗口还会列出可作用于句点左侧表达式类型的扩展方法。图 8-1 展示了 Visual Studio 的“智能感知”窗口；扩展方法的图标中有一个下箭头，方法旁边的“工具提示”表明该方法实际是一个扩展方法。这是相当实用的一个功能，因为现在可以轻松定义自己的方法来操作各种类型，其他程序员在使用这些类型的对象时，也能轻松地发现你的方法。  
+
+![8_1](../resources/images/8_1.png)  
+图 8-1 Visual Studio 的“智能感知”窗口能列出扩展方法  
+
+### 8.6.1 规则和原则
+
+关于扩展方法，有一些附加的规则和原则需要注意。
+
+* C# 只支持扩展方法，不支持扩展属性、扩展事件、扩展操作符等。
+
+* 扩展方法(第一个参数前面有 `this` 的方法)必须在非泛型的静态类中声明。然后，类名没有限制，可以随便叫什么名字。当然，扩展方法至少要有一个参数，而且只有第一个参数能用 `this` 关键字标记。
+
+* C#编译器在静态类中查找扩展方法时，要求静态类本身必须具有文件作用域。如果静态类嵌套在另一个类中，C# 编译器显示以下消息：`error CS1109:扩展方法必须在顶级静态类中定义；StringBuilderExtensions 是嵌套类`。
+> 类要具有整个文件的作用域，而不能嵌套在某个类中而只具有该类的作用域。 ——译注
+
+* 由于静态类可以取任何名字，所以 C# 编译器要花一定时间来寻找扩展方法，它必须检查文件作用域中的所有静态类，并扫描它们的所有静态方法来查找一个匹配。为增强性能，并避免找到非你所愿的扩展方法，C# 编译器要求“导入”扩展方法。例如，如果有人在 `Wintellect` 命名空间中定义了一个 `StringBuilderExtensions` 类，那么程序员为了访问这个类的扩展方法，必须在他的源代码文件顶部写一条 `using Wintellect;`指令。
+
+* 多个静态类可以定义相同的扩展方法。如果编译器检测到存在两个或多个扩展方法，就会显示以下消息：`error CS0121:在以下方法或属性之间的调用不明确："StringBuilderExtensions.IndexOf(string, char)"和"AnotherStringBuilderExtensions.IndexOf(string, char)"`。修正这个错误必须修改源代码。具体地说，不能再用实例方法语法来调用这个静态方法。相反，必须使用静态方法语法。换言之，必须显式指定静态类的名称，明确告诉编译器要调用哪个方法。
+
+* 使用这个功能须谨慎，一个原因是并非所有程序员都熟悉它。例如，用一个扩展方法扩展一个类型时，同时也扩展了派生类型。所以，不要将 `System.Object` 作为扩展方法的第一个参数，否则这个方法在所有表达式类型上都能调用，造成 Visual Studio 的“智能感知”窗口被填充太多垃圾信息。
+
+* 扩展方法可能存在版本控制问题。如果 Microsoft 未来为他们的 `StringBuilder` 类添加了 `IndexOf` 实例方法，而且和我的代码调用的原型一样，那么在重新编译我的代码时，编译器会绑定到 Microsoft 的 `IndexOf`实例方法，而不是我的静态 `IndexOf` 方法。这样我的程序就会有不同的行为。版本控制问题是使用扩展方法须谨慎的另一个原因。
+
+### 8.6.2 用扩展方法扩展各种类型
+
+前面演示了如何为 `StringBuilder` 类定义扩展方法。我要指出的一个问题是，由于扩展方法实际是对一个静态方法的调用，所以 CLR 不会生成代码对调用方法的表达式的值进行 `null` 值检查(不保证它非空)：
+
+```C#
+// sb 是 null
+StringBuilder sb = null；
+
+// 调用扩展方法： NullReferenceException 异常不会在调用 IndexOf 时抛出，
+// 相反，NullReferenceException 是在 IndexOf 内部的 for 循环中抛出的
+sb.IndexOf('X');
+
+// 调用实例方法： NullReferenceException 异常在调用 Replace 时抛出
+sb.Replace('.', '!');
+```
+
+还要注意，可以为接口类型定义扩展方法，如下所示：
+
+```C#
+public static void ShowItems<T>(this IEnumerable<T> collection) {
+    foreach (var item in collection)
+        Console.WriteLine(item);
+}
+```
+
+任何表达式，只要它最终的类型实现了 `IEnumerable<T>` 接口，就能调用上述扩展方法：
+
+```C#
+public static void Main() {
+    // 每个 Char 在控制台上单独显示一行
+    "Grant".ShowItems();
+
+    // 每个 String 在控制台上单独显示一行
+    new[] { "Jeff", "Kristin" }.ShowItems();
+
+    // 每个 Int32 在控制台上单独显示一行
+    new List<Int32>() { 1, 2, 3 }.ShowItems(); 
+}
+```
+
+> 重要提示 扩展方法是 Microsoft 的 LINQ(**Language Integrated Query**，语言集成查询)技术的基础。要想仔细研究提供了许多扩展方法的一个典型的类，请自行在文档中查看静态类 `System.Linq.Enumerable` 及其所有静态扩展方法。这个类中的每个扩展方法都扩展了 `IEnumerable` 或 `IEnumerable<T>`接口。
+
+还可为委托类型定义扩展方法，如下所示：
+
+```C#
+public static void InvokeAndCatch<TException>(this Action<Object> d,Object o)
+    where TException : Exception {
+        try { d(o); }
+        catch (TException) { }
+    }
+```
+
+下面演示了如何调用它：
+
+```C#
+Action<Object> action = o => Concole.WriteLine(o.GetType());    // 抛出 NullReferenceException
+action.InvokeAndCatch<NullReferenceException>(null)；           // 吞噬 NullReferenceException 
+```
+
+还可为枚举类型添加扩展方法(15.3 节“向枚举类型添加方法”展示了一个例子)。
+
+最后，C# 编译器允许创建委托(参见第 17 章“委托”)来引用一个对象上的扩展方法：
+
+```C#
+public static void Main () {
+    // 创建一个 Action 委托(实例)来引用静态 ShowItems 扩展方法，
+    // 并初始化第一个实参来引用字符串 “Jeff”
+    Action a  = "Jeff".ShowItems;
+    .
+    .
+    .
+    // 调用(Invoke)委托，后者调用(call) ShowItems，
+    // 并向它传递对字符串"Jeff"的引用
+    a();
+} 
+```
+
+> “调用一个委托实例”中的“调用”对应的是 invoke，理解为“唤出”更恰当。它和后面的“在一个对象上调用方法”中的“调用”稍有不同，后者对应的是 call。在英语的语境中，invoke 和 call 的区别在于，在执行一个所有信息都已知的方法时，用 call 比较恰当。这些信息包括要引用的类型，方法的签名以及方法名。但是，在需要先“唤出”某个东西来帮你调用一个信息不明的方法时，用 invoke 就比较恰当。但是，由于两者均翻译为“调用”不会对读者的理解造成太大的困扰，所以本书仍然采用约定俗成的方式来进行翻译，只是在必要的时候附加英文原文提醒你区分。 —— 译注
+
+在上述代码中，C# 编译器生成 IL 代码来构造一个 `Action` 委托。创建委托时，会向构造器传递应调用的方法，同时传递一个对象引用，这个引用应传给方法的隐藏 `this` 参数。正常情况下，创建引用静态方法的委托时，对象引用是 `null`，因为静态方法没有 `this` 参数。但在这个例子中，C# 编译器生成特殊代码创建一个委托来引用静态方法(`ShowItems`)，而静态方法的目标对象是对`"Jeff"`字符串的引用。稍后，当这个委托被调用(`invoke`)时，CLR会调用(`call`)静态方法，并向其传递对`"Jeff"`字符串的引用。这是编译器耍的小“花招”，但效果不错，而且只要你不去细想内部发生的事情，整个过程还是感觉非常自然的。
+
+### 8.6.3 ExtensionAttribute 类
+
