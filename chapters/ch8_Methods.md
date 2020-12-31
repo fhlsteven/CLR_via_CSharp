@@ -431,7 +431,8 @@ public sealed class Complex {
 
 如果源类型或目标类型不是基元类型，编译器会生成代码，要求 CLR 执行转换(强制转型)。这种情况下，CLR 只是检查源对象的类型和目标类型(或者从目标类型派生的其他类型)是不是相同。但有时需要将对象从一种类型转换成全然不同的其他类型。例如，`System.Xml.Linq.XElement` 类允许将 XML 元素转换成 `Boolean`，`(U)Int32`，`(U)Int64`，`Single`，`Double`，`Decimal`，`String`，`DateTime`，`DateTimeOffset`，`TimeSpan`，`Guid`或者所有这些类型(`String`除外)的可空版本。另外，假设 FCL 包含了一个 `Rational`(有理数)类型，那么如果能将 `Int32`或`Single`转换成`Rational` 会显得很方便；反之亦然。
 
-为了进行这样的转换，`Rational` 类型应该定义只有一个参数的公共构造器，该参数要求是源类型的实例。还应该定义无参的公共实例方法 `ToXxx`(类似于你熟悉的`ToString`方法)，每个方法都将定义类型的实例转换成 `Xxx`类型。以下代码展示了如何为 `Rational` 类型正确定义转换构造器和方法。
+为了进行这样的转换，`Rational` 类型应该定义只有一个参数的公共构造器，该参数要求是源类型的实例。还应该定义无参的公共实例方法 `ToXxx`(类似于你熟悉的`ToString`方法)，每个方法都将*定义类型*的实例转换成 `Xxx`类型。以下代码展示了如何为 `Rational` 类型正确定义转换构造器和方法。
+>定义该方法的类型。——译注
 
 ```C#
 public sealed class Rational {
@@ -449,4 +450,74 @@ public sealed class Rational {
 }
 ```
 
-调用
+调用这些构造器和方法，使用任何编程语言的开发人员都能将 `Int32` 或 `Single` 对象转换成 `Rational` 对象，反之亦然。这些转换能给编程带来很多方便。设计类型时，应认真考虑类型需要支持的转换构造器和方法。
+
+上一节讨论了某些编程语言如何提供操作符重载。事实上，有些编程语言(比如 C#)还提供了转换操作符重载。**转换操作符**是将对象从一种类型转换成另一种类型的方法。可以使用特殊的语言来定义转换操作符方法。CLR 规范要求转换操作符重载方法必须是 `public` 和 `static` 方法。此外，C#(以及其他许多语言)要求参数类型和返回类型二者必有其一与定义转换方法的类型相同。之所以要进行这个限制，是为了使 C# 编译器能在一个合理的时间内找到要绑定的操作符方法。以下代码为 `Rational` 类型添加了 4 个转换操作符方法：
+
+```C#
+public sealed class Rational {
+    // 由一个 Int32 构造一个 Rational
+    public Rational(Int32 num) { ... }
+
+    // 由一个 Single 构造一个 Rational
+    public Rational(Single num) { ... }
+
+    // 将一个 Rational 转换成一个 Int32
+    public Int32 ToInt32() { ... }
+
+    // 将一个 Rational 转换成一个 Single
+    public Single ToSingle() { ... }
+
+    // 由一个 Int32 隐式构造并返回一个 Rational
+    public static implicit operator Rational(Int32 num) {
+        return new Rational(num);
+    }
+
+    // 由一个 Single 隐式构造并返回一个 Rational
+    public static implicit operator Rational(Single num) {
+        return new Rational(num);
+    }
+
+    // 由一个 Rational 显式返回一个 Int32
+    public static explicit operator Int32(Rational r) {
+        return r.ToInt32();
+    }
+
+    // 由一个 Rational 显式返回一个 Single
+    public static explicit operator Single(Rational r) {
+        return r.ToSingle();
+    }
+}
+```
+
+对于转换操作符方法，编译器既可生成代码来隐式调用转换操作符方法，也可只有在源代码进行了显式转型时才生成代码来调用转换操作符方法。在 C# 中，`implicit` 关键字告诉编译器为了生成代码来调用方法，不需要在源代码中进行显式转型。相反， `explicit` 关键字告诉编译器只有在发现了显式转型时，才调用方法。
+
+在 `implicit` 或 `explicit` 关键字之后，要指定 `operator` 关键字告诉编译器该方法是一个转换操作符。在 `operator` 之后，指定对象要转换成什么类型。在圆括号内，则指定要从什么类型转换。
+
+像前面那样为 `Rational` 类型定义了转换操作符之后，就可以写出像下面这样的 C# 代码：
+
+```C#
+public sealed class Program {
+    public static void Main() {
+        Rational r1 = 5;        // Int32 隐式转型为 Rational
+        Rational r2 = 2.5F;     // Single 隐式转型为 Rational
+
+        Int32 x = (Int32) r1;   // Rational 显式转型为 Int32
+        Single s = (Single) r2; // Rational 显式转型为 Single
+    }
+}
+```
+
+在幕后，C# 编译器检测到代码中的转型，并内部生成 IL 代码来调用 `Rational` 类型定义的转换操作符方法。现在的问题是，这些方法的名称是什么？编译 `Rational` 类型并查看元数据，会发现编译器为定义的每个转换操作符都生成了一个方法。`Rational` 类型的4个转换操作符方法的元数据如下：
+
+```C#
+public static Rational op_Implicit(Int32 num);
+public static Rational op_Implicit(Single num);
+public static Int32    op_Explicit(Rational r);
+public static Single   op_Explicit(Rational r);
+```
+
+可以看出，将对象从一种类型转换成另一种类型的方法总是叫做 `op_Implicit` 或者 `op_Explicit`。只有在转换不损失精度或数量级的前提下(比如讲个 `Int32`转换成`Rational`)，才能定义隐式转换操作符。如果转换会造成精度或数量级的损失(比如将 `Rational` 转换成 `Int32`)，就应该定义一个显式转换操作符。显式转换失败，应该让显式转换操作符方法抛出 `OverflowException`或者`InvalidOperationException`异常。
+> 注意 两个`op_Explicit` 方法获取相同的参数，也就是一个 `Rational`。但两个方法的返回类型不同，一个是 `Int32`，另一个是`Single`。这是仅凭返回类型来区分两个方法的例子。CLR 允许在一个类型中定义仅返回类型不同的多个方法。但只有极少数语言支持这个能力。你可能已经注意到了，C++，C#，Visual Basic 和Java语言都不允许在一个类型中定义仅返回类型不同的多个方法。个别语言(比如IL汇编语言)允许开发人员显式选择调用其中哪一个方法。当然，IL 汇编语言的程序员不应利用这个能力，否则定义的方法无法从其他语言中调用。虽然 C# 语言没有向 C#程序员公开这个能力，但当一个类型定义了转换操作符方法时，C#编译器会在内部利用这个能力。
+
+C# 编译器提供了对转换操作符的完全支持。如果检测到代码中正在使用某个类型的对象，但实际期望的是另一种类型的对象，编译器就会查找能执行这种转换的隐式转换操作符方法，并生成代码来调用该方法。如果存在隐式转换操作符方法，编译器会在结果IL 代码中`````````````````
