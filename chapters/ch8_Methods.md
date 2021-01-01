@@ -694,3 +694,130 @@ public static void Main () {
 
 ### 8.6.3 ExtensionAttribute 类
 
+扩展方法的概念要不是 C# 特有的就好了！具体地说，我们希望程序员能用一种编程语言定义一组扩展方法，并让其他语言的程序员利用它们。要实现这一点，选择的编译器必须能够搜索静态类型和方法来寻找匹配的扩展方法。另外，速度慢了还不行。编译器必须快速完成上述搜索，将编译时间控制在合理范围内。
+
+在 C# 中，一旦用 `this` 关键字标记了某个静态方法的第一个参数，编译器就会在内部向该方法应用一个定制特性。该特性会在最终生成的文件的元数据中持久性地存储下来。该特性在 `System.Core.dll` 程序集中定义，它看起来像下面这样：
+
+```C#
+// 在 System.Runtime.CompilerServices 命名空间中定义
+[AttributeUsage(AttributeTargets.Method | AttributeTargets.Class | AttributeTargets.Assembly)]
+public sealed class ExtensionAttribute : Attribute { } 
+```
+
+除此之外，任何静态类只要包含至少一个扩展方法，它的元数据中也会应用这个特性。类似地，任何程序集只要包含了至少一个符合上述特点的静态类，它的元数据中也会应用这个特性。这样一来，如果代码调用了一个不存在的实例方法，编译器就能快速扫描引用的所有程序集，判断它们哪些包含了扩展方法。然后，在这些程序集中，可以只扫描包含了扩展方法的静态类。在每个这样的静态类中，可以只扫描扩展方法来查找匹配。利用这个技术，代码能以最快速度编译完毕。
+
+## <a name="8_6">8.6 分部方法</a>
+
+假定用某个工具生成了包含类型定义的 C# 源代码文件，工具知道你想在代码的某些位置定制类型的行为。正常情况下，是让工具生成的代码调用虚方法来进行定制。工具生成的代码还必须包含虚方法的定义。另外，这些方法的实现是什么事情都不做，直接返回了事。现在，如果想定制类的行为，就必须从基类派生并定义自己的类，重写虚方法来实现自己想要的行为。下面是一个例子：
+
+```C#
+// 工具生成的代码，存储在某个源代码文件中：
+internal class Base {
+    private String m_name;
+
+    // 在更改 m_name 字段前调用
+    protected virtual void OnNameChanging(String value) { 
+    }
+
+    public String Name {
+        get { return m_name; }
+        set {
+            OnNameChanging(value.ToUpper());        // 告诉类要进行更改了
+            m_name = value;                         // 更改字段
+        }
+    }
+}
+
+// 开发人员生成的代码，存储在另一个源代码文件中：
+internal class Derived : Base {
+    protected override void OnNameChanging(string value) {
+        if (String.IsNullOrEmpty(value))
+            throw new ArgumentNullException("value");
+    }
+}
+```
+
+遗憾的是，上述代码存在两个问题。
+
+* 类型必须是非密封的类。这个技术不可能用于密封类，也不能用于值类型(值类型隐式密封)。此外，这个技术不能用于静态方法，因为静态方法不能重写。
+
+* 效率问题。定义一个类型只是为了重写一个方法，这会浪费少量系统资源。另外，即使不想重写 `OnNameChanging` 的行为，基类代码仍需调用一个什么都不做、直接就返回的虚方法。另外，无论 `OnNameChanging` 是否访问传给它的实参，编译器都会生成对 `ToUpper` 进行调用的 IL 代码。
+
+利用 C# 的**分部方法**功能，可以在解决上述问题的同时覆盖类的行为。以下代码使用分部方法实现和上述代码完全一样的语义：
+
+```C#
+// 工具生成的代码，存储在某个源代码文件中：
+internal sealed partial class Base {
+    private String m_name;
+
+    // 这是分部方法的声明
+    partial void OnNameChanging(String value);
+
+    public String Name {
+        get { return m_name; }
+        set {
+            OnNameChanging(value.ToUpper());        // 通知类要进行更改了
+            m_name = value;                         // 更改字段
+        }
+    }
+}
+
+// 开发人员生成的代码，存储在另一个源代码文件中：
+internal sealed partial class Base {
+    
+    // 这是分部方法的实现，会在 m_name 更改前调用 
+    partial void OnNameChanging(string value) {
+        if (String.IsNullOrEmpty(value))
+            throw new ArgumentNullException("value");
+    }
+}
+```
+
+这个新版本要注意以下几个问题。
+
+* 类现在密封(虽然并非一定如此)。事实上，类可以是静态类，甚至可以是值类型。
+
+* 工具和开发者所生成的代码真的是一个类型定义的两个部分。要更多地了解分部类型，请参见 6.5 节“分部类、结构和接口”。
+
+* 工具生成的代码包含分部方法的声明。要用 `partial` 关键字标记，无主体。
+
+* 开发者生成的代码实现这个声明。该方法也要用 `partial` 关键字标记，有主体。
+
+编译上述代码后，可以获得和原始代码一样的效果。现在的好处在于，可以重新运行工具，在新的源代码文件中生成新的代码，但你自己的代码是存储在一个单独的文件中的，不会受到影响。另外，这个技术可用于密封类、静态类以及值类型。
+> 注意 在 Visual Studio 编辑器中，如果输入 `partial` 并按空格键，“智能感知”窗口会列出当前类型定义的、还没有匹配实现的所有分部方法声明。可以方便地从窗口中选择一个分部方法。然后，Visual Studio 会自动生成方法原型。这个功能提高了编程效率。
+
+但是，分部方法还提供了另一个巨大的提升。如果不想修改工具生成的类型的行为，那么根本不需要提供自己的源代码文件。如果只是对工具生成的代码进行编译，编译器会改变生成的 IL 代码和元数据，使工具生成的代码看起来变成下面这样：
+
+```C#
+// 如果没有分部方法的“实现”方法，
+// 工具生成的代码在逻辑上就等价于下面的代码。
+internal sealed partial class Base {
+    private String m_name;
+
+    public String Name  {
+        get { return m_name; }
+        set {
+            m_name = value;    // 更改字段
+        }
+    }
+}
+```
+
+也就是说，如果没有实现分部方法，编译器不会生成任何代表部分方法的元数据。此外，编译器不会生成任何调用分部方法的 IL 指令。而且，编译器不会生成对本该传给分部方法的实参进行求值的 IL 指令。在这个例子中，编译器不会生成调用 `ToUpper` 方法的代码。结果就是更少的元数据/IL，运行时的性能得到了提升。
+
+> 注意 分部方法的工作方式类似于 `System.Diagnostics.ConditionalAttribute` 特性。然而，分部方法只能在单个类型中使用，而 `ConditionalAttribute` 能用于对另一个类型中定义的方法进行有选择的调用。
+
+#### 规则和原则
+
+关于分部方法，有一些附加的规则和原则需要注意。
+
+* 它们只能在分部类或结构中声明。
+
+* 分部方法的返回类型始终是 `void`，任何参数都不能用`out`修饰符来标记。之所以有这两个限制，是因为方法在运行时可能不存在，所以不能将变量初始化为方法也许会返回的东西。类似地，不允许 `out` 参数是因为方法必须初始化它，而方法可能不存在。分部方法可以有 `ref` 参数，可以是泛型方法，可以是实例或静态方法，而且可标记为`unsafe`。
+
+* 当然，分部方法的声明和实现必须具有完全一致的签名。如果两者都应了定制特性，编译器会合并两个方法的特性。应用于参数的任何特性也会合并。
+
+* 如果没有对应的实现部分，便不能在代码中创建一个委托来引用这个分部方法。这同样是由于方法在运行时不存在。编译器报告以下消息：`error CS0762:无法通过方法“Base.OnNameChanging(string)”创建委托，因为该方法是没有实现声明的分部方法。`
+
+* 分部方法总是被视为 `private` 方法，但 C# 编译器禁止在分部方法声明之前添加 `private` 关键字。
+
