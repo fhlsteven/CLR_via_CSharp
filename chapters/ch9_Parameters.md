@@ -173,4 +173,172 @@ private static void ShowVariableType<T>(T t) {
 CLR 默认所有方法参数都传值。传递引用类型的对象时，对象引用(或者说指向对象的指针)被传给方法。注意引用(或指针)本身是传值的，意味着方法能修改对象，而调用者能看到这些修改。对于值类型的实例，传给方法的是实例的一个副本，意味着方法将获得它专用的一个值类型实例副本，调用者中的实例不受影响。
 >重要提示 在方法中，必须知道传递的每个参数是引用类型还是值类型，处理参数的代码显著有别。
 
-CLR 允许以传引用而非传值的方式传递参数。
+CLR 允许以传引用而非传值的方式传递参数。C# 用关键字 `out` 或 `ref` 支持这个功能。连个关键字都告诉C# 编译器生成元数据来指明该参数是传引用的。编译器将生成代码来传递参数的地址，而非传递参数本身。
+
+CLR 不区分 `out` 和 `ref`，意味着无论用哪个关键字，都会生成相同的 IL 代码。另外，与那数据也几乎完全一致，只有一个 bit 除外，它用于记录声明方法时指定的是 `out` 还是 `ref`。但C# 编译器是将这两个关键字区别对待的，而且这个区别决定了由哪个方法负责初始化所引用的对象。如果方法的参数用 `out` 来标记，表明不指望调用者在调用方法之前初始化好了对象。被调用的方法不能读取参数的值，而且在返回前必须向这个值写入。相反，如果方法的参数用 `ref` 来标记，调用者就必须在调用该方法前初始化参数的值，被调用的方法可以读取值以及/或者向值写入。
+
+对于 `out` 和 `ref`，引用类型和值类型的行为迥然有异。先看一看为值类型使用 `out` 和 `ref`:
+
+```C#
+public sealed class Program {
+    public static void Main() {
+        Int32 x;                    // x 没有初始化
+        GetVal(out x);              // x 不必初始化
+        Console.WriteLine(x);       // 显示 "10"
+    }
+
+    private static void GetVal(out Int32 v) {
+        v = 10;             // 该方法必须初始化 V
+    }
+}
+```
+
+在上述代码中，`x` 在 `Main` 的栈桢<sup>①</sup>中声明。然后，`x`的地址传递给`GetVal`。`GetVal`的`v`是一个指针，指向`Main` 栈桢中的`Int32` 值。在`GetVal`内部，`v`指向的那个`Int32`被更改为`10`。`GetVal`返回时，`Main`的`x`就有了一个为`10`的值，控制台上回显示`10`。为大的值类型使用`out`，可提升代码的执行效率，因为它避免了在进行方法调用时复制值类型实例的字段。
+> ① 栈桢(stack frame)代表当前线程的调用栈中的一个方法调用。在执行线程的过程中进行的每个方法调用都会在调用栈中创建并压入一个 `StackFrame`。——译注
+
+下例用`ref`代替了`out`：
+
+```C#
+public sealed class Progarm {
+    public static void Main() {
+        Int32 x = 5;                // x 已经初始化
+        AddVal(ref x);              // x 必须初始化
+        Console.WriteLine(x);       // 显示"15"
+    }
+
+    private static void AddVal(ref Int32 v) {
+        v += 10;        // 该方法可使用 v 的已初始化的值
+    }
+}
+```
+
+在上述代码中，`x`也在`Main`的栈桢中声明，并初始化为`5`。然后，`x`的地址传给`AddVal`。`AddVal`的`v`是一个指针，指向`Main`栈桢中的`Int32`值。在`AddVal`内部，`v`指向的那个`Int32`要求必须是已经初始化的。因此，`AddVal`可在任何表达式中使用该初始值。`AddVal`还可更改这个值，新值会“返回”调用者。在本例中，`AddVal`将`10`加到初始值上。`AddVal`返回时，`Main`的`x`将包含`15`，这个值会在控制台上显示出来。
+
+综上所述，从 IL 和 CLR 的角度看，`out`和`ref`是同一码事：都导致传递指向实例的一个指针。但从编译器的角度看，两者是有区别的。根据是`out`还是`ref`，编译器会按照不同的标准来验证你写的代码是否正确。以下代码试图向要求 `ref` 参数的方法传递未初始化的值，结果是编译器报告以下错误：`error CS0165：使用了未赋值的局部变量“x”`。
+
+```C#
+public sealed class Program {
+    public static void Main() {
+        Int32 x;                   // x 内有初始化
+
+        // 下一行代码无法通过编译，编译器将报告：
+        // error CS1065：使用了未赋值的局部变量 "x"
+        AddVal(ref x);
+
+        Console.WriteLine(x);
+    }
+
+    private static void AddVal(ref Int32 v) {
+        v += 10;                    // 该方法可使用 v 的已初始化的值
+    }
+}
+```
+
+> 重要提示 经常有人问我，为什么 C# 要求必须在调用方法时指定 `out`或`ref`？毕竟，编译器知道被调用的方法需要的是`out`还是`ref`，所以应该能正确编译代码。事实上，C# 编译器确实能自动采用正确的操作。但 C# 语言的设计者认为调用者的方法是否需要对传递的变量值进行更改。
+
+> 另外，CLR 允许根据使用的是 `out` 还是 `ref`参数对方法进行重载。例如，在 C# 中，以下代码是合法的，可以通过编译：
+
+```C#
+public sealed class Point {
+    static void Add(Point p) { ... }
+    static void Add(ref Point p) { ... }
+}
+```
+
+> 两个重载方法只有`out`还是`ref`的区别则不合法，因为两个签名的元数据形式完全相同。所以，不能在上述 `Point` 类型中再定义以下方法：
+
+```C#
+static void Add(out Point p) { ... }
+```
+
+> 试图在 `Point` 类型中添加这个 `Add` 方法，C# 编译器会显示以下消息：`CS0663:"Add" 不能定义仅在ref和out上有差别的重载方法`。
+
+为值类型使用 `out` 和 `ref`，效果等同与以传值的方式传递引用类型。对于值类型，`out` 和 `ref` 允许方法操纵单一的值类型实例。调用者必须为实例分配内存(中的内容)。对于引用类型，调用代码为一个指针分配内存(该指针指向一个引用类型的对象)，被调用者则操纵这个指针。正因为如此，仅当方法“返回”对“方法知道的一个对象”的引用时，为引用类型使用 `out` 和 `ref`才有意义。以下代码对此进行了演示。
+
+```C#
+using System;
+using System.IO;
+
+public sealed class Program {
+    public static void Main() {
+        FileStream fs;                  // fs 没初始化
+
+        // 打开第一个待处理的文件
+        StartProcessingFiles(out fs);
+
+        // 如果有更多需要处理的文件，就继续
+        for (; fs != null; ContinueProcssingFiles(ref fs)) {
+            
+            // 处理一个文件
+            fs.Read(...);
+        }
+    }
+
+    private static void StartProcessingFiles(out FileStream fs) {
+        fs = new FileStream(...);          // fs 必须在这个方法中初始化
+    }
+
+    private static void ContinueProcssingFiles(ref FileStream fs) {
+        fs.Close();                      // 关闭最后一个操作的文件
+
+        // 打开下一个文件；如果没有更多的文件，就“返回” null
+        if (noMoreFilesToProcess) fs = null;
+        else fs = new FileStream (...);
+    }
+}
+```
+
+可以看出，上述代码最大的不同就是定义了一些使用了`out`或`ref`引用类型参数的方法，并用这些方法构造对象。新对象的指针将“返回”给调用者。还要注意，`ContinueProcessingFiles` 方法可对传给它的对象进行处理，再“返回”一个新对象。之所以能这样做，是因为参数标记了 `ref`。上述代码可简化为以下形式：
+
+```C#
+using System;
+using System.IO;
+
+public sealed class Program {
+    public static void Main() {
+        FileStream fs = null;    // 初始化为 null (必要的操作)
+
+        // 打开第一个待处理的文件
+        ProcessFiles(ref fs);
+
+        // 如果有更多需要处理的文件，就继续
+        for (; fs != null; ProcessFiles(ref fs)) {
+            
+            // 处理文件
+            fs.Read(...);
+        }
+    }
+
+    private static void ProcessFiles(ref FileStream fs) {
+        // 如果先前的文件是打开的，就将其关闭
+        if (fs != null) fs.Close();   // 关闭最后一个操作的文件
+
+        // 打开下一个文件；如果没有更多的文件，就“返回” null
+        if (noMoreFilesToProcess) fs = null;
+        else fs = new FileStream (...);
+    }
+}
+```
+
+下例演示了如何用 `ref` 关键字实现一个用于交换两个引用类型的方法：
+
+```C#
+public static void Swap(ref Object a, ref Object b) {
+    Object t = b;
+    b = a;
+    a = t;
+}
+```
+
+为了交换对两个 `String` 对象的引用，你或许以为代码能像下面这样写：
+
+```C#
+public static void SomeMethod() {
+    String s1 = "Jeffrey";
+    String s2 = "Richter";
+
+    Swap(ref s1, ref s2);
+    Console.WriteLine(s1);  // 显示 “Richter”
+    Console.WriteLine(s2);  // 显示 “Jeffrey”
+}
+```
