@@ -342,3 +342,228 @@ public static void SomeMethod() {
     Console.WriteLine(s2);  // 显示 “Jeffrey”
 }
 ```
+
+但上述代码无法通过编译。问题在于，对于以传引用的方式传给方法的变量，它的类型必须与方法签名中声明的类型相同，换句话说，`Swap`预期的是两个`Object`引用，而不是两个`String`引用。为了交换两个`String`引用，代码要像下面这样写：
+
+```C#
+public static void SomeMethod() {
+    String s1 = "Jeffrey";
+    String s2 = "Richter";
+
+    // 以传引用的方式传递的变量，
+    // 必须和方法预期的匹配
+    Object o1 = s1, o2 = s2;
+    Swap(ref o1, ref o2);
+
+    // 完事后再将 Object 转型为 String
+    s1 = (String) o1;
+    s2 = (String) o2;
+
+    Console.WriteLine(s1);  // 显示"Richter"
+    Console.WriteLine(s2);  // 显示"Jeffrey"
+}
+```
+
+这个版本的 `SomeMethod` 可以通过编译，并会如预期的一样执行。传递的参数之所以必须与方法预期的参数匹配，原因是保障类型安全。以下代码(幸好不会编译)演示了类型安全型是如何被破坏的：
+
+```C#
+internal sealed class SomeType {
+    public Int32 m_val;
+}
+
+public sealed class Program {
+    public static void Main() {
+        SomeType st;
+
+        // 以下代码将产生编译错误：
+        // error CS1503:参数"1":无法从"out SomeType"转换为“out object”
+        GetAnObject(out st);
+
+        Console.WriteLine(st.m_val);
+    }
+
+    private static void GetAnObject(out Object o) {
+        o = new String('X', 100);
+    }
+}
+```
+
+在上述代码中，`Main` 显然预期 `GetAnObject` 方法返回一个 `SomeType` 对象。但是，由于 `GetAnObject` 的签名表示的是一个 `Object`引用，所以 `GetAnObject` 可以将 `o` 初始化为任意类型的对象。在这个例子中，当 `GetAnObject` 返回 `Main` 时，`st`引用一个 `String`，显然不是 `SomeType` 对象，所以对 `Console.WriteLine` 的调用肯定会失败。幸好，C#编译器不会编译上述代码，因为`st`是一个`SomeType`引用，而`GetAnObject`要求的是一个`Object`引用。
+
+可用泛型来修正这些方法，使它们按你的预期来运行。下面修正了前面的`Swap`方法：
+
+```C#
+public static void Swap<T>(ref T a, ref T b) {
+    T t = b;
+    b = a;
+    a = t;
+}
+```
+
+重新了 `Swap`后，以下代码(和以前展示过的完全相同)就能通过编译了，而且能完美运行：
+
+```C#
+public static void SomeMethod() {
+    String s1 = "Jeffrey";
+    String s2 = "Richter";
+
+    Swap(ref s1,ref s2);
+    Console.WriteLine(s1);   // 显示 "Richter"
+    Console.WriteLine(s2);   // 显示 "Jeffrey"
+}
+```
+
+要查看用泛型来解决这个问题的其他例子，请参见 `System.Threading` 命名空间中的 `Interlocked` 类的 `CompareExchange` 和 `Exchange` 方法。
+
+## <a name="9_4">9.4 向方法传递可变数量的参数</a>
+
+方法有时需要获取可变数量的参数。例如，`System.String` 类型的一些方法允许连接任意数量的字符串，还有一些方法允许指定一组要统一格式化的字符串。
+
+为了接受可变数量的参数，方法要像下面这样声明：
+
+```C#
+static Int32 Add(params Int32[] values) {
+    // 注意：如果愿意，可将 values 数组传给其他方法
+
+    Int32 sum = 0;
+    if (values != null) {
+        for (Int32 x = 0; x < values.Length; x++)
+            sum += values[x];
+    }    
+    return sum;
+}
+```
+
+除了 `params` 关键字，这个方法的一切对你来说都应该是非常熟悉的。`params` 只能应用于方法签名中的最后一个参数。暂时忽略 `params` 关键字，可以明显地看出 `Add` 方法接受一个 `Int32` 类型的数组，然后遍历数组，将其中的`Int32`值加到一起，结果`sum`返回给调用者。
+
+显然，可以像下面这样调用该方法：
+
+```C#
+public static void Main() {
+    // 显示 "15"
+    Console.WriteLine(Add(new Int32[] { 1, 2, 3, 4, 5 } ));
+}
+```
+
+数组能用任意数量的一组元素来初始化，再传给 `Add` 方法进行处理。尽管上述代码可以通过编译并能正确运行，但并不好看。我们当然希望能像下面这样调用`Add`方法：
+
+```C#
+public static void Main() {
+    // 显示 "15"
+    Console.WriteLine(Add(1, 2, 3, 4, 5));
+}
+```
+
+由于`params`关键字的存在，所以的确能这样做。`params`关键字告诉编译器向参数应用定制特性`System.ParamArrayAttribute`的一个实例。
+
+C# 编译器检测到方法调用时，会先检查所有具有指定名称、同时参数没有应用`ParamArray`特性的方法。找到匹配的方法，就生成调用它所需的代码。没有找到，就直接检查应用了`ParamArray`特性的方法。找到匹配的方法，编译器先生成代码来构造一个数组，填充它的元素，再生成代码来调用所选的方法。
+
+上个例子并没有定义可获取 5 个 `Int32` 兼容实参的 `Add`方法。但编译器发现在一个`Add`方法调用中传递了一组`Int32`值，而且有一个`Add`方法的`Int32`数组参数应用了`ParamArray`特性的方法。找到匹配的方法，编译器先生成代码来构造一个数组，填充它的元素，再生成代码来调用所选的方法。
+
+只有方法的最后一个参数才可以用`params`关键字(`ParamArrayAttribute`)标记。另外，这个参数只能标识一维数组(任意类型)。可为这个参数传递`null`值，或传递对包含零个元素的一个数组的引用。以下`Add`调用能正常编译和运行，生成的结果是`0`(和预期的一样)：
+
+```C#
+public static void Main() {
+    // 以下两行都显示 “0”
+    Console.WriteLine(Add());       // 向 Add 传递 new Int32[0]
+    Console.WriteLine(Add(null));   // 向 Add 传递 null；更高效(因为不会分配数组)
+}
+```
+
+前面所有例子都只是演示了如何写方法来获取任意数量的 `Int32` 参数。那么，如何写方法来获取任意数量、任意类型的参数呢？答案很简单;只需修改方法原型，让它获取一个`Object[]`而不是`Int32[]`。以下方法显示传给它的每个对象的类型：
+
+```C#
+public sealed class Program {
+    public static void Main() {
+        DisplayTypes(new Object(), new Random(), "Jeff", 5);
+    }
+
+    private static void DisplayTypes(params Object[] objects) {
+        if (objects != null) {
+            foreach (Object o in objects)
+                Console.WriteLine(o.GetType());
+        }
+    }
+}
+```
+
+上述代码的输出如下：
+
+```cmd
+System.Object
+System.Random
+System.String
+System.Int32
+```
+
+> 重要提示 注意，调用参数数量可变的方法对性能有所影响(除非显式传递 `null`)。毕竟，数组对象必须在堆上分配，数组元素必须初始化，而且数组的内存最终需要垃圾回收。要减少对性能的影响，可考虑定义几个没有使用 `params` 关键字的重载版本。关于这方面的范例，请参考 `System.String` 类的 `Concat` 方法，该方法定义了以下重载版本：
+
+```C#
+public sealed class String : Object, ... {
+    public static string Concat(object arg0);
+    public static string Concat(object arg0, object arg1);
+    public static string Concat(object arg0, object arg1, object arg2);
+    public static string Concat(params object[] args);
+    public static string Concat(string str0, string str1);
+    public static string Concat(string str0, string str1, string str2);
+    public static string Concat(string str0, string str1, string str2, string str3);
+    public static string Concat(params string[] values);
+}
+```
+
+> 如你所见，`Concat`方法定义了几个没有使用`params`关键字的重载版本。这是为了改善常规情形下的性能。使用了`params`关键字的重载则用于不太常见的情形；在这些情形下，性能有一定的损失。但幸运的是，这些情形本来就不常见。
+
+## <a name="9_5">9.5 参数和返回类型的设计规范</a>
+
+声明方法的参数类型时，应尽量指定最弱的类型，宁愿要接口也不要基类。例如，如果要写方法来处理一组数据项，最好是用接口(比如`IEnumerable<T>`)声明参数，而不是用强数据类型(比如`List<T>`)或者更强的接口类型(比如`ICollection<T>`或`IList<T>`):
+
+```C#
+// 好： 方法使用弱参数类型
+public void ManipulateItems<T>(IEnumerable<T> collection) { ... }
+
+// 不好：方法使用强参数类型
+public void ManipulateItems<T>(List<T> collection) { ... }
+```
+
+原因是调用第一个方法时可以传递数组对象、`List<T>` 对象、`String` 对象或者其他对象——只要对象的类型实现了 `IEnumerable<T>` 接口。相反，第二个方法只允许传递`List<T>`对象，不接受数组或`String`对象。显然，第一个方法更好，它更灵活，适合更广泛的情形。
+
+当然，这里的例子讨论的是集合，是用接口体系结构来设计的。讨论使用基类体系结构设计的类时，概念同样适用。例如，要实现对流中的字节进行处理的方法，可定义以下方法：
+
+```C#
+// 好: 方法使用弱参数类型
+public void ProcessBytes(Stream someStream) { ... }
+
+// 不好：方法使用强参数类型
+public void ProcessBytes(FileStream fileStream) { ... }
+```
+
+第一个方法能处理任何流，包括`FileStream`，`NetworkStream` 和 `MemoryStream` 等。第二个只能处理 `FileStream` 流，这限制了它的应用。
+
+相反，一般最好是将方法的返回类型声明为最强的类型(防止受限于特定类型)。例如，方法最好返回`FileStream`而不是`Stream`对象：
+
+第一个方法是首选的，它允许方法的调用者将返回对象视为 `FileStream` 对象或者 `Stream` 对象。但第二个方法要求调用者只能将返回对象视为 `Stream` 对象。总之，要确保调用者在调用方法时有尽量的灵活性，使方法的适用范围更大。
+
+有时需要在不影响调用者的前提下修改方法的内部实现。在刚才的例子中， `OpenFile` 方法不太可能更改内部实现来返回除 `FileStream`(或 `FileStream` 的派生类型)之外的其他对象。但如果方法返回 `List<String>` 对象，就可能想在未来的某个时候修改它的内部实现来返回一个 `String[]`。如果想保持一定的灵活性，在将来更改方法返回的东西，请选择一个较弱的返回类型。例如：
+
+```C#
+// 灵活：方法使用较弱的返回类型
+public IList<String> GetStringCollection() { ... }
+
+// 不灵活：方法使用较强的返回类型
+public List<String> GetStringCollection() { ... }
+```
+
+在这个例子中，即使 `GetStringCollection` 方法在内部使用一个 `List<String>` 对象并返回它，但最好还是修改方法的原型，使它返回一个 `IList<String>`。将来， `GetStringCollection` 方法可更改它的内部集合来使用一个 `String[]`。与此同时，不需要修改调用者的源代码。事实上，调用者甚至不需要重新编译。注意，这个例子在较弱的类型中选择的是最强的那一个。例如，它没有使用最弱的 `IEnumerable<String>`，也没有使用较强的 `ICollection<String>`<sup>①</sup>。
+> ① `IList` 继承自 `ICollection`， `ICollection` 继承自 `IEnumerable`。作者的意思是说，在这三个比 `List<String>` 都弱的类型中，选择的是最强的 `IList`。 —— 译注
+
+## <a name="9_6">9.6 常量性</a>
+
+有的语言(比如非托管 C++)允许将方法或参数声明为常量，从而禁止实例方法中的代码更改对象的任何字段，或者更改传给方法的任何对象。CLR 没有提供这个功能，许多程序员因此觉得很遗憾。既然 CLR 都不提供，面向它的任何编程语言(包括 C#)自然也无法提供。
+
+首先要注意，非托管 C++ 将实例方法或参数声明为 `const` 只能防止程序员用一般的代码来更改对象或参数。方式内部总是可以更改对象或实参的。这要么是通过强制类型转换来去掉“常量性”，要么通过获取对象/实参的地址，再向那个地址写入。从某种意义上说，非托管 C++ 向程序员撒了一个谎，使他们以为常量对象或实参不能写入(事实上可以)。
+
+实现类型时，开发人员可以避免写操纵对象或实参的代码。例如，`String` 类就没有提供任何能更改 `String` 对象的方法，所以字符串是不可变(immutable)的。
+
+此外，Microsoft 很难为 CLR 赋予验证常量对象/实参未被更改的能力。CLR 将不得不对每个写入操作进行验证，确定该写入针对的不是常量对象。这对性能影响很大。当然，如果检测到有违反常量性的地方，会造成 CLR 抛出异常。此外，如果支持常量性，还会给开发人员带来大量复杂性。除此之外，在不可变的类型中，字段也必须不可变。
+
+考虑到这些原因以及其他许多原因，CLR 没有提供对常量对象/实参的支持。
