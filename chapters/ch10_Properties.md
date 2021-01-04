@@ -121,3 +121,106 @@ Int32 EmployeeAge = e.Age;          // get 员工年龄
 
 经常利用属性的 `get` 和 `set` 方法操纵类型中定义的私有字段。私有字段通常称为**支持字段**(backing field)。但 `get` 和 `set` 方法并非一定要访问支持字段。例如，`System.Threading.Thread`类型提供了  `Priority` 属性来直接和操作系统通信。`Thread` 对象内部没有一个关于线程优先级的字段。没有支持字段的另一种典型的属性是在运行时计算的只读属性。例如，以 0 结束的一个数组的长度或者已知高度和宽度的一个矩形的面积。
 
+定义属性时，取决于属性的定义，编译器在最后的托管程序集中生成以下两项或三项。
+
+* 代表属性 `get` 访问器的方法。仅在属性定义了 `get` 访问器方法时生成。
+* 代表属性 `set` 访问器的方法。仅在属性定义了 `set` 访问器方法时生成。
+* 托管程序集元数据中的属性定义。这一项必然生成。
+
+以前面的`Employee`类型为例。编译器编译该类型时发现其中的`Name`和`Age`属性。由于两者都有`get`和`set`访问器方法，所以编译器在`Employee`类型中生成 4 个方法定义，这造成原始代码似乎是像下面这样写的：
+
+```C#
+public sealed class Employee {
+    private String m_Name;
+    private Int32 m_Age;
+
+    public String get_Name() {
+        return m_Name;
+    }
+
+    public void set_Name (String value) {
+        m_Name = value;         // 实参 value 总是代表新设的值
+    }
+
+    public Int32 get_Age() {
+        return m_Age;
+    }
+
+    public void set_Age(Int32 value) {
+        if (value < 0)  // value 总是代表新值
+            throw new ArgumentOutOfRangeException("value", value.ToString(), 
+                            "The value must be greater than or equal to 0");
+        m_Age = value;
+    }
+}
+```
+
+编译器在你指定的属性名之前自动附加 `get_` 或 `set_` 前缀来生成方法名。C# 内建了对属性的支持。C# 编译器发现代码试图获取或设置属性时，实际会生成对上述某个方法的调用。即使编程语言不直接支持属性，也可调用需要的访问器方法来访问属性。效果一样，只是代码看起来没那么优雅。
+
+除了生成访问器方法，针对源代码中定义的每一个属性，编译器还会在托管程序集的元数据中生成一个属性定义项。在这个记录项中，包含了一些标志(falgs)以及属性的类型。另外，它还引用了`get`和`set`访问器方法。这些信息唯一的作用就是在“属性”这种抽象概念与它的访问器方法之间建立起一个联系。编译器和其他工具可利用这种元数据信息(使用`System.Reflection.PropertyInfo` 类来获得)。CLR 不使用这种元数据信息，在运行时只需要访问器方法。
+
+### 10.1.1 自动实现的属性
+
+如果只是为了封装一个支持字段而创建属性，C#还提供了一种更简洁的语法，称为**自动实现的属性**(Automatically Implemented Property，后文简称为 AIP)，例如下面的 `Name` 属性：
+
+```C#
+public sealed class Employee {
+    // 自动实现的属性
+    public String Name { get; set; }
+
+    private Int32 m_Age;
+
+    public Int32 Age {
+        get { return(m_Age); }
+        set {
+            if(value < 0)    // value 关键字总是代表新值
+                throw new ArgumentOutOfRangeException("value", value.ToString(), 
+                "The value must be greater than or equal to 0"); 
+
+            m_Age = value;
+        }
+    }
+}
+```
+
+声明属性而不提供 `get/set` 方法的实现，C# 会自动为你声明一个私有字段。在本例中，字段的类型是 `String`，也就是属性的类型。另外，编译器会自动实现`get_Name`和`set_Name`方法，分别返回和设置字段中的值。
+
+和直接声明名为`Name`的`public String`字段相比，AIP 的优势在哪里？事实上，两者存在一处重要的区别。使用 AIP，意味着你已经创建了一个属性。访问该属性的任何代码实际都会调用`get`和`set`方法。如果以后决定自己实现`get`和/或`set`方法，而不是接受编译器的默认实现，访问属性的任何代码都不必重新编译。然而，如果将 `Name` 声明为字段，以后又想把它更改为属性，那么访问字段的所有代码都必须重新编译才能访问属性方法。
+
+* 我个人不喜欢编译器的 AIP 功能，所以一般会避免使用它。理由是：字段声明语法可能包含初始化部分，所以要在一行代码中声明并初始化字段。但没有简单的语法初始化 AIP。所以，必须在每个构造器方法中显式初始化每个 AIP。
+
+* 运行时序列化引擎将字段名持久存储到序列化的流中。AIP 的支持字段名称由编译器决定，每次重新编译代码都可能更改这个名称。因此，任何类型只要含有一个 AIP，就没办法对该类型的实例进行反序列化。在任何想要序列化或反序列化的类型中，都不要使用 AIP 功能。
+
+* 调试时不能在 AIP 的`get`或`set`方法上添加断点，所以不好检测应用程序在什么时候获取或设置这个属性。相反，手动实现的属性可设置断点，查错更方便。
+
+还要注意，如果使用 AIP，属性必然是可读和可写的。换言之，编译器肯定同时生成 `get`和`set`方法。这个设计的道理在于，只写字段的支持字段到底是什么名字，所以代码只能用属性名访问属性。另外，任何访问器方法(`get`或`set`)要显式实现，两个访问器方法都必须显式实现，就不能使用 AIP 功能了。换言之， AIP 是作用于整个属性的；要么都用，要么都不用。不能显式实现一个访问器方法，而让另一个自动实现。
+
+### 10.1.2 合理定义属性
+
+我个人不喜欢属性，我还希望 Microsoft .NET Framework 及其编程语言不要提供对属性的支持。理由是属性看起来和字段相似，单本质是方法。这造成了大量误解。程序员在看到貌似访问字段的代码时，会做出一些对属性来说不成立的假定，具体如下所示。
+
+* 属性可以只读或只写，而字段访问总是可读和可写的(一个例外是`readonly`字段仅在构造器中可写)。如果定义属性，最好同时为它提供 `get` 和 `set`访问器方法。
+
+* 属性方法可能抛出异常；字段访问永远不会。
+
+* 属性不能作为 `out` 或 `ref` 参数传给方法，而字段可以。例如以下代码是编译不了的：
+
+```C#
+using System;
+
+public sealed class SomeType {
+    private static String Name {
+        get { return null; }
+        set { }
+    }
+
+    static void MethodWithOutParam(out String n） { n = null; }
+
+    public static void Main() {
+        // 对于下一代代码，C#编译器将报告一下错误消息：
+        // errot CS0206：属性或所引器不得作为 out 或 ref 参数传递
+        MethodWithOutParam(out Name);
+    }
+}
+```
+
