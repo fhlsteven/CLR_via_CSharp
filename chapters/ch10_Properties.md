@@ -224,3 +224,133 @@ public sealed class SomeType {
 }
 ```
 
+* 属性方法可能比较长时间执行，字段访问则总是立即完成。许多人使用属性是为了线程同步，这就可能造成线程永远终止。所以，要线程同步就不要使用属性，而要使用方法。此外，如果你的类可以被远程访问(例如从 `System.MashalByRefObject` 派生)，调用属性方法会非常慢。在这种情况下应该优先使用方法而不是属性。我个人认为从 `MashalByRefObject` 派生的类永远都不应该使用属性。
+
+* 连续多次调用，属性方法每次都可能返回不同的值，字段则每次都返回相同的值。`System.DateTime` 类的只读属性 `Now` 返回当前日期和时间。每次查询这个属性都返回不同的值。这是一个错误，Microsoft 现在很想修正这个错误，将 `Now` 改成方法而不是属性。`Environment`的`TickCount`属性是Microsoft犯错的另一个例子。
+
+* 属性方法可能造成明显的副作用<sup>①</sup>，字段访问则永远不会。类型的使用者应该能按照他/她选择的任何顺序设置类型定义的各个属性，而不会造成类型中(因为设置顺序的不同)出现不同的行为。
+> ① 这里的副作用(side effect)是指，访问属性时，除了单纯设置或获取属性，还会造成对象状态的改变。如果存在多个副作用，程序的行为就要依赖于历史；或者说要依赖于求值顺序。如果以不同的顺序设置属性，类型每一次的行为都不同，那么显然是不合理的。——译注
+
+* 属性方法可能需要额外的内存，或者返回的引用并非指向对象状态一部分，造成对返回对象的修改作用不到原始对象身上。而查询字段返回的引用总是指向原始对象状态的一部分。使用会返回一个拷贝的属性很容易引起混淆，文档也经常没有专门说明。<sup>②</sup>
+
+> 指开发人员在文档中没有清楚地指明这是属性，而且返回的是一个 copy，造成别人在使用这个类时产生混淆。 —— 译注
+
+> 属性和 Visual Studio 调试器  
+>  Microsoft Visual Studio 允许在调试器的监视窗口中输入一个对象的属性。这样一来，每次遇到一个断点，调试器都会调用属性的 `get` 访问器方法，并显示返回值。这个技术在查错时很有用，但也有可能造成 bug，并损害调试性能。例如，假定为网络共享中的文件创建了一个 `FileStream`，然后将 `FileStream` 的 `Length` 属性添加到调试器的监视窗口中。现在，每次遇到一个端点，调试器都会调用 `Length` 的 `get` 访问器方法，该方法内部向服务器发出一个网络请求来获取文件的当前长度！  
+> 类似地，如果属性的`get`访问器方法有一个 side effect，那么每次抵达断点，都会执行这个 side effect。例如，假定属性的 `get` 访问器方法每次调用时都递增一个计数器，这个计数器每次抵达断点时也会递增。考虑到可能有这些问题，Visual Studio 允许为监视窗口中显示的属性关闭属性求值。要在 Visual Studio 中关闭属性求值，请选择 "工具" | "选项" | "调试" | “常规”。然后，在如果 10-1 所示的列表框中，清除勾选“启用属性求值和其他隐式函数调用”。注意，即使清除了这个选项，仍可将属性添加到监视窗口，然后手动强制 Visual Studio 对它进行求值。为此，单击监视窗口“值”列中的强制求值圆圈即可。  
+![10_1](../resources/images/10_1.png)  
+图 10-1 Visual Studio 的常规调试设置  
+
+我发现现在的人对属性的依赖有过之而无不及，经常是不管有没有必要都使用属性。仔细研究一下上面这个属性和字段差别列表，你会发现只有在极个别的情况下，定义属性才真正有用，同时不会造成开发人员的混淆。属性唯一的好处就是提供了简化的语法。和调用普通方法(非属性中的方法)相比，属性不仅不会提升代码的性能，还会妨碍对代码的理解。要是我参与.NET Framework 以及编译器的设计，根本就不会提供属性；相反，我会让程序员老老实实地实现 `GetXxx` 和 `SetXxx` 方法。然后，编译器可以提供一些特殊的、简化的语法来调用这些方法。但是，我希望编译器使用有别于字段访问的语法，使程序员能正真理解他们正在做什么——是在调用一个方法！
+
+### 10.1.3 对象和集合初始化器
+
+经常要构造一个对象并设置对象的一些公共属性(或字段)。为了简化这个常见的编程模式，C# 语言支持一种特殊的对象初始化语法。下面是一个例子：
+
+```C#
+Employee e = new Employee() { Name = "Jeff", Age = 45; }
+```
+
+这个语句做了好几件事情，包括构造一个 `Employee` 对象，调用它的无参数构造器，将它的公共 `Name` 属性设为 "Jeff"，并将公共 `Age` 属性设为 `45`。事实上，这一行代码等价于以下几行代码。可以检查两者的 IL 代码来加以验证。
+
+```C#
+Employee e = new Employee();
+e.Name = "Jeff";
+e.Age = 45;
+```
+
+对象初始化器语法真正的好处在于，它允许在表达式的上下文(相当于语句的上下文)中编码，允许组合多个函数，进而增强了代码的可读性。例如，现在可以写这样的代码：
+
+```C#
+String s = new Employee() { Name = "Jeff", Age = 45 }.ToString().ToUpper();
+```
+
+这个语句做的事情更多，首先还是构造一个 `Employee` 对象，调用它的构造器，再初始化两个公共属性。然后，在结果表达式上，先调用 `ToString`，再调用 `ToUpper`。要深入了解函数的组合使用，请参见 8.6 节“扩展方法”。
+
+作为一个小的补充，如果想调用的本来就是一个无参构造器，C# 还允许省略起始大括号之前的圆括号。下面这行代码生成与上一行相同的IL：
+
+```C#
+String s = new Employee { Name = "Jeff", Age = 45 }.ToString().ToUpper();
+```
+
+如果属性的类型实现了 `IEnumerable` 或 `IEnumerable<T>` 接口，属性就被认为是集合，而集合的初始化是一种相加(additive)操作，而非替换(replacement)操作。例如，假定有下面这个类定义：
+
+```C#
+public sealed class Classroom {
+    private List<String>  m_students = new List<String>();
+    public List<String> Students { get { return m_students; } }
+
+    public Classroom() { }
+}
+```
+
+现在可以写代码来构造一个 `Classroom` 对象，并像下面这样初始化 `Students` 集合：
+
+```C#
+public static void M() {
+    Classroom classroom = new Classroom {
+        Students = { "Jeff", "Kristin", "Aidan", "Grant" }
+    };
+
+    // 显示教室中的 4 个学生
+    foreach (var student in classroom.Students)
+        Console.WriteLine(student);
+}
+```
+
+编译上述代码时，编译器发生 `Students` 属性的类型是 `List<String>`，而且这个类型实现了 `IEnumerable<String>` 接口。现在，编译器假定`List<String>`类型提供了一个名为`Add`的方法(因为大多数集合类都提供了 `Add` 方法将数据项添加到集合)。然后，编译器生成代码来调用集合的`Add`方法。所以，上述代码会被编译器转换成这样：
+
+```C#
+public static void M() {
+    Classroom classroom = new Classroom();
+    classroom.Student.Add("Jeff");
+    classroom.Student.Add("Kristin");
+    classroom.Student.Add("Aidan");
+    classroom.Student.Add("Grant");
+
+    // 显示教室中的 4 个学生
+    foreach (var student in classroom.Students)
+        Console.WriteLine(student);
+}
+```
+
+如果属性的类型实现了 `IEnumerable` 或 `IEnumerable<T>`，但未提供 `Add` 方法，编译器就不允许使用集合初始化语法向集合中添加数据项；相反，编译器报告以下消息：`error CS0117:"System.Collections.Generic.IEnumerable<string>"不包含"Add"的定义`。
+
+有的集合的`Add`方法要获取多个实参，比如 `Dictionary` 的 `Add` 方法：
+
+```C#
+public void Add(TKey key, TValue value);
+```
+
+通过在集合初始化器中嵌套大括号的方式，可向 `Add` 方法传递多个实参，如下所示：
+
+```C#
+var table = new Dictionary<String, Int32> (
+    { "Jeffrey" , 1 }, { "Kristin", 2 }, { "Aidan", 3 }, { "Grant", 4 }
+);
+```
+
+它等价于以下代码：
+
+```C#
+var table = new Dictionary<String, Int32>();
+table.Add("Jeffrey", 1);
+table.Add("Kristin", 2);
+table.Add("Aidan", 3);
+
+table.Add("Grant", 4);
+```
+
+### 10.1.4 匿名类型
+
+利用 C# 的匿名类型功能，可以用很简洁的语法来自动声明不可变(immutable)的元组类型。元组<sup>①</sup>类型是含有一组属性的类型，这些属性通常以某种方式相互关联。在以下代码的第一行中，我定义了含有两个属性(`String` 类型 `Name` 和 `Int32` 类型的 `Year`)的类，构造了该类型的实例，将 `Name` 属性设为 `"Jeff"`，将 `Year` 属性设为 `1964`。
+> ①  元组(tuple)一次来源于对顺序的抽象：`single`，`double`，`triple`，`quadruple`，`quintuple`，`n-tuple`。
+```C#
+// 定义类型，构造实例，并初始化属性
+var o1 = new { Name = "Jeff", Year = 1964 };
+
+// 在控制台上显示属性： Name=Jeff, Year=1964
+Console.WriteLine("Name={0}, Year={1}", o1.Name, ol.Year);
+```
+
+第一行代码创建了匿名类型，我没有在 `new` 关键字后制定类型名称，所以编译器会自动创建类型名称，而且不会告诉我这个名称具体是什么(这正是匿名的含义)。
