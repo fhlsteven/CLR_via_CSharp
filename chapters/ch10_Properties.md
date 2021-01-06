@@ -353,4 +353,134 @@ var o1 = new { Name = "Jeff", Year = 1964 };
 Console.WriteLine("Name={0}, Year={1}", o1.Name, ol.Year);
 ```
 
-第一行代码创建了匿名类型，我没有在 `new` 关键字后制定类型名称，所以编译器会自动创建类型名称，而且不会告诉我这个名称具体是什么(这正是匿名的含义)。
+第一行代码创建了匿名类型，我没有在 `new` 关键字后制定类型名称，所以编译器会自动创建类型名称，而且不会告诉我这个名称具体是什么(这正是匿名的含义)。这行代码使用上一节讨论的“对象初始化器”语法来声明属性，同时初始化这些属性。另外，由于我(开发人员)不知道编译时的类型名称，也就不知道变量`o1` 声明为什么类型。但这不是问题，因为可以像第 9 章讨论过的那样使用 C# 的“隐式类型局部变量”功能(`var`)。它的作用是告诉编译器根据赋值操作符(=)右侧的表达式推断类型。
+
+```C#
+var o = new { property1 = expression1, ..., propertyN = expressionN };
+```
+
+编译器会推断每个表达式的类型，创建推断类型的私有字段，为每个字段创建公共只读属性，并创建一个构造器来接受所有这些表达式。在构造器的代码中，会用传给它的表达式的求值结果来初始化私有只读字段。除此之外，编译器还会重写 `Object` 的 `Equals`，`GetHashCode`和`ToString`方法，并生成所有这些方法中的代码。最终，编译器生成的类看起来像这样：
+
+```C#
+[CompilerGenerated]
+internal sealed class <>f__AnonymousType0<...>: Object {
+    private readonly t1 f1;
+    public t1 p1 { get { return f1; } }
+
+    ...
+
+    private readonly tn fn;
+    public tn pn { get { return fn; } }
+
+    public <>f__AnonymousType0<...>(t1 a1, ..., tn an) {
+        f1 = a1; ...; fn = an;           // 设置所有字段
+    }
+
+    public override Boolean Equals(Object value) {
+        // 任何字段不匹配就返回 false，否则返回 true
+    }
+
+    public override Int32 GetHashCode() {
+        // 返回根据每个字段的哈希码生成的一个哈希码
+    }
+
+    public override String ToString() {
+        // 返回“属性名=值”对的以逗号分隔的列表
+    }
+}
+```
+
+编译器会生成 `Equals` 和 `GetHashCode` 方法，因此匿名类型的实例能放到哈希表集合中。属性是只读的，而非可读可写，目的是防止对象的哈希码会造成再也找不到它。编译器会生成`ToString`方法来帮助进行调试。在 Visual Studio 调试器中，可将鼠标指针放在引用了匿名类型实例的一个变量上方。随后， Visual Studio 会调用`ToString`方法，并在一个提示窗口中显示结果字符串。顺便说一句，在编辑器中写代码时， Visual Studio 的“智能感知”功能会提示属性名，这是非常好用的一个功能。
+
+编译器支持用另外两种语法声明匿名类型中的属性，能根据变量推断属性名和类型：
+
+```C#
+String Name = "Grant";
+DateTime dt = DateTime.Now;
+
+// 有两个属性的一个匿名类型
+// 1. String Name 属性设为"Grant"
+// 2. Int32 Year 属性设为 dt 中的年份
+var o2 = new { Name, dt.Year };
+```
+
+在这个例子中，编译器判断第一个属性应该叫 `Name`。由于 `Name` 是局部变量的名称，所以编译器将属性类型设为与局部变量相同的类型：`String`。对于第二个属性，编译器使用字段/属性的名称：`Year`。`Year`是`DateTime`类的一个`Int32`属性，所以匿名类型中的`Year`属性也是一个`Int32`。箱现在，当编译器构造这个匿名类型的一个实例时，会将实例的`Name`属性设为`Name`局部变量中的值，使`Name`属性引用同一个“Grant”字符串。编译器还要将实例的`Year`属性设为与`dt`的`Year`属性返回的值相同。
+
+编译器在定义匿名类型时是非常“善解人意”的。如果它看到你在源代码中定义了多个匿名类型，而且这些类型具有相同的结构，那么它只会创建一个匿名类型定义，但创建该类型的多个实例。所谓“相同的结构”，是指在这些匿名类型中，每个属性都有相同的类型和名称，而且这些属性的指定顺序相同。在前面的几个例子中，变量`o1` 和 `o2` 就是同类型的，因为在定义匿名类型的两行代码中，都是先一个`String`类型的`Name`属性，再一个`Int32`类型的`Year`属性。
+
+由于两个变量(`o1` 和 `o2`)的类型相同，所以可以做一些非常“酷”的事情，比如检查两个对象是否包含相等的值，并将对一个对象的引用赋给正在指向另一个对象的变量，如下所示：
+
+```C#
+// 一个类型允许相等测试和赋值操作
+Console.WriteLine("Objects are equal: " + o1.Equals(o2));
+o1 = o2;  // 赋值
+```
+
+另外，由于这种类型的同一性，所以可以创建一个隐式类型的数组(详情参见 16.1 节“初始化数组元素”)，在其中包含一组匿名类型的对象。
+
+```C#
+// 之所以能这样写，是因为所有对象都是相同的匿名类型
+var people = new []{
+    o1,         // o1 的定义参见本节开头
+    new { Name = "Kristin", Year = 1970 },
+    new { Name = "Aidan", Year = 2003 },
+    new { Name = "Grant", Year = 2008 }
+};
+
+// 下面展示如何遍历匿名类型的对象构成的数组(var 是必须的)
+foreach (var person in people) 
+    Console.WriteLine("Person={0}, Year={1}", person.Name, person.Year);
+```
+
+匿名类型经常与 LINQ(Language Intergrated Query，语言集成查询)配合使用。可用 LINQ 执行查询，从而生成由一组对象构成的集合，这些对象都是相同的匿名类型。然后，可以对结果集合中对象进行处理。所有这些都是在同一个方法中发生的。下例展示了如何如何返回“我的文档”文件夹中过去7天修改过的所有文件：
+
+```C#
+String myDocuments = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+var query = from pathname in Directory.GetFiles(myDocuments)
+            let LastWriteTime = File.GetLastWriteTime(pathname)
+            where LastWriteTime > (DateTime.Now - TimeSpan.FromDays(7))
+            orderby LastWriteTime
+            select new { Path = pathname, LastWriteTime };      // 匿名类型的对象构成的集合
+
+foreach (var file in query)
+    Console.WriteLine("LastWriteTime={0}, Path={1}", file.LastWriteTime, file.Path);
+```
+
+匿名类型的实例不能泄露到方法外部。方法原型不能接受匿名类型的参数，因为无法指定匿名类型。类似地，方法也不能返回对匿名类型的引用。虽然可以将匿名类型的实例视为一个`Object`(所有匿名类型都从`Object`派生)，但没办法将`Object`类型的变量转型回匿名类型，因为不知道在匿名类型在编译时的名称，要传递元组，应考虑使用下一节讨论的 `System.Tuple` 类型。
+
+### 10.1.5 `System.Tuple`类型
+
+在 `System` 命名空间，Microsoft 定义了几个泛型 `Tuple` 类型，它们全部从 `Object` 派生，区别只在于元数<sup>①</sup>(泛型参数的个数)。下面演示了最简单和最复杂的 `Tuple` 类型：
+> ① 元数的英文是 arity。在计算机编程中，一个函数或运算(操作)的元数是指函数获取的实参或操作数的个数。它源于像`unary(arity=1)、binary(arity=2)、ternary(arity=3)`这样的单词。——译注
+
+```C#
+// 这是最简单：
+[Serializable]
+public class Tuple<T1> {
+    private T1 m_Item1;
+    public Tuple(T1 item1) { m_Item1 = item1; }
+    public T1 Item1 { get { return m_Item1; } }
+}
+
+// 这是最复杂的：
+[Serializable]
+public class Tuple<T1, T2, T3, T4, T5, T6, T7, TRest> {
+    private T1 m_Item1; private T2 m_Item2; private T3 m_Item3; private T4 m_Item4;
+    private T5 m_Item5; private T6 m_Item6; private T7 m_Item7; private TRest m_Rest;
+    public Tuple(T1 item1, T2 item2, T3 item3, T4 item4, T5 item5, T6 item6, T7 item7, TRest rest) {
+        m_Item1 = item1; m_Item2 = item2; m_Item3 = item3; m_Item4 = item4; 
+        m_Item5 = item5; m_Item6 = item6; m_Item7 = item7; m_Rest = rest;
+    }
+
+    public T1 Item1 { get { return m_Item1; } }
+    public T2 Item2 { get { return m_Item2; } }
+    public T3 Item3 { get { return m_Item3; } }
+    public T4 Item4 { get { return m_Item4; } }
+    public T5 Item5 { get { return m_Item5; } }
+    public T6 Item6 { get { return m_Item6; } }
+    public T7 Item7 { get { return m_Item7; } }
+    public TRest Rest { get { return m_Rest; } }
+}
+```
+
+和匿名
