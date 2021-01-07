@@ -483,4 +483,213 @@ public class Tuple<T1, T2, T3, T4, T5, T6, T7, TRest> {
 }
 ```
 
-和匿名
+和匿名类型相似，`Tuple`创建好之后就不可变了(所有属性都只读)。虽然这里没有显示，但`Tuple`类还提供了`CompareTo`，`Equals`，`GetHashCode`和`ToString`方法以及`Size`属性。此外，所有`Tuple`类型都实现了`IStructuralEquatable`，`IStructuralComparable`和`IComparable`接口，所以可以比较两个`Tuple`对象，对它们的字段进行比对。请参考文档更多地了解这些方法和接口。
+
+下面的示例泛型方法 `MinMax` 用一个 `Tuple` 类型向调用者返回两样信息：
+
+```C#
+// 用 Item1 返回最小值 & 用 Item2 返回最大值
+private static Tuple<Int32, Int32>MinMax(Int32 a, Int32 b) {
+    return new Tuple<Int32, Int32>(Math.Min(a, b), Math.Max(a, b));
+} 
+
+// 下面展示了如何调用方法，以及如何使用返回的 Tuple
+private static void TupleTypes() {
+    var minmax = MinMax(6, 2);
+
+    // Min=2, Max=6
+    Console.WriteLine("Min={0}, Max={1}", minmax.Item1, minmax.Item2);
+}
+```
+
+当然，很重要的一点是 `Tuple` 的生产者(写它的人)和消费者(用它的人)必须对 `Item#` 属性返回的内容有一个清楚的理解。对于匿名类型，属性的实际名称是根据定义匿名类型的源代码来确定的。对于 `Tuple` 类型，属性一律被 Microsoft 称为 `Item#`，我们无法对此进行任何改变。遗憾的是，这种名字没有任何实际的含义或意义，所以要由生产者和消费者为它们分配具体含义。这还影响了代码的可读性和可维护性。所以，应该在自己的代码添加详细的注释，说明每个 `Item#`代表着什么。
+
+编译器只能在调用泛型方法时推断泛型类型，调用构造器时不能。因此，`System`命名空间还包含了一个非泛型静态 `Tuple` 类，其中包含一组静态`Create`方法，能根据实参推断泛型类型。这个类扮演了创建`Tuple`对象的一个工厂的角色，它存在的唯一意义便是简化你的代码。下面用静态`Tuple`类重写了刚才的`MinMax`方法：
+
+```C#
+// 用 Item1 返回最小值 & 用 Item2 返回最大值
+private static Tuple<Int32, Int32>MinMax(Int32 a, Int32 b) {
+    return Tuple.Create(Math.Min(a, b), Math.Max(a, b));        // 更简单的语法
+}
+```
+
+要创建多于 8 个元素的 `Tuple`，可为 `Rest` 参数传递另一个 `Tuple`，如下所示：
+
+```C#
+var t = Tuple.Create(0, 1, 2, 3, 4, 5, 6, Tuple.Create(7, 8));
+Console.WriteLine("{0}, {1}, {2}, {3}, {4}, {5}, {6}, {7}, {8}", 
+t.Item1, t.Item2, t.Item3, t.Item4, t.Item5, t.Item6, t.Item7, t.Rest.Item1.Item1, t.Rest.Item1.Item2);
+```
+
+> 注意 除了匿名类型和 `Tuple` 类型，还可研究一下 `System.Dynamic.ExpandoObject` 类(在 `System.Core.dll` 程序集中定义)。这个类和 C# 的`dynamic`类型(参见 5.5 节 “`dynamic` 基元类型”)配合使用，就可用另一种方式将一系列属性(键/值对)组合到一起。虽然实现不了编译时的类型安全性，但语法看起来不错(虽然得不到“智能感知”支持)，而且还可以在 C#和 Python这样的动态语言之间传递 `ExpandoObject`对象。以下是使用了一个`ExpandoObject`的示例代码：
+
+```C#
+dynamic e = new System.Dynamic.ExpandoObject();
+e.x = 6;                   // 添加一个 Int32 'x'属性，其值为 6 
+e.y = "Jeff";              // 添加一个 String 'y'属性，其值为 "Jeff"
+e.z = null;                // 添加一个 Object 'z'属性，其值为 null
+
+// 查看所有属性及其值：
+foreach (var v in (IDictionary<String, Object>)e)
+    Console.WriteLine("Key={0}, V={1}", v.Key, v.Value);
+
+// 删除 'x' 属性及其值：
+var d = (IDictionary<String, Object>) e;
+d.Remove("x");
+```
+
+## <a name="10_2">10.2 有参属性</a>
+
+在上一节中，属性的 `get` 访问器方法不接受参数，因此称为`无参属性`。由于用起来就像访问字段，所以很容易理解。除了这些与字段相似的属性，编程语言还支持`有参属性`，它的 `get` 访问器方法接受一个或多个参数，`set`访问器方法接受两个或多个参数。不同编程语言以不同方式公开有参属性。另外，不同编程语言对有参属性的称呼也不同。C# 称为`索引器`， Visual Basic 则称为`默认属性`。本节主要讨论 C#如何使用有参属性来公开索引器。
+
+C# 使用数组风格的语法来公开有参属性(索引器)。换句话说，可将索引器看成是 C#开发人员对 `[]`操作符的重载。下面是一个示例 `BitArray` 类，它允许用数组风格的语法来索引由该类的实例维护的一组二进制制位。
+
+```C#
+using System;
+
+public sealed class BitArray {
+    // 容纳了二进制位的私有字节数组
+    private Byte[] m_byteArray;
+    private Int32 m_numBits;
+
+    // 下面的构造器用于分配字节数组，并将所有位设为 0
+    public BitArray(Int32 numBits) {
+        // 先验证实参
+        if (numBits <= 0)
+            throw new ArgumentOutOfRangeException("numBits must be > 0");
+
+        // 保存位的个数
+        m_numBits = numBits;
+
+        // 为位数组分配字节
+        m_byteArray = new Byte[(numBits + 7) / 8];
+    }
+
+    // 下面是索引器(有参属性)
+    public Boolean this[Int32 bitPos] {
+        // 下面是索引器的 get 访问器方法
+        get {
+            // 先验证实参
+            if ((bitPos < 0) || (bitPos >= m_numBits))
+                throw new ArgumentOutOfRangeException("bitPos");
+
+            // 返回指定索引处的位的状态
+            return (m_byteArray[bitPos / 8] & (1 << (bitPos % 8))) != 0;
+        }
+
+        // 下面是索引器的 set 访问器方法
+        set {
+            if ((bitPos < 0) || (bitPos >= m_numBits))
+                throw new ArgumentOutOfRangeException("bitPos", bitPos.ToString());
+
+            if (value) {
+                // 将指定索引处的位设为 true
+                m_byteArray[bitPos / 8] = (Byte)(m_byteArray[bitPos / 8] | (1 << (bitPos % 8)));
+            } else {
+                // 将指定索引处的位设为 false
+                m_byteArray[bitPos / 8] = (Byte)(m_byteArray[bitPos / 8] & ~(1 << (bitPos % 8)));
+            }
+        }
+    }
+}
+```
+
+`BitArray` 类的索引器用起来很简单：
+
+```C#
+// 分配含 14 个位的 BitArray 数组
+BitArray ba = new BitArray(14);
+
+// 调用 set 访问器方法，将编号为偶数的所有位都设为 true
+for (Int32 x = 0; x < 14; x++) {
+    ba[x] = (x % 2 == 0);
+}
+
+// 调用 get 访问器方法显示所有位的状态
+for (Int32 x = 0; x < 14; x++) {
+    Console.WriteLine("Bit " + x + " is " + (ba[x] ? "On" : "Off"));
+}
+```
+
+在这个示例 `BitArray` 类中，索引器获取 `Int32` 类型的参数 `bitPos`。所有索引器至少要有一个参数，但可以有更多。这些参数(和返回类型)可以是除了 `void` 之外的任意类型。在 `System.Drawing.dll` 程序集的 `System.Drawing.Imaging.ColorMatrix` 类中，提供了有多个参数的一个索引器的例子。
+
+经常要创建索引器来查询关联数组<sup>①</sup>中的值。`System.Collections.Generic.Dictionary` 类型提供了这样的一个索引器，它获取一个建，并返回与该键关联的值。和无参属性不同，类型可提供多个重载的索引器，只要这些索引器的签名不同。
+> ① 关联数组(associative array)使用字符串索引(称为键)来访问存储在数组中的值(称为值)。 —— 译注
+
+和无参属性的 `set` 访问器方法相似，索引器的 `set` 访问器方法同样包含了一个隐藏参数，在 C# 中称为 `value`。该参数代表想赋给“被索引元素”的新值。
+
+CLR 本身不区分无参属性和有参属性。对 CLR 来说，每个属性都只是类型中定义的一对方法和一些元数据。如前所述，不同的编程语言要求用不同语法来创建和使用有参属性。将`this[...]`作为表达索引器的语法，这纯粹是 C#团队自己的选择。也正是因为这个选择，所以 C# 只允许在对象的实例上定义索引器。C# 不支持定义静态索引器属性，虽然 CLR 是支持静态有参熟属性的。
+
+由于 CLR 以相同的方式对待有参和无参属性，所以编译器会在托管程序集中生成以下两项或三项。
+
+* 代表有参属性 `get` 访问器的方法。仅在属性定义了 `get` 访问器方法时生成。
+* 代表有参属性 `set` 访问器的方法。仅在属性定义了 `set` 访问器方法时生成。
+* 托管程序集元数据中的属性定义。这一项必然生成。没有专门的有参属性元数据定义表，因为对于 CLR 来说，有参属性不过就是属性。
+
+对于前面的 `BitArray` 类，编译器在编译索引器时，元时代吗似乎是像下面这样写的：
+
+```C#
+public sealed class BitArray {
+
+    // 下面是索引器的 get 访问器方法
+    public Boolean get_Item(Int32 bitPos) { /* ... */ }
+
+    // 下面是索引器的 set 访问器方法
+    public void set_Item(Int32 bitPos, Boolean value) { /* ... */ }
+}
+```
+
+编译器在索引器名称之前附加 `get_` 或者 `set_` 前缀，从而自动生成这些方法的名称。由于 C#的索引器语法不允许开发人员指定索引器名称，所以 C# 编译器团队不得不为访问器方法选择一个默认名称：他们最后选择了 `Item`。因此，编译器生成的方法名就是 `get_Item` 和 `set_Item`。
+
+查看文档时，留意类型是否提供了名为 `Item` 的属性，从而判断该类型是否提供了索引器。例如，`System.Collections.Generic.List` 类型提供了名为 `Item` 的公共实例属性，它就是 `List` 的索引器。
+
+用 C# 编程永远看不到 `Item` 这个名称，所以一般无需关心编译器选择的是什么名称。但如果为类型设计的索引器要由其他语言的代码访问，就可能需要更改索引器的 `get` 和 `set` 访问器方法所用的默认名称 `Item`。C# 允许向索引器应用定制特性 `System.Runtime.CompilerServices.IndexerNameAttribute`  来重命名这些方法，如下所示：
+
+```C#
+using System;
+using System.Runtime.CompilerServices;
+
+public sealed class BitArray {
+
+    [IndexerName("Bit")]
+    public Boolean this[Int32 bitPos] {
+        // 这里至少要定义一个访问器方法
+    }
+}
+```
+
+现在，编译器将生成名为 `get_Bit` 和 `set_Bit` 的方法，而不是 `get_Item` 和 `set_Item`。编译时，C# 编译器会注意到 `IndexerName` 特性，它告诉编译器如何对方法和属性的元数据进行命名。特性本身不会进入程序集的元数据<sup>①</sup>。
+> ① 这个原因造成 `IndexerNameAttribute` 类不是 CLI 和 C#语言的 ECMA 标准的一部分。
+
+以下 Visual Basic 代码演示了如何访问这个C#索引器：
+
+```VB
+' 构造 BitArray 类型的实例 
+Dim ba as New BitArray(10)
+
+' Visual Basic 用()而不是[]指定数组元素
+Console.WriteLine(ba(2))        ' 显示 True 或 False
+
+' Visual Basic 还允许通过索引器的名称来访问它
+Console.WriteLine(ba.Bit(2))    ' 显示的内容和上一行代码相同
+```
+
+C# 允许一个类型定义多个索引器，只要索引器的参数集不同。在其他语言中，`IndexerName` 特性允许定义多个相同签名的索引器，因为索引器各自可以有不同的名称。C# 不允许这样做，是因为它的语法不是通过名称来引用索引器，编译器不知道你引用的是哪个索引器。编译以下 C# 代码将导致编译器报错：`error C0111: 类型“SomeType”已定义了一个名为“this”的具有相同参数类型的成员`。
+
+```C#
+using System;
+using System.Runtime.CompilerServices;
+
+public sealed class SomeType {
+    // 定义 get_Item 访问器方法
+    public Int32 this[Boolean b] {
+        get { return 0; }
+    }
+
+    // 定义 get_Jeff 访问器方法
+    [IndexerName("Jeff")]
+    public String this[Boolean b] {
+        get { return null; }
+    }
+}
+```
