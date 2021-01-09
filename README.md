@@ -26,7 +26,7 @@ CLR Via C# 第四版
 [第 8  章 方法](./chapters/ch8_Methods.md)  
 [第 9  章 参数](./chapters/ch9_Parameters.md)  
 [第 10 章 属性](./chapters/ch10_Properties.md)  
-第 11 章 事件  
+[第 11 章 事件](./chapters/ch11_Events.md)  
 第 12 章 泛型  
 第 13 章 接口  
 
