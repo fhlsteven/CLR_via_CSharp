@@ -31,5 +31,39 @@ CLR 事件模型以**委托**为基础。委托是调用<sup>①</sup>回调方�
 
 ## <a name="11_1">11.1 设计要公开事件的类型</a>
 
-开发人员通过连续几个步骤定义公开了一个或多个事件成员的类型。本节详细描述了每个必要的步骤。
+开发人员通过连续几个步骤定义公开了一个或多个事件成员的类型。本节详细描述了每个必要的步骤。`MailManager` 示例应用程序(可从 *http://wintellect.com* 下载)展示了 `MailManager` 类型、`Fax` 类型和 `Pager` 类型的所有源代码。注意，`Pager`类型和`Fax`类型几乎完全性相同。
 
+### 11.1.1 第一步：定义类型来容纳所有需要发送给事件通知接收者的附加信息
+
+事件引发时，引发事件的对象可能希望向接收事件通知的对象传递一些附件信息。这些附加信息需要封装到它自己的类中，该类通常包含一组私有字段，以及一些用于公开这些字段的只读公共属性。根据约定，这种类应该从 `System.EventArgs` 派生，而且类名以 `EventArgs` 结束。本例将该类命名为 `NewMailEventArgs` 类，它的各个字段分别标识了发件人(`m_from`)、收件人(`m_to`)和主题(`m_subject`)。
+
+```C#
+// 第一步：定义一个类型来容纳所有应该发送给事件通知接受者的附加信息
+internal class NewMailEventArgs : EventArgs {
+    private readonly String m_from, m_to, m_subject;
+
+    public NewMailEventArgs(String from, String to, String subject) {
+        m_from = from; m_to = to; m_subject = subject;
+    }
+
+    public String From { get { return m_from; } }
+    public String To { get { return m_to; } }
+    public String Subject { get { return m_subject; } }
+}
+```
+
+> 注意 `EventArgs` 类在 Microsoft .NET Framework 类库(FCL)中定义，其实现如下：
+
+```C#
+[ComVisible(true), Serializable]
+public class EventArgs {
+	public static readonly EventArgs Empty = new EventArgs();
+	public EventArgs() { }
+}
+```
+
+> 可以看出，该类型的实现非常简单，就是一个让其他类型继承的基类型。许多事件都没有附加信息需要传递。例如，当一个 `Button` 向已登记的接收者通知自己被单击时，调用回调方法就可以了。定义不需要传递附加数据的事件时，可直接使用 `EventArgs.Empty`，不用构造新的 `EventArgs` 对象。
+
+11.1.2 第二步：定义事件成员
+
+事件成员使用 C# 关键字 `event` 定义。每个事件成员都要指定以下内容：可访问性标识符(几乎肯定是 `pulbic`，这样其他代码才能访问该事件成员)；委托类型，指出要调用的方法的原型；以及名称(可以是任何有效的标识符)
