@@ -66,4 +66,29 @@ public class EventArgs {
 
 11.1.2 第二步：定义事件成员
 
-事件成员使用 C# 关键字 `event` 定义。每个事件成员都要指定以下内容：可访问性标识符(几乎肯定是 `pulbic`，这样其他代码才能访问该事件成员)；委托类型，指出要调用的方法的原型；以及名称(可以是任何有效的标识符)
+事件成员使用 C# 关键字 `event` 定义。每个事件成员都要指定以下内容：可访问性标识符(几乎肯定是 `pulbic`，这样其他代码才能访问该事件成员)；委托类型，指出要调用的方法的原型；以及名称(可以是任何有效的标识符)。以下是我们的 `MailManager` 类中的事件成员：
+
+```C#
+internal class MailManager {
+
+    // 第二部：定义事件成员
+    public event EventHandler<NewMailEventArgs> NewMail;
+    ...
+}
+```
+
+`NewMail` 是事件名称。事件成员的类型是 `EventHandler<NewMailEventArgs>`，意味着“事件通知”的所有接收者都必须提供一个原型和 `EventHandler<NewMailEventArgs>`委托类型匹配的回调方法。由于泛型 `System.EventHandler` 委托类型的定义如下：
+
+```C#
+public delegate void EventHandler<TEventArgs>(Object sender, TEventArgs e);
+```
+
+所以方法原型必须具有以下形式：
+
+```C#
+void MethodName(Object sender, NewMailEventArgs e);
+```
+
+> 注意 许多人奇怪事件模式为什么要求 `sender` 参数是 `Object` 类型。毕竟，只有 `MailManager` 才会引发传递了 `NewMailEventArgs` 对象的事件，所以回调方法更合适的原型似乎是下面这个：  
+`void MethodName(MailManager sender, NewMailEventArgs e);`  
+要求 `sender` 是 `Object` 主要是因为继承。例如，假定````
