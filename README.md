@@ -6,6 +6,8 @@ CLR Via C# 第四版
 本书源代码来自[Click Me](https://github.com/cuicheng11165/clr-via-csharp-4th-edition-code)  
 看书 记录 差不多就是照样子搬运工
 
+养成每天看书的习惯，每天更新github的习惯，练习markdown语法，练习打字速度，后期之后再做些想做的事情，没有想好做什么，大家要是有啥建议也可以留言。
+
 [前言](./chapters/foreword.md)  
 [序言](./chapters/introduction.md)
 
