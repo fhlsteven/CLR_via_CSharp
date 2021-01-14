@@ -116,3 +116,136 @@ internal class MailManager {
     }
 }
 ```
+
+> 以线程安全的方式引发事件  
+> .NET Framework 刚发布时建议开发者用以下方式引发事件：
+
+```C#
+// 版本 1 
+protected virtual void OnNewMail(NewMailEventArgs e) {
+    if (NewNmil != null) NewMail(this, e);
+}
+```
+
+> `OnNewMail` 方法的问题在于，虽然线程检查出 `NewMail` 不为 `null`，但就在调用 `NewMail` 之前，另一个线程可能从委托链中移除一个委托，使 `NewMail` 成了 `null`。这会抛出`NullReferenceException`异常。为了修正这个竞态问题，许多开发者都像下面这样写 `OnNewMail` 方法
+
+```C#
+// 版本 2
+protected virtual void OnNewMail (NewMailEventArgs e) {
+    EventHandler<NewMailEventArgs> temp = NewMail;
+    if (temp != null)  temp(this, e);
+}
+```
+
+>它的思路是，将对`NewMail`的引用复制到临时变量`temp`中，后者引用赋值发生时的委托链。然后，方法比较`temp`和`null`，并调用(invoke)`temp`；所以，向`temp`赋值后，即使另一个线程更改了`NewMail`也没有关系。委托是不可变的(immutable)，所以这个技术理论上行的通。但许多多开发者没有意识到的是，编译器可能“擅作主张”，通过完全移除局部变量`temp`的方式对上述代码进行优化。如果发生这种情况，版本2就和版本1就没有任何区别。所以，人有可能抛出`NullReferenceException`异常。  
+> 要想整个修正这个问题，应该像下面这样重写`OnNewMail`：
+
+```C#
+// 版本 3
+protected virtual void OnNewMail(NewMailEventArgs e) {
+    EventHandler<NewMailEventArgs> temp = Volatile.Read(ref NewMail);
+    if (temp != null) temp(this, e);
+}
+```
+
+> 对`Volatile.Read`的调用强迫`NewMail`在这个调用发生时读取，引用真的必须复制到`temp`变量中(编译器别想走捷径)。然后，`temp` 变量只有在不为`null`时才会被调用(invoke)。第29章“基元线程同步构造”将详细讨论`Volatile.Read`方法。  
+> 虽然最后一个版本很完美，是技术正确的版本，但版本2实际也是可以使用的，因为JIT编译器理解这个模式，知道自己不该将局部变量`temp`“优化”掉。具体地说，MIcrosoft 的所有 JIT 编译器都“尊重”那些不会造成对堆内存的新的读取动作的不变量(invariant)。所以，在局部变量中缓存一个引用，可确保堆引用只被访问一次。这一点并未在文档中反映，理论上说将来可能改变，这正是为什么应该使用最后一个版本的原因。但实际上，Microsoft 的 JIT 编译器永远没有可能真的进行修改来破坏这个模式，否则太多的应用程序都会“遭殃”<sup>①</sup>。此外，事件主要在单线程的情形(WPF和Windows Store 应用)中使用，所以线程安全不是问题。  
+> 还要注意，考虑到线程竞态条件<sup>②</sup>，方法有可能在从事件的委托链中移除之后得到调用。
+
+> ① 这是 Microsoft 的 JIT 编译器团队的人告诉我的。
+> ② 文档翻译成“争用状态”或“争用条件”。——译注
+
+为方便起见，可定义扩展方法(参见第8章“方法”)来封装这个线程安全逻辑。如下所示;
+
+```C#
+public static class EventArgsExtensions {
+    public statci void Raise<TEventArgs>(this TEventArgs e, Object sender, ref EventHandler<TEventArgs> eventDelegate) {
+        
+        // 出于线程安全的考虑，现在将对委托字段的引用复制到临时
+        EventHandler<TEventArgs> temp = Volatile.Read(ref eventDelegate);
+
+        // 任何方法登记了对事件的关注就通知它们
+        if (temp != null) temp(sender, e);
+    }
+}
+```
+
+现在可以像下面这样重写 `OnNewMail` 方法：
+
+```C#
+protected virtual void OnNewMail(NewMailEventArgs e) {
+    e.Raise(this, ref m_NewMail);
+}
+```
+
+以`MailManager`作为基类的类可自由重写`OnNewMail`方法。这使派生类能控制事件的引发，以自己的方式处理新邮件。一般情况下，派生类会调用基类的`OnNewMail`方法，使登记的方法能收到通知。但是，派生类也可以不允许事件转发。
+
+### 11.1.4 第四步：定义方法将输入转化为期望事件
+
+类还必须有一个方法获取输入并转化为事件的引发。在 `MailManager` 的例子中，是调用`SimulateNewMail`方法来指出一封新的电子邮件已到达`MailManager`:
+
+```C#
+internal class MailManager {
+
+    // 第四步：定义方法将输入转化为期望事件
+    public void SimulateNewNail(String from, String to, String subject) {
+
+        // 构造一个对象来容纳想传给通知接收者的信息
+        NewMailEventArgs e = new NewMailEventArgs(from, to, subject);
+
+        // 调用虚方法通知对象事件已发生，
+        // 如果没有类型重写该方法，我们的对象将通知事件的所有登记对象
+        OnNewMail(e);
+    }
+}
+```
+
+`SimualteNewMail`接收关于邮件的信息并构造`NewMailEventArgs`对象，将邮件信息传给它的构造器。然后调用`MailManager`自己的虚方法`OnNewMail`来正式通知`MailManager`对象收到了新的电子邮件。这通常会导致事件的引发，从而通知所有已登记的方法。(如前所述，以`MailManager`为基类的类可能重写这个行为。)
+
+## <a name="11_2">11.2 编译器如何实现事件</a>
+
+知道如何定义提供了事件成员的类之后，接着研究一下事件是什么，以及它是如何工作的。`MailManager`类用一行代码定义了事件成员本身：  
+`public event EventHandler<NewMailEventArgs> NewMail;`  
+
+C# 编译器编译时把它转换为以下 3 个构造：
+
+```C#
+// 1. 一个初始化为 null 的私有委托字段
+private EventHandler<NewMailEventArgs> NewMail = null;
+
+// 2. 一个公共 add_Xxx 方法(其中 XXX 是事件名)
+// 允许方法登记对事件的关注
+public void add_NewMail(EventHandler<NewMailEventArgs> value) {
+    // 通过循环和对 CompareExchange 的调用，可以
+    // 以一种线程安全的方式向事件添加委托
+    EventHandler<NewMailEventArgs> preHandler;
+    EventHandler<NewMailEventArgs> newMail = this.NewMail;
+    do {
+        preHandler = newMail;
+        EventHandler<NewMailEventArgs> newMail = (EventHandler<NewMailEventArgs>) Delegate.Combine(preHandler, value);
+        newMail = Interlocked.CompareExchange<EventHandler<NewMailEventArgs>>(ref this.NewMail, newHandler, preHandler);
+    } while (newMail != preHandler);
+}
+
+// 3. 一个公共 remove_Xxx 方法(其中Xxx是事件名)
+// 允许方法注销对事件的关注
+public void remove_NewMail(EventHandler<NewMailEventArgs> value) {
+    // 通过循环和对 CompareExchange 的调用，可以
+    // 以一种线程安全的方式从事件中移除一个委托
+    EventHandler<NewMailEventArgs> preHandler;
+    EventHandler<NewMailEventArgs> newMail = this.NewMail;
+    do {
+        preHandler = newMail;
+        EventHandler<NewMailEventArgs> newHandler = (EventHandler<NewMailEventArgs>) Delegate.Remove(preHandler, value);
+        newMail = Interlocked.CompareExchange<EventHandler<NewMailEventArgs>>(ref this.NewMail, newHandler, preHandler);
+    } while (newMail != preHandler);
+}
+```
+
+第一个构造是具有恰当委托类型的字段。该字段是对一个委托列表的头部的引用。事件发生时会通知这个列表中的委托。字段初始化为`null`，表明无侦听者(listener)登记对该事件的关注。一个方法登记对事件的关注时，该字段会引用 `EventHandler<NewMailEventArgs>`委托的实例，后者可能引用更多的`EventHandler<NewMailEventArgs>`委托。侦听者登记对事件的关注时，只需将委托类型的一个实例添加到列表中。显然，注销(对事件的关注)意味着从列表中移除委托。
+
+注意，即使原始代码行将事件定义为`public`，委托字段(本例是`NewMail`)也始终是`private`。将委托字段定义为`private`，目的是防止类外部的代码不正确地操纵它。如果字段是`public`，任何代码都能更改字段中的值，并可能删除已登记了对事件的关注的委托。
+
+C#编译器生成的第二个构造是一个方法，允许其他对象登记对事件的关注。C#编译器在事件名(`NewMail`)之前附加`add_`前缀，从而自动命名该方法。C#编译器还自动为方法生成代码。生成的代码总是调用`System.Delegate`的静态`Combine`方法，它将委托实例添加到委托列表中，返回新的列表中，返回新的列表头(地址)，并将这个地址存回字段。
+
+C#编译器生成的第三个构造是一个方法，允许对象注销对事件的关注。同样地，C#编译器在事件名(`NewMail`)````````````````````````````````````
