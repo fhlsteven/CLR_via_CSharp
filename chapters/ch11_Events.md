@@ -91,7 +91,28 @@ void MethodName(Object sender, NewMailEventArgs e);
 
 > 注意 许多人奇怪事件模式为什么要求 `sender` 参数是 `Object` 类型。毕竟，只有 `MailManager` 才会引发传递了 `NewMailEventArgs` 对象的事件，所以回调方法更合适的原型似乎是下面这个：  
 `void MethodName(MailManager sender, NewMailEventArgs e);`  
-要求 `sender` 是 `Object` 主要是因为继承。例如，假定`MailManager` 成为`SmtpMailManager`的基类，那么回调方法的 `sender` 参数应该是 `SmtpMailManager` 类型而不是`MailManager`类型。但这不可能发生，因为`SmtpMailManager` 继承了 `NewMail` 事件。所以，如果代码需要由`SmtpMailManager` 引发事件，还是要将`sender` 实参转型为`SmtpMailManager`。反正都要进行类型转换，这和将`sender`定为`Object`类型没什么两样。
+要求 `sender` 是 `Object` 主要是因为继承。例如，假定`MailManager` 成为`SmtpMailManager`的基类，那么回调方法的 `sender` 参数应该是 `SmtpMailManager` 类型而不是`MailManager`类型。但这不可能发生，因为`SmtpMailManager` 继承了 `NewMail` 事件。所以，如果代码需要由`SmtpMailManager` 引发事件，还是要将`sender` 实参转型为`SmtpMailManager`。反正都要进行类型转换，这和将`sender`定为`Object`类型没什么两样。  
 将`sender`参数的类型定为`Object`的另一个原因是灵活性。它使委托能由多个类型使用，只要类型提供了一个会传递 `NewMailEventArgs`对象的事件。例如，即使 `PopMailManager` 类不是从 `MailManager`类派生的，也能使用这个委托。
-此外，事件模式要求委托定义和回调方法将派生自`EventArgs` 的参数命名为 `e`。这个要求唯一的作用就是加强事件模式的一致性，使开发人员更容易学习和实现这个模式。注意，能自动生成源代码的工具(比如 Microsoft Visual Studio)也知道将参数命名为`e`。
-最后，事件模式要求所有事件处理程序<sup>①</sup>的返回都是`void`。这很有必要，因为引发事件后可能要调用好几个回调方法，但没办法获得所有方法的返回值。将返回类型定为`void`，
+此外，事件模式要求委托定义和回调方法将派生自`EventArgs` 的参数命名为 `e`。这个要求唯一的作用就是加强事件模式的一致性，使开发人员更容易学习和实现这个模式。注意，能自动生成源代码的工具(比如 Microsoft Visual Studio)也知道将参数命名为`e`。  
+最后，事件模式要求所有事件处理程序<sup>①</sup>的返回都是`void`。这很有必要，因为引发事件后可能要调用好几个回调方法，但没办法获得所有方法的返回值。将返回类型定为`void`，就不允许回调(方法)返回值。遗憾的是，FCL中的一些事件处理程序(比如`ResolveEventHandler`)没有遵循 Microsoft 自定的模式。例如， `ResolveEventHandler` 事件处理程序会返回 `Assembly` 类型的对象。
+
+> ①本书按约定俗成的译法将 event handler 翻译成“事件处理程序”，但请把它理解成“事件处理方法”(在 VB 中，则理解成“事件处理 Sub 过程”)。——译注
+
+### 11.1.3 第三步：定义负责引发事件的方法来通知事件的登记对象
+
+按照约定，类要定义一个受保护的虚方法。引发事件时，类及其派生类中的代码会调用该方法。方法只获取一个参数，即一个 `NewMailEventArgs` 对象，其中包含了传给接收通知的对象的信息。方法的默认实现知识检查一下是否有对象登记了对事件的关注。如果有，就引发事件来通知事件的登记对象。该方法在 `MailManager` 类中看起来像下面这样：
+
+```C#
+internal class MailManager {
+    ...
+    // 第三步 ： 定义负责引发事件的方法来通知已登记的对象。
+    // 如果类是密封的，该方法要声明为私有和非虚
+    protected virtual void OnNewMail(NewMailEventArgs e) {
+        // 出于线程安全的考虑，现在将对委托字段的引用复制到一个临时变量中
+        EventHandler<NewMailEventArgs> temp = Volatile.Read(ref NewMail);
+
+        // 任何方法登记了对事件的关注，就通知它们
+        if (temp != null) temp(this, e);
+    }
+}
+```
