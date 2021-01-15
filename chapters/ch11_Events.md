@@ -248,4 +248,72 @@ public void remove_NewMail(EventHandler<NewMailEventArgs> value) {
 
 C#编译器生成的第二个构造是一个方法，允许其他对象登记对事件的关注。C#编译器在事件名(`NewMail`)之前附加`add_`前缀，从而自动命名该方法。C#编译器还自动为方法生成代码。生成的代码总是调用`System.Delegate`的静态`Combine`方法，它将委托实例添加到委托列表中，返回新的列表中，返回新的列表头(地址)，并将这个地址存回字段。
 
-C#编译器生成的第三个构造是一个方法，允许对象注销对事件的关注。同样地，C#编译器在事件名(`NewMail`)````````````````````````````````````
+C#编译器生成的第三个构造是一个方法，允许对象注销对事件的关注。同样地，C#编译器在事件名(`NewMail`)之前附加`remove_`前缀，从而自动命名该方法。方法中的代码总是调用`Delegate`的静态`Remove`方法，将委托实例从委托列表中删除，返回新的列表头(地址)，并将这个地址存回字段。
+
+> 警告 试图删除从未添加过的方法，`Delegate`的`Remove`方法在内部不做任何事情。也就是说，不会抛出任何异常，也不会显示任何警告；事件的方法集合保持不变。
+
+> 注意 `add`和`remove`方法以线程安全的一种模式更新值。该模式的详情将在29.3.4节“Interlocked Anything模式”讨论。
+
+在本例中，`add`和`remove`方法的可访问性都是`public`。这是因为源代码将事件声明为`public`。如果事件声明为`protected`，编译器生成的`add`和`remove`方法也会被声明为`protected`。因此，在类型中定义事件时，事件的可访问性决定了什么代码能登记和注销对事件的关注。但无论如何，只有类型本身才能直接访问委托字段。事件成员也可声明为`static`或`virtual`。在这种情况下，编译器生成的`add`和`remove` 方法分别标记为 `static` 或 `virtual`。
+
+除了生成上述3个构造，编译器还会在托管程序集的元数据中生成一个事件定义记录项。这个记录项包含了一些标志(flag)和基础委托类型(underlying delegate type)，还引用了`add`和`remove`访问器方法。这些信息的作用很简单，就是建立“事件”的抽象概念和它的访问器方法之间的联系。编译器和其他工具可利用这些元数据信息，并可通过`System.Reflection.EventInfo`类获取这些信息。但是，CLR本身并不使用这些元数据信息，它在运行时只需要访问器方法。
+
+## <a name="11_3">11.3 设计侦听事件的类型</a>
+
+最难的部分已经完成了，接下来是一些较为简单的事情。本节将演示如何定义一个类型来使用另一个类型提供的事件。先来看看`Fax`类型的代码：
+
+```C#
+internal sealed class Fax {
+    // 将 MailManager 对象传给构造器
+    public Fax(MailManager mm) {
+
+        // 构造 EventHandler<NewMailEventArgs> 委托的一个实例，
+        // 使它引用我们的 FaxMsg 回调方法
+        // 向 MailManager 的 NewMail 事件登记我们的回调方法
+        mm.NewMail += FaxMsg;
+    }
+
+    // 新电子邮件到达时， MailManager 将调用这个方法
+    private void FaxMsg(Object sender, NewMailEventArgs e) {
+
+        // 'sender' 表示 MailManager 将调用这个方法
+
+        // 'e' 表示 MailManager 对象想传给我们的附加事件信息
+        // 这里的代码正常情况下应该传真电子邮件，
+        // 但这个测试性的实现只是在控制台上显示邮件
+        Console.WriteLine("Faxing mail message:");
+        Console.WriteLine(" From={0}, To={1}, Subject={2}", e.From, e.To, e.Subject);
+    }
+
+    // 执行这个方法，Fax对象将向 NewMail 事件注销自己对它的关注，
+    // 以后不再接受通知
+    public void Unregister(MailManager mm) {
+
+        // 向 MailManager 的 NewMail 事件注销自己对这个事件的关注
+        mm.NewMail -= FaxMsg;
+    }
+}
+```
+
+电子邮件应用程序初始化时首先构造`MailManager`对象，并将对该对象的引用保存到变量中。然后构造`Fax`对象，并将`MailManager`对象引用作为实参传递。在`Fax`构造器中，`Fax`对象使用C#的`+=`操作符登记它对`MailManager`的`NewMail`事件的关注： 
+`mm.NewMail += FaxMsg;`  
+C# 编译器内建了对事件的支持，会将`+=`操作符翻译成以下代码来添加对象对事件的关注：  
+`mm.add_NewMail(new EventHandler<NewMailEventArgs>(this.FaxMsg));`  
+C#编译器生成的代码构造一个`EventHandler<NewMailEventArgs>`委托对象，其中包装了`Fax`类的`FaxMsg`方法。接着，C#编译器调用`MailManager`类的`add_NewMail`方法，向它传递新的委托对象。为了对此进行验证，可编译代码并用 ILDasm.exe这样的工具查看IL代码。
+
+即使使用的编程语言不直接支持事件，也可显式调用`add`访问器方法向事件登记委托。两者效果一样，只是后者的源代码看起来没那么优雅。两者最终都是用`add`访问器将委托添加到事件的委托列表中，从而完成委托向事件的登记。
+
+`MailManager`对象引发事件时，`Fax`对象的`FaxMsg`方法会被调用。调用这个方法时，会传递`MailManager`对象引用作为它的第一个参数，即`sender`。该参数大多数时候会被忽略。但如果`Fax`对象希望在响应事件时访问`MailManager`对象的成员，它就派上用场了。第二个参数是`NewMailEventArgs`对象引用。对象中包含`MailManager`和`NewMailEventArgs`的设计者认为对事件接收者来说有用的附加信息。
+
+对象不再希望接收事件通知时，应注销对事件的关注。例如，如果不再希望将电子邮件转发到一台传真机，`Fax`对象就应该注销它对`NewMail`事件的关注。对象只要向事件登记了它的一个方法，便不能被垃圾回收。所以，如果你的类型要实现`IDisposable`的`Dispose`方法，就应该在实现中注销对所有事件的关注。`IDisposable`的详情参见第21章“托管堆和垃圾回收”。
+
+`Fax`的`Unregister`方法示范了如何注销对事件的关注。该方法和`Fax`构造器中的代码十分相似。唯一区别是使用`-=`而不是`+=`。C#编译器看到代码使用`-=`操作符向事件注销委托时，会生成对事件的`remove`方法的调用：  
+`mm.remove_NewMail(new EventHandler<NewMailEventArgs>(FaxMsg));`  
+
+和`+=`操作符一样，即使编程语言不直接支持事件，也可显式调用`remove`访问器方法向事件注销委托。`remove`方法为了向事件注销委托，需要扫描委托列表来寻找一个恰当的委托(其中包装的方法和传递的方法相同)。找到匹配，现有委托会从事件的委托列表中删除。没有找到也不会报错，列表不发生任何变动。
+
+顺便说一下，C#要求代码使用`+=`和`-=`操作符在列表中增删委托。如果显式调用`add`金额`remove`方法，C#编译器会报告以下错误消息：`CS0571:无法显式调用运算符或访问器`。
+
+## <a name="11_4">11.4 显式实现事件</a>
+
+`System.Windows.Forms.Control` 类型定义了大约 70 个事件。假如 `Control` 类型在实现事件时，允许编译器隐式生成 `add` 和 `remove`访问器方法以及委托字段，
