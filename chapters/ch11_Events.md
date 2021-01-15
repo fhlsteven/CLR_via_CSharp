@@ -316,4 +316,6 @@ C#编译器生成的代码构造一个`EventHandler<NewMailEventArgs>`委托对�
 
 ## <a name="11_4">11.4 显式实现事件</a>
 
-`System.Windows.Forms.Control` 类型定义了大约 70 个事件。假如 `Control` 类型在实现事件时，允许编译器隐式生成 `add` 和 `remove`访问器方法以及委托字段，
+`System.Windows.Forms.Control` 类型定义了大约 70 个事件。假如 `Control` 类型在实现事件时，允许编译器隐式生成 `add` 和 `remove`访问器方法以及委托字段，那么每个`Control`对象仅为事件就要准备 70 个委托字段！由于大多数程序员只关心少数几个事件，所以每个从`Control`派生类型创建的对象都要浪费大量内存。顺便说一下，ASP.NET的`System.Web.UI.Control`类型和WPF的`System.Windows.UIElement`类型也提供了大多数程序员都用不上的大量事件。
+
+本节将讨论C#编译器如何允许类的开发人员显式实现一个事件，使开发人员能够控制`add`和`remove`方法处理回调委托的方式。我要演示如何通过显式````
