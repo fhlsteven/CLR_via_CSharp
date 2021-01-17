@@ -304,3 +304,242 @@ public static class Program {
 对象类型 = DictionaryStringKey`1[System.Guid]
 ```
 
+可以看出，`Activator` 的 `CreateInstance` 方法会在试图构造开放类型的实例时抛出`ArgumentException`异常。注意，异常的字符串消息指明类型中仍然含有一些泛型参数。
+
+从输出可以看出，类型名以“'”字符和一个数字结尾。数字代表类型的元数，也就是类型要求的类型参数个数。例如，`Dictionary`类的元数为 2，要求为`TKey`和`TValue`这两个类型参数指定具体类型。`DictionaryStringKey`类的元数为1，只要求为`TValue`指定具体类型。
+
+还要注意，CLR 会在类型对象内部分配类型的静态字段(本书第 4 章“类型基础”对此进行了讨论)。因此，每个封闭类型都有自己的静态字段。换言之，假如`List<T>`定义了任何静态字段，这些字段不会在一个`List<DateTime>`和一个`List<String>`之间共享；每个封闭类型对象都有自己的静态字段。另外，假如泛型类型定义了静态构造器(参见第 8 章 “方法”)，那么针对每个封闭类型，这个构造器都会执行一次。泛型类型定义静态构造器的目的是保证传递的类型实参满足特定条件。例如，我们可以像下面这样定义只能处理么枚举类型的泛型类型：
+
+```C#
+internal sealed class GenericTypeThatRequiresAnEnum<T> {
+    static GenericTypeThatRequiresAnEnum() {
+        if (!typeof(T).IsEnum) {
+            throw new ArgumentException("T must be an enumerated type");
+        }
+    }
+}
+```
+
+CLR 提供了名为**约束**的功能，可以更好地指定有效的类型实参。本章稍后会详细讨论。遗憾的是，约束无法将类型实参限制为“仅枚举类型”。正是因为这个原因，所以上例需要用静态构造器来保证类型是一个枚举类型。
+
+### 12.2.2 泛型类型和继承
+
+泛型类型仍然是类型，所以能从其他任何类型派生。使用泛型类型并指定类型实参时，实际是在CLR中定义一个新的类型对象，新的类型对象从泛型类型派生自的那个类型派生。换言之，由于`List<T>`从`Object`派生，所以`List<String>`和`List<Guid>`也从`Object`派生。类似地，由于`DictionaryStringKey<TValue>`从`Dictionary<String, TValue>`派生，所以`DictionaryStringKey<Guid>`也从`Dictionary<String, Guid>`派生。指定类型实参不影响继承层次结构——理解这一点，有助于你判断哪些强制类型转换是允许的，哪些不允许。
+
+假定像下面这样定义一个链表节点类：
+
+```C#
+internal sealed class Node<T> {
+    public T m_data;
+    public Node<T> m_next;
+
+    public Node(T data) : this(data, null) { }
+
+    public Node(T data, Node<T> next) {
+        m_data = data; m_next = next;
+    }
+
+    public override string ToString() {
+        return m_data.ToString() + ((m_next != null) ? m_next.ToString() : String.Empty);
+    }
+}
+```
+
+那么可以写代码来构造链表，例如：
+
+```C#
+private static void SameDataLinkedList() {
+    Node<Char> head = new Node<Char>('C');
+    head = new Node<Char>('B', head);
+    head = new Node<Char>('A', head);
+    Console.WriteLine(head.ToString());     // 显示“ABC”
+}
+```
+
+在这个 `Node` 类中，对于`m_next`字段引用的另一个节点来说，它的`m_data`字段必须包含相同的数据类型。这意味着在链表包含的节点中，所有数据项都必须具有相同的类型(或派生类型)。例如，不能使用 `Node` 类来创建这样一个链表：其中一个元素包含`Char`值，另一个包含`DateTime`值，另一个元数则包含`String`值。当然，如果到处都用`Node<Object>`，那么确实可以做到，但会丧失编译时类型安全性，而且值类型会被拆箱。
+
+所以，更好的办法是定义非泛型`Node`基类，再定义泛型`TypedNode`类(用`Node`类作为基类)。这样就可以创建一个链表，其中每个节点都可以是一种具体的数据类型(不能是`Object`)，同时获得编译时的类型安全性，并防止值类型装箱。下面是新的类型定义：
+
+```C#
+internal class Node {
+    protected Node m_next;
+
+    public Node(Node next) {
+        m_next = next;
+    }
+}
+
+internal sealed class TypeNode<T> : Node {
+    public T m_data;
+
+    public TypeNode(T data) : this(data, null) {
+    }
+
+    public TypeNode(T data, Node next) : base(next) {
+        m_data = data;
+    }
+
+    public override string ToString() {
+        return m_data.ToString() + ((m_next != null) ? m_next.ToString() : String.Empty);
+    }
+}
+```
+
+现在可以写代码来创建一个链表，其中每个节点都是不同的数据类型。例如：
+
+```C#
+private static void DifferentDataLinkedList() {
+    Node head = new TypeNode<Char>('.');
+    head = new TypeNode<DateTime>(DateTime.Now, head);
+    head = new TypeNode<String>("Today is ", head);
+    Console.WriteLine(head.ToString());
+}
+```
+
+### 12.2.3 泛型类型同一性
+
+泛型语法有时会将开发人员弄糊涂，因为源代码中可能散布着大量“<”和“>”符合，这有损可读性。为了对语法进行增强，有的开发人员定义了一个新的非泛型类类型，它从一个泛型类型派生，并指定了所有类型实参。例如，为了简化下面这样的代码：
+
+`List<DateTime> dtl = new List<DateTime>();`  
+
+一些开发人员可能首先定义下面这样的类：
+
+```C#
+internal sealed class DateTimeList : List<DateTime> {
+    // 这里无需放入任何代码！
+}
+```
+
+然后就可以简化创建列表的代码(没有了“<” 和 “>” 符号)：
+
+`DateTimeList dt1 = new DateTimeList();`
+
+这样做表面上是方便了(尤其是要为参数、局部变量和字段使用新类型的时候)，但是，绝对不要单纯出于增强源码可读性的目的来定义一个新类。这样会丧失类型同一性(identity)和相等性(equivalence)，如以下代码所示：
+
+`Boolean sameType = (typeof(List<DateTime>) == typeof(DateTimeList));`
+
+上述代码运行时，`sameType`会被初始化为`false`，因为比较的是两个不同类型的对象。这也意味着如果方法的原型接受一个`DateTimeList`，那么不可以将一个 `List<DateTime>` 传给它。然而，如果方法的原型接受一个 `List<DateTime>`，那么可以将一个`DateTimeList`传给它，因为`DateTimeList`从`List<DateTime>`派生。开发人员很容易被所有这一切搞糊涂。
+
+幸好，C# 允许使用简化的语法来引用泛型封闭类型，同时不会影响类型的相等性。这个语法要求在源文件顶部使用传统的 `using`指令，例如：
+
+`using DateTimeList = System.Collections.Generic.List<System.DateTime>;`  
+
+`using`指令实际定义的是名为`DateTimeList`的符号。代码编译时，编译器将代码中出现的所有`DateTimeList`替换成`System.Collections.Generic.List<System.DateTime>`。这样就允许开发人员使用简化的语法，同时不影响代码的实际含义。所以，类型的同一性和相等性得到了维护。现在，执行下面这行代码时，`sameType`会被初始化为`true`：
+
+`Boolean sameType = (typeof(List<DateTime>) == typeof(DateTimeList));`  
+
+另外，可以利用C#的“隐式类型局部变量”功能，让编译器根据表达式的类型来推断方法的局部变量的类型：
+
+```C#
+using System;
+using System.Collections.Generic;
+...
+internal sealed class SomeType {
+    private static void SomeMethod () {
+
+        // 编译器推断出 dt1 的类型
+        // 是 System.Collections.Generic.List<System.DateTime>
+        var dt1 = new List<DateTime>();
+        ...
+    }
+}
+```
+
+### 12.2.4 代码爆炸
+
+使用泛型类型参数的方法在进行 JIT 编译时，CLR 获取方法的 IL，用指定的类型实参替换，然后创建恰当的本机代码(这些代码为操作指定数据类型“量身定制”)。这正是你希望的，也是泛型的重要特点。但这样做有一个缺点：CLR 要为每种不同的方法/类型组合生成本机代码。我们将这个现象称为**代码爆炸**。它可能造成应用程序的工作集显著增大，从而损害性能。
+
+幸好，CLR 内建了一些优化措施能缓解代码爆炸。首先，假如为特定的类型实参调用了一个方法，以后再用相同的类型实参调用这个方法，CLR 只会为这个方法/类型组合编译一次代码。所以，如果一个程序集使用`List<DateTime>`，一个完全不同的程序集(加载到同一个 AppDomain 中)也使用`List<DateTime>`编译一次方法。这样就显著缓解了代码爆炸。
+
+CLR 还有另一个优化，它认为所有引用类型实参都完全相同，所以代码能够共享。例如，CLR 为 `List<String>`的方法编译的代码可直接用于`List<Stream>`的方法，因为`String`和`Stream`均为引用类型。事实上，对于任何引用类型，都会使用相同的代码。CLR 之所以能执行这个优化，是因为所有引用类型的实参或变量实际只是指向堆上对象的指针(32 位 Windows 系统上是 32 位指针；64 位 Windows 系统上是 64 为指针)，而所有对象指针都以相同方式操纵。
+
+但是，假如某个类型实参是值类型，CLR 就必须专门为那个值类型生成本机代码。这是因为值类型的大小不定。即使两个值类型大小一样(比如 `Int32`和`UInt32`，两者都是32位)，CLR仍然无法共享代码，因为可能要用不同的本机 CPU 指令来操纵这些值。
+
+## <a name="12_3">12.3 泛型接口</a>
+
+显然，泛型的主要作用就是定义泛型的引用类型和值类型。然而，对泛型接口的支持对CLR来说也很重要。没有泛型接口，每次用非泛型接口(如 `IComparable`)来操纵值类型都会发生装箱，而且会失去编译时的类型安全性。这将严重制约泛型类型的应用范围。因此，CLR 提供了对泛型接口的支持。引用类型或值类型可指定类型实参实现泛型接口。也可保持类型实参的未指定状态来实现泛型接口。下面来看一些例子。
+
+以下泛型接口定义是 FCL 的一部分(在 `System.Collections.Generic`命名空间中)：
+
+```C#
+public interface IEnumerator<T> : IDisposable, IEnumerator {
+    T Current { get; }
+}
+```
+
+下面的示例类型实现了上述泛型接口，而且指定了类型实参。注意，`Triangle`对象可枚举一组`Point`对象。还要注意，`Current`属性具有`Point`数据类型：
+
+```C#
+internal sealed class Triangle : IEnumerator<Point> {
+    private Point[] m_vertices;
+
+    // IEnumerator<Point> 的 Current 属性是 Point 类型
+    public Point Current { get { ... } }
+
+    ...
+}
+```
+
+下例实现了相同的泛型接口，但保持类型实参的未指定状态：
+
+```C#
+internal sealed class ArrayEnumerator<T> : IEnumerator<T> {
+    private T[] m_array;
+
+    // IEnumerator<T>的 Current 属性是 T 类型
+    public T Current { get { ... } }
+
+    ...
+}
+```
+
+## <a name="12_4">12.4 泛型委托</a>
+
+CLR 支持泛型委托，目的是保证任何类型的对象都能以类型安全的方式传给回调方法。此外，泛型委托允许值类型实例在传给回调方法时不进行任何装箱。第 17 章“委托”会讲到，委托实际只是提供了4个方法的一个类定义。4个方法包括一个构造器、一个`Invoke`方法，一个`BeginInvoke`方法和一个`EndInvoke`方法。如果定义的委托类型指定了类型参数，编译器会定义委托类的方法，用指定的类型参数替换方法的参数类型和返回值类型。
+
+例如，假定像下面这样定义泛型委托：
+
+`public delegate TReturn CallMe<TReturn, TKey, TValue>(TKey key, TValue value);`
+
+编译器会将它转换成如下所示的类：
+
+```C#
+public sealed class CallMe<TReturn, TKey, TValue> : MulticastDelegate {
+    public CallMe(Object object, IntPtr method);
+    public virtual TReturn Invoke(TKey key, TValue value);
+    public virtual IAsyncResult BeginInvoke(TKey key, TValue value, AsyncCallback callback, Object object);
+    public virtual TReturn EndInvoke(IAsyncResult result);
+}
+```
+
+> 注意 建议尽量使用 FCL 预定义的泛型 `Action` 和 `Func` 委托。这些委托的详情将在 17.6 节“委托定义不要太多(泛型委托)”讲述。
+
+## <a name="12_5">12.5 委托和接口的逆变和协变泛型类型实参</a>
+
+委托的每个泛型类型参数都可标记为协变量或逆变量<sup>①</sup>。利用这个功能，可将泛型委托类型的变量转换为相同的委托类型(但泛型参数类型不同)。泛型类型参数可以是以下任何一种形式。
+> ① 本书采用目前约定俗称的译法：covariant=协变量， contravariant=逆变量；covariance=协变性，contravariance=逆变性。另外， variance=可变性。至于两者更详细的区别，推荐阅读 Eric Lippert 的 Covariance and contravariance in C#系列博客文章。简而言之，协变性指定返回类型的兼容性，而逆变性指定参数的兼容性。——译注
+
+* **不变量(invariant)**  意味着泛型类型参数不能更改。到目前为止，你在本章看到的全是不变量形式的泛型类型参数。
+
+* **逆变量(contravariant)**  意味着泛型类型参数可以从一个类更改为它的某个派生类。在 C# 是用 `in` 关键字标记逆变量形式的泛型类型参数。协变量泛型类型参数只出现在输入位置，比如作为方法的参数。
+
+* **协变量(covariant)**  意味着泛型类型参数可以从一个类更改为它的某个基类。C#是用`out`关键字标记协变量形式的泛型类型参数。协变量泛型类型参数只能出现在输出位置，比如作为方法的返回类型。
+
+例如，假定存在以下委托类型定义(顺便说一下，它真的存在)：
+
+`public delegate TResult Func<in T, out TResult>(T arg); `
+
+其中，泛型类型参数`T`用`in`关键字标记，这使它成为逆变量；泛型类型参数`TResult`用`out`关键字标记，这使它成为协变量。
+
+所以，如果像下面这样声明一个变量：
+
+`Func<Object, ArgumentException> fn1 = null;`  
+
+就可将它转型为另一个泛型类型参数不同的 `Func` 类型：
+
+```C#
+Func<String, Exception> fn2 = fn1;   // 不需要显式转型
+Exception e = fn2("");
+```
+
+上述代码的意思是说：`fn1`变量
