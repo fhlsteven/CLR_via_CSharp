@@ -542,4 +542,4 @@ Func<String, Exception> fn2 = fn1;   // 不需要显式转型
 Exception e = fn2("");
 ```
 
-上述代码的意思是说：`fn1`变量
+上述代码的意思是说：`fn1`变量引用一个方法，获取一个 `Object`，返回一个 `ArgumentException`。而 `fn2` 变量引用另一个方法，获取一个`String`，返回一个`Exception`。由于可将一个`String`传给期待`Object`的方法(因为 `String` 从 `Object` 派生)，而且由于可以
