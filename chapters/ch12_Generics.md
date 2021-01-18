@@ -542,4 +542,120 @@ Func<String, Exception> fn2 = fn1;   // 不需要显式转型
 Exception e = fn2("");
 ```
 
-上述代码的意思是说：`fn1`变量引用一个方法，获取一个 `Object`，返回一个 `ArgumentException`。而 `fn2` 变量引用另一个方法，获取一个`String`，返回一个`Exception`。由于可将一个`String`传给期待`Object`的方法(因为 `String` 从 `Object` 派生)，而且由于可以
+上述代码的意思是说：`fn1`变量引用一个方法，获取一个 `Object`，返回一个 `ArgumentException`。而 `fn2` 变量引用另一个方法，获取一个`String`，返回一个`Exception`。由于可将一个`String`传给期待`Object`的方法(因为 `String` 从 `Object` 派生)，而且由于可以获取返回`ArgumentException`的一个方法的结果，并将这个结果当成一个`Exception`(因为`Exception`是`ArgumentException` 的基类)，所以上述代码能正常编译，而且编译时能维持类型安全性。
+
+> 注意 只有编译器能验证类型之间存在引用转换，这些可变性才有用。换言之，由于需要装箱，所以值类型不具有这种可变性。我个人认为正是因为存在这个限制，这些可变性的用处不是特别大。例如，假定定义以下方法：
+
+`void ProcessCollection(IEnumerable<Object> collection) { ... }`
+
+> 我不能在调用它时传递一个 `List<DateTime>` 对象引用，因为 `DateTime` 值类型和 `Object` 之间不存在引用转换——虽然`DateTime`是从`Object`派生的，为了解决这个问题，可像下面这样声明`ProcessCollection`:  
+
+`void ProcessCollection<T>(IEnumerable<Object> collection) { ... }`  
+
+> 另外，`ProcessColleciton(IEnumerable<Object> collection)`最大的好处是 JIT 编译得到的代码只有一个版本。但如果使用 `ProcessCollection<T>(IEnumerable<T> collection)`，那么只有在`T`是引用类型的前提下，才可共享同一个版本的JIT编译代码；不过，起码能在调用方法时传递一个值类型结合了。
+
+> 另外，对于泛型类型参数，如果要将该类型的实参传给使用`out`或`ref`关键字的方法，便不允许可变性。例如，以下代码会造成编译器报告错误消息：`无效的可变性：类型参数“T”在“SomeDelegate<T>.Invoke(ref T)”中必须是不变量。现在的“T“是逆变量。`<sup>①</sup>  
+`delegate void SomeDelegate<in T>(ref T t);`
+
+> ① Visual Studio 2012/2013 实际显示的消息有点让人摸不着头脑脑：变体无效：类型参数”T“必须为对于"`SomeDelegate<T>.Invoke(ref T)`"有效的固定式。”T“为逆变。——译注
+
+使用要获取泛型参数和返回值的委托时，建议尽量为逆变性和协变性指定`in`和`out`关键字。这样做不会有不良反应，并使你的委托能在更多的情形中使用。
+
+和委托相似，具有泛型类型参数的接口也可将类型参数标记为逆变量和协变量。下面的示例接口有一个逆变量泛型类型参数：
+
+```C#
+public interface IEnumerator<in T> : IEnumerator {
+    Boolean MoveNext();
+    T Current { get; }
+}
+```
+
+由于`T`是逆变量，所以以下代码可顺利编译和运行：
+
+```C#
+// 这个方法接收任意引用类型的一个 IEnumerable
+Int32 Count(IEnumerable<Object> collection) { ... }
+
+...
+// 以下调用向 Count 传递一个 IEnumerable<String>
+Int32 c = Count(new[] { "Grant" });
+```
+
+> 重要提示 开发人员有时会问：”为什么必须显式用`in`或`out`标记泛型类型参数？“他们认为编译器应该能检查委托或接口声明，并自动检测哪些泛型类型参数能够逆变和协变。虽然编译器确实能，但C#团队认为必须由你订立协定(contract)，明确说明想允许什么。例如，假定编译器判断一个泛型类型参数是逆变量(用在输入位置)，但你将来向某个接口添加了成员，并将类型参数用在了输出位置。下次编译时，编译器将认为该类型参数是不变量。但在引用了其他成员的所有地方，只要还以为”类型参数是逆变量“就可能出错。
+
+>因此，编译器团队决定，在声明泛型类型参数时，必须由你显使用`in`或`out`来标记可变性。以后使用这个类型参数时，假如用法与声明时指定的不符，编译器就会报错，提醒你违反了自己订立的协定。如果为泛型类型参数添加`in`或`out`来打破原来的协定，就必须修改使用旧协定的代码。
+
+## <a name="12_6">12.6 泛型方法</a>
+
+定义泛型类、结果或接口时，类型中定义的任何方法都可引用类型指定的类型参数。类型参数可作为方法参数、方法返回值或方法内部定义的局部变量的类型使用。然而，CLR还允许方法指定它自己的类型参数。这些类型参数也可作为、返回值或局部变量的类型使用。
+
+在下例中，类型定义了一个类型参数，方法也定义了自己的：
+
+```C#
+internal sealed class GenericType<T> {
+    private T m_value;
+
+    public GenericType (T value) { m_value = value; }
+
+    public TOutput Converter<TOutput>() {
+        TOutput result = (TOutput) Convert.ChangeType(m_value, typeof(TOutput));
+        return result;   // 返回类型转换之后的结果
+    }
+}
+```
+
+在这个例子中，`GenericType`类定义了类型参数(`T`)，`Converter`方法也定义了自己的类型参数(`TOutput`)。这样的`GenericType`可以处理任意类型。`Converter`方法能将`m_value`字段引用的对象转换成任意类型——具体取决于调用时传递的类型实参是什么。泛型方法的存在，为开发人员提供了极大的灵活性。
+
+泛型方法的一个很好的例子是`Swap`方法：
+
+```C#
+private static void Swap<T>(ref T o1, ref T o2) {
+    T temp = o1;
+    o1 = o2;
+    o2 = temp;
+}
+```
+
+现在可以这样调用 `Swap`：
+
+```C#
+private static void CallingSwap() {
+    Int32 n1 = 1, n2 = 2;
+    Console.WriteLine("n1={0}, n2={1}", n1, n2);
+    Swap<Int32>(ref n1, ref n2);
+    Console.WriteLine("n1={0}, n2={1}", n1, n2);
+
+    String s1 = "Aidan", s2 = "Grant";
+    Console.WriteLine("s1={0}, s2={1}", s1, s2);
+    Swap<String>(ref s1, ref s2);
+    Console.WriteLine("s1={0}, s2={1}", s1, s2);
+}
+```
+
+为获取`out`和`ref`参数的方法使用泛型类型很有意思，因为作为`out/ref`实参传递的变量必须具有与方法参数相同的类型，以防止损害类型安全性。涉及`out/ref`参数的这个问题已在 9.3 节“以传引用的方式向方法传递参数”讨论。事实上，`Interlocked`类的`Exchange`和`CompareExchange`方法就是因为这个原因才提供泛型重载的<sup>①</sup>：  
+
+> ① `where` 子句将在本章稍后的 12.8 节”可验证性和约束“讨论。
+
+```C#
+public static class Interlocked {
+    public static T Exchange<T>(ref T location1, T value) where T : class;
+    public static T CompareExchange<T>(ref T location1, T value, T comparand) where T : class;
+}
+```
+
+### 泛型方法和类型推断
+
+C#泛型语法因为涉及大量”<“和”>“符号，所以开发人员很容易被弄得晕头转向。为了改进代码的创建，增强可读性和可维护性，C# 编译器支持在调用泛型方法时进行**类型推断**。这意味着编译器会在调用泛型方法时自动判断(或者说推断)要使用的类型。以下代码对类型推断进行了演示：
+
+```c#
+private static void CallingSwapUsingInference() {
+    Int32 n1 = 1, n2 = 2;
+    Swap(ref n1, ref n2);       // 调用 Swap<Int32>
+
+    String s1 = "Aidan";
+    Object s2 = "Grant";
+    Swap(ref s1, ref s2);       // 错误，不能推断类型
+}
+```
+
+在上述代码中，对 `Swap`的调用没有在一对"<"和”>“中指定类型实参。在第一个`Swap`调用中
