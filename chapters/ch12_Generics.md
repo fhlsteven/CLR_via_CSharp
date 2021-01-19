@@ -658,4 +658,195 @@ private static void CallingSwapUsingInference() {
 }
 ```
 
-在上述代码中，对 `Swap`的调用没有在一对"<"和”>“中指定类型实参。在第一个`Swap`调用中
+在上述代码中，对 `Swap`的调用没有在一对"<"和”>“中指定类型实参。在第一个`Swap`调用中，C#编译器推断 `n1`和`n2`都是`Int32`，所以应该使用`Int32`类型实参来调用`Swap`。
+
+推断类型时，C#使用变量的数据类型，而不是变量引用的对象的实际类型。所以在第二个`Swap`调用中，C#发现`s1`是`String`，而`s2`是`Object`(即使它恰好引用一个`String`)。由于`s1`和`s2`是不同数据类型的变量，编译器拿不准要为`Swap`传递什么类型实参，所以会报告以下消息：`error CS0411：无法从用法推断出方法“Program.Swap<T>(ref T,ref T)”的类型参数。请尝试显式指定类型参数。`
+
+类型可定义多个方法，让其中一个方法接受具体数据类型，让另一个接受泛型类型参数，如下例所示：
+
+```C#
+private static void Display(String s) {
+    Console.WriteLine(s);
+}
+
+private static void Display<T>(T o) {
+    Display(o.ToString());        // 调用 Display(String)
+}
+```
+
+下面展示了 `Display` 方法的一些调用方式：
+
+```C#
+Display("Jeff");            // 调用 Display(String)
+Display(123);               // 调用 Display<T>(T)
+Display<String>("Aidan");   // 调用 Display<T>(T)
+```
+
+在第一个调用中，编译器可调用接受一个`String`参数的`Display`方法，也可调用泛型`Display`方法(将`T`替换成`String`)。但C#编译器的策略是先考虑较明确的匹配，再考虑泛型匹配。所以，它会生成对非泛型`Display`方法的调用，也就是接受一个`String`参数的版本。对于第二个调用，编译器不能调用接受`String`参数的非泛型`Display`方法，所以必须调用泛型`Display`方法。顺便说一句，编译器优先选择明确的匹配，开发人员应对此感到庆幸。假如编译器优先选择泛型方法，那么由于泛型`Display`方法会再次调用`Display`(但传递由`ToString`返回的一个`String`)，所以会造成无限递归。
+
+对`Display`的第三个调用明确指定了泛型类型实参`String`。这告诉编译器不要尝试推断类型实参。相反，应使用显式指定的类型实参。在本例中，编译器还假定我肯定是想调用泛型`Display`方法，所以会毫不犹豫地调用泛型`Display`方法。在内部，泛型`Display`方法会为传入的字符串调用`ToString`方法，然后将转换所得的字符串传给非泛型`Display`方法。
+
+## <a name="12_7">12.7 泛型和其他成员</a>
+
+在C#中，属性、索引器、事件、操作符方法、构造器和终结器本身不能有类型参数。但它们能在泛型类型中定义，而且这些成员中的代码能使用类型参数。
+
+C#之所以不允许这些成员指定自己的泛型类型参数，是因为 Microsoft C# 团队认为开发人员很少需要将这些成员作为泛型使用。除此之外，为这些成员添加泛型支持的代价是相当高的，因为必须为语言设计足够的语法。例如，在代码中使用一个`+`操作符时，编译器可能要调用一个操作符重载方法。而在代码中，没有任何办法能伴随`+`操作符指定类型实参。
+
+## <a name="12_8">12.8 可验证性和约束</a>
+
+编译泛型代码时，C#编译器会进行分析，确保代码适用于当前已有或将来可能定义的任何类型。看看下面这个方法：
+
+```C#
+private static Boolean MethodTakingAnyType<T>(T o) {
+    T temp = o;
+    Console.WriteLine(o.ToString());
+    Boolean b = temp.Equals(o);
+    return b;
+}
+```
+
+这个方法声明了`T`类型临时变量(`temp`)。然后，方法执行两次变量赋值和几次方法调用。这个方法适用于任何类型。无论`T`是引用类型，是值类型或枚举类型，还是接口或委托类型，它都能工作。这个方法适用于当前存在的所有类型，也适用于将来可能定义的任何类型，因为所有类型都支持对`Object`类型的变量的赋值，也支持对`Object`类型定义的方法的调用(比如`ToString`和`Equals`)。
+
+再来看看下面这个方法：
+
+```C#
+private static T Min<T>(T o1, T o2) {
+    if (o1.CompareTo(o2) < 0) return o1;
+    return o2;
+}
+```
+
+`Min`方法试图使用`o1`变量来调用`CompareTo`方法。但是，许多类型都没有提供`CompareTo`方法，所以 C#编译器不能编译上述代码，它不能保证这个方法适用于所有类型。强行编译上述代码会报告消息：  
+
+`error CS0117:"T"不包含“CompareTo”的定义，并且找不到可接受类型为“T”的第一个参数的扩展方法“CompareTo”(是否缺少 using 指令或程序集引用?)。`
+
+所以从表面看，使用泛型似乎做不了太多事情。只能声明泛型类型的变量，执行变量赋值，再调用`Object`定义的方法，如此而已！显然，假如泛型只能这么用，可以说它几乎没有任何用。幸好，编译器和 CLR 支持称为**约束**的机制，可通过它使泛型变得真正有用！
+
+约束的作用是限制能指定成泛型实参的类型数量。通过限制类型的数量，可以对那些类型执行更多操作。以下是新版本的`Min`方法，它指定了一个约束(加粗显示)：
+
+```C#
+public static T Min<T>(T ol, T o2) where T : IComparable<T> {
+    if (o1.CompareTo(o2) < 0) return o1;
+    return o2;
+}
+```
+
+C# 的`where` 关键字告诉编译器，为`T`指定的任何类型都必须实现同类型(`T`)的泛型`IComparable`接口。有了这个约束，就可以在方法中调用`CompareTo`，因为已知`IComparable<T>`接口定义了`CompareTo`。
+
+现在，当代码引用泛型类型或方法时，编译器要负责保证类型实参符合指定的约束。例如，假如编译以下代码：
+
+```C#
+private static void CallMin() {
+    Object o1 = "Jeff", o2 = "Richter";
+    Object oMin = Min<Object>(o1, o2);      // Error CS0311
+}
+```
+
+编译器会报告以下消息：
+
+`error CS0311:不能将类型“object”用作泛型类型或方法“SomeType.Min<T>(T, T)”中的类型参数“T“。没有从”object“到”System.IComparable<object>“的隐式引用转换。`
+
+编译器报错是因为 `System.Object` 没有实现 `IComparable<Object>` 接口。事实上，`System.Object` 没有实现任何接口。
+
+对约束及其工作方式有了一个基本的认识宾，让我们更深入地研究一下它。约束可应用于泛型类型的类型参数，也可应用于泛型方法的类型参数(如 `Min` 方法所示)。CLR 不允许基于类型参数名称或约束来进行重载；只能基于元数(类型参数个数)对类型或方法进行重载。下例对此进行了演示：
+
+```C#
+// 可定义以下类型
+internal sealed class AType { }
+internal sealed class AType<T> { }
+internal sealed class AType<T1, T2> { }
+
+// 错误：与没有约束的 AType<T> 冲突
+internal sealed class AType<T> where T : IComparable<T> { }
+
+// 错误：与 AType<T1, T2>冲突
+internal sealed class AType<T3, T4> { }
+
+internal sealed class AnotherType {
+    // 可定义以下方法，参数个数不同：
+    private static void M() { }
+    private static void M<T>() { }
+    private static void M<T1, T2>() { }
+
+    // 错误：与没有约束的 M<T> 冲突
+    private static void M<T>() where T : IComparable<T> { }
+
+    // 错误：与 M<T1, T2>冲突
+    private static void M<T3, T4>() { }
+}
+```
+
+重写虚泛型方法时，重写的方法必须指定相同数量的类型参数，而且这些类型参数会继承在基类方法上指定的约束。事实上，根本不允许为重写方法的类型参数指定任何约束。但类型参数的名称是可以改变的。类似地，实现接口方法时，方法必须指定与接口方法等量的类型参数，这些类型参数将继承由接口方法指定的约束。下例使用虚方法演示了这一规则：
+
+```C#
+internal class Base {
+    public virtual void M<T1, T2>()
+        where T1 : struct
+        where T2 : class {
+    }
+}
+
+internal sealed class Derived : Base {
+    public override void M<T3, T4>()
+        where T3 : EventArgs    // 错误
+        where T4 : class        // 错误
+    {}
+}
+```
+
+试图编译上述代码，编译器会报告以下错误：
+
+`error CS0460：重写和显式接口实现方法的约束是从基方法继承的，因此不能直接指定这些约束。`
+
+从`Derived` 类的 `M<T3, T4>`方法中移除两个 `where` 子句，代码就能正常编译了。注意，类型参数的名称可以更改，比如将`T1`改成`T3`，将`T2`改成`T4`)；但约束不能更改(甚至不能指定)。
+
+下面讨论编译器/CLR 允许向类型参数应用的各种约束。可用一个主要约束、一个次要约束以及/或者一个构造器约束来约束类型擦书。接下来的三个小节分别讨论这些约束。
+
+### 12.8.1 主要约束
+
+类型参数可以指定零个或者一个**主要约束**。主要约束可以是代表非密封类的一个引用类型。不能指定以下特殊引用类型：`System.Object`，`System.Array`，`System.Delegate`，`System.MulticastDelegate`，`System.ValueType`，`System.Enum`或者`System.Void`。
+
+指定引用类型约束时，相当于向编译器承诺：一个指定的类型实参要么是与约束类型相同的类型，要么是从约束类型派生的类型。例如以下泛型类：
+
+```C#
+internal sealed class PrimaryConstraintOfStream<T> where T : Stream {
+    public void M(T stream) {
+        stream.Close();         // 正确
+    }
+}
+```
+
+在这个类定义中，类型参数 `T` 设置了主要约束 `Stream`(在 `System.IO` 命名空间中定义)。这就告诉编译器，使用 `PrimaryConstraintOfStream` 的代码在指定类型实参时，必须指定 `Stream` 或者从`Stream`派生的类型(比如 `FileStream`)。如果类型参数没有指定主要约束，就默认为 `System.Object`。但如果在源代码中显式指定`System.Object`， C#会报错：`error CS0702:约束不能是特殊类”object“`。
+
+有两个特殊的主要约束：`class`和`struct`。其中，`class约束向编译器承诺类型实参是引用类型。任何类类型、接口类型、委托类型或者数组类型都满足这个约束。例如以下泛型类：
+
+```C#
+internal sealed class PrimaryConstraintOfStream<T> where T : class {
+    public void M() {
+        T temp = null;      // 允许，因为 T 肯定是引用类型
+    }
+}
+```
+
+在这个例子中，将`temp`设为`null`是合法的，因为 `T`  已知是引用类型，而所有引用类型的变量都能设为`null`。不对`T`进行约束，上述代码就通不过编译，因为`T`可能是值类型，而值类型的变量不能设为`null`。
+
+`struct`约束向编译器承诺类型参数是值类型。包括枚举在内的任何值类型都满足这个约束。但编译器和CLR将任何`System.Nullable<T>`值类型视为特殊类型，不满足这个`struct`约束。
+
+原因是 `Nullable<T>`类型将它的类型参数约束为`struct`，而 CLR 希望禁止像`Nullable<Nullable<T>>`这样的递归类型。可空类型将在第19章”可空值类型“讨论。
+
+以下示例类使用 `struct` 约束来约束它的类型参数：
+
+```C#
+internal sealed class PrimaryConstraintOfStruct<T> where T : struct {
+    public static T Factory() {
+        // 允许。因为所有值类型都隐式有一个公共无参构造器
+        return new T();
+    }
+}
+```
+
+这个例子中的`new T()` 是合法的，因为 `T` 已知是值类型，而所有值类型都隐式地有一个公共无参构造器。如果`T`不约束，约束为引用类型，或者约束为`class`，上述代码将无法通过编译，因为有的引用类型没有公共无参构造器。
+
+### 12.8.2 次要约束
+
+类型参数可以指定零个或者多个**次要约束**，次要约束代表接口类型。这种约束向编译器承诺类型实参实现了接口。由于能指定多个接口约束，所以类型实参必须实现了所有接口约束(以及主要约束，如果有的话)。第 13 章”接口“将详细讨论接口约束。
