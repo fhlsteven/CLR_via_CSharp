@@ -850,3 +850,164 @@ internal sealed class PrimaryConstraintOfStruct<T> where T : struct {
 ### 12.8.2 次要约束
 
 类型参数可以指定零个或者多个**次要约束**，次要约束代表接口类型。这种约束向编译器承诺类型实参实现了接口。由于能指定多个接口约束，所以类型实参必须实现了所有接口约束(以及主要约束，如果有的话)。第 13 章”接口“将详细讨论接口约束。
+
+还有一种次要约束称为**类型参数约束**，有时也称为**裸类型约束**。这种约束用得比接口约束少得多。它允许一个泛型类型或方法规定：指定的类型实参要么就是约束的类型，要么是约束的类型的派生类。一个类型参数可以指定零个或者多个类型参数约束。下面这个泛型方法演示了如何使用类型参数约束：
+
+```C#
+private static List<TBase> ConvertIList<T, TBase>(IList<T> list) where T : TBase {
+    List<TBase> baseList = new List<TBase>(list.Count);
+    for (Int32 index = 0; index < list.Count; index++) {
+        baseList.Add(list[index]);
+    }
+    return baseList;
+}
+```
+
+`ConvertIList`方法指定了两个类型参数，其中`T`参数由`TBase`类型参数约束。意味着不管为`T`指定什么类型实参，都必须兼容于为`TBase`指定的类型实参。下面这个方法演示了对`ConvertIList`的合法调用和非法调用：
+
+```C#
+private static void CallingConvertIList() {
+    // 构造并初始化一个 List<String>(它实现了 IList<String>)
+    IList<String> ls = new List<String>();
+    ls.Add("A String");
+
+    // 1. 将 IList<String> 转换成一个 IList<Object>
+    IList<Object> lo = ConvertIList<String, Object>(ls);
+
+    // 2. 将 IList<String> 转换成一个 IList<IComparable>
+    IList<IComparable> lc = ConvertIList<String, IComparable>(ls);
+
+    // 3. 将 IList<String> 转换成一个 IList<IComparable<String>>
+    IList<IComparable<String>> lcs = ConvertIList<String, IComparable<String>>(ls);
+
+    // 4. 将 IList<String> 转换成一个 IList<String>
+    IList<String> ls2 = ConvertIList<String, String>(ls);
+
+    // 5. 将 IList<String> 转换成一个 IList<Exception>
+    IList<Exception> le = ConvertIList<String, Exception>(ls);  // 错误
+}
+```
+
+在对`ConvertIList` 的第一个调用中，编译器检查 `String` 是否兼容于`Object`。由于`String`从`Object`派生，所以第一个调用满足类型参数约束。在对 `ConvertIList` 的第二个调用中，编译器检查`String`是否兼容于`IComparable`。由于`String`实现了`IComparable`接口，所以第二个调用满足类型参数约束。在对`ConvertIList`的第三个调用中，编译器检查`String`是否兼容于`IComparable<String>`。由于`String`实现了`IComparable<String>`。由于 `String` 实现了 `IComparable<String>`接口，所以第三个调用满足类型参数约束。在对`ConvertIList`的第4个调用中，编译器知道`String`兼容于它自己。在对`ConvertIList`的第 5 个调用中，编译器检查`String`是否兼容于`Exception`。由于 `String` 不兼容于`Exception`，所以第 5 个调用不满足类型参数约束，编译器报告以下消息：  
+`error CS0311: 不能将类型“string”用作泛型类型或方法“Program.ConvertIList<T, TBase>(System.Collections.Generic.IList<T>)”中的类型参数“T”。没有从“string”到“System.Exception”的隐式引用转换。`  
+
+### 12.8.3 构造器约束
+
+类型参数可指定零个或一个**构造器约束**，它向编译器承诺类型实参是实现了公共无参构造器的非抽象类型。注意，如果同时使用构造器约束和 `struct` 约束，C# 编译器会认为这是一个错误，因为这是多余的；所有值类型都隐式提供了公共无参构造器。以下示例类使用构造器约束来约束它的类型参数：
+
+```C#
+internal sealed class ConstructorConstraint<T> where T : new() {
+    public static T Factory() {
+        // 允许，因为所有值类型都隐式有一个公共无参构造器.
+        // 而如果指定的是引用类型，约束也要求它提供公共无参构造器
+        return new T();
+    }
+}
+```
+
+这个例子中的 `new T()` 是合法的，因为已知`T`是拥有公共无参构造器的类型。对所有值类型来说，这一点(拥有公共无参构造器)肯定成立。对于作为类型实参指定的任何引用类型，这一点也成立，因为构造器约束要求它必须成立。
+
+开发人员有时想为类型参数指定一个构造器约束，并指定构造器要获取多个参数。目前，CLR(以及C# 编译器)只支持无参构造器。Microsoft 认为这已经能满足几乎所有情况，我对次也表示同意。
+
+### 12.8.4 其他可验证性问题
+
+本节剩下的部分将讨论另外几个特殊的代码构造。由于可验证性问题，这些代码构造在和泛型共同使用时，可能产生不可预期的行为。另外，还讨论了如何利用约束使代码重新变得可以验证。
+
+1. **泛型类型变量的转型**  
+  将泛型类型的变量转型为其他类型是非法的，除非转型为与约束兼容的类型：
+
+  ```C#
+  private static void CastingAGenericTypeVariablel<T>(T obj) {
+      Int32 x = (Int32) obj;    // 错误
+      String s = (String) obj;  // 错误
+  }
+  ```
+  上述两行会造成编译器报错，因为 `T` 可能是任意类型，无法保证成功转型。为了修改上述代码使其能通过编译，可以先转型为`Object`：  
+  
+  ```C#
+  private static void CastingAGenericTypeVariable2<T>(T obj) {
+      Int32 x = (Int32) (Object) obj;     // 无错误
+      String s = (String) (Object) obj;   // 无错误
+  }
+  ```
+
+  虽然代码现在能编译，但 CLR 仍有可能在运行时抛出 `InvalidCastException` 异常。
+
+  转型为引用类型时还可使用C# `as` 操作符。下面对代码进行了修改，为 `String` 使用了 `as` 操作符 (`Int32` 是值类型不能用)：
+
+  ```C#
+  private static void CastingAGenericTypeVariable3<T>(T obj) {
+      String s = obj as String;     // 无错误
+  }
+  ```
+
+2. **将泛型类型变量设为默认值**  
+  将泛型类型变量设为 `null` 是非法的，除非将泛型类型约束成引用类型。
+
+  ```C#
+  private static void SettingAGenericTypeVariableToNull<T>() {
+      T temp = null; // error CS0403 - 无法将 null 转换为类型参数 “T”，
+                     // 因为它可能是不可以为 null 的值类型。请考虑改用 default(T)
+  }
+  ```
+
+  由于未对 `T` 进行约束，所以它可能是值类型，而将值类型的变量设为`null`是不可能的。如果`T`被约束成引用类型，将`temp`设为`null`就是合法的，代码能顺利编译并运行。
+  
+  Microsoft 的 C# 团队认为有必要允许开发人员将变量设为它的默认值，并专门为此提供了 `default` 关键字：
+  
+  ```C#
+  private static void SettingAGenericTypeVariableToDefaultValue<T>() {
+      T temp = default(T);  // 正确
+  }
+  ```
+
+  以上代码中的 `default` 关键字告诉 C# 编译器和 CLR 的 JIT 编译器，如果 `T` 是引用类型，就将 `temp` 设为 `null`；如果是值类型，就将 `temp` 的所有位设为 `0`。
+
+3. **将泛型类型变量与null进行比较**  
+  无论泛型类型是否被约束，使用 `==`或 `!=` 操作符将泛型类型变量与 `null` 进行比较都是合法的：
+
+  ```C#
+  private static void ComparingAGenericTypeVariableWithNull<T>(T obj) {
+      if (obj == null) { /* 对于值类型，永远都不会执行 */ }
+  }
+  ```
+  
+  由于 `T` 未进行约束，所以可能是引用类型或值类型。如果`T`是值类型，`obj`永远都不会为`null`。你或许以为C#编译器会报错。但C# 编译器并不报错；相反，它能顺利地编译代码。调用这个方法时，如果为类型参数传递值类型，那么 JIT 编译器知道`if`语句永远都不会为`true`，所以不会为`if`测试或者大括号内的代码生成本机代码。如果换用`!=`操作符，JIT编译器不会为`if`测试生成代码(因为它肯定为`true`)，但会为`if`大括号内的代码生成本机代码。
+  
+  顺便说一句，如果`T`被约束成`struct`，C# 编译器会报错。值类型的变量不能与`null`进行比较，因为结果始终一样。
+  
+4. **两个泛型类型变量相互比较**  
+  如果泛型类型参数不能肯定是引用类型，对同一个泛型类型的两个变量进行比较是非法的：  
+  
+  ```C#
+  private static void ComparingTwoGenericTypeVariables<T>(T o1, T o2) {
+      if (o1 == o2) { }  // 错误
+  }
+  ```
+  
+  在这个例子中，`T` 未进行约束。虽然两个引用类型的变量相互比较是合法的，但两个值类型的变量相互比较是非法的，除非值类型重载了`==`操作符。如果`T`被约束成`class`，上述代码能通过编译。如果变量引用同一个对象，`==`操作符会返回`true`。注意，如果`T`被约束成引用类型，而且该引用类型重载了`operator==`方法，那么编译器会在看到`==`操作符时生成对这个方法的调用。显然，所有些讨论也适合`!=`操作符。
+  
+  写代码来比较基元值类型(`Byte`，`Int32`，`Single`，`Decimal`等)时，C#编译器知道如何生成正确的代码。然而，对于非基元值类型，C#编译器不知道如何生成代码来进行比较。所以，如果`ComparingTwoGenericTypeVariables` 方法的`T`被约束成`struct`，编译器会报错。
+
+  不允许将类型参数约束成具体的值类型，因为值类型隐式密封，不可能存在从值类型派生的类型。如果允许将类型参数约束成具体的值类型，那么泛型方法会被约束为只支持该具体类型，这还不如不要泛型呢！
+
+5. **泛型类型变量作为操作数使用**  
+  最后要注意，将操作符应用于泛型类型的操作数会出现大量问题。第 5 章讨论了 C# 如何处理它的基元类型：`Byte`，`Int16`，`Int32`，`Int64`，`Decimal`等。我特别指出 C# 知道如何解释应用于基元类型的操作符(比如`+`，`-`，`*`和`/`)。但不能将这些擦作符应用于泛型类型的变量。编译器在编译时确定不了类型，所以不能向泛型类型的变量应用任何操作符。所以，不可能写一个能处理任何数值数据类型的算法。下面是我想写的一个示例泛型方法：
+
+  ```C#
+  private static T Sum<T>(T num) where T : struct {
+      T sum = default(T) ;
+      for (T n = default(T); n < num ; n++)
+        sum += n;
+      return sum;
+  }
+  ```
+
+  我千方百计想让这个方法通过编译。我将`T`约束成一个`struct`，而且使用`default(T)`将`sum`和`n`初始化为`0`。但编译时得到以下错误： 
+
+  + `error CS0019`: 运算符"<"无法应用于“T”和“T”类型的操作数
+  + `error CS0023`：运算符“++”无法应用于“T”类型的操作数
+  + `error CS0019`：运算符“+=”无法应用于“T”和“T”类型的操作数
+
+  这是 CLR 的泛型支持体系的一个严重限制，许多开发人员(尤其是科学、金融和数学领域的开发人员)对这个限制感到很失望。许多人尝试用各种技术来避开这一限制，其中包括反射(参见第 23 章“程序集加载和反射”)、`dynamic`基元类型(5.5 节)和操作符重载等。但所有这些技术都会严重损害性能或者影响代码的可读性。希望 Microsoft 在 CLR 和编译器未来的版本中解决这个问题。
+  

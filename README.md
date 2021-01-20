@@ -30,6 +30,6 @@ CLR Via C# 第四版
 [第 10 章 属性](./chapters/ch10_Properties.md)  
 [第 11 章 事件](./chapters/ch11_Events.md)  
 [第 12 章 泛型](./chapters/ch12_Generics.md)  
-第 13 章 接口  
+[第 13 章 接口](./chapters/ch13_Interfaces.md)
 
 ---
