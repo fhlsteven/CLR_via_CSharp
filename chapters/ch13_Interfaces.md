@@ -294,3 +294,300 @@ IDisposable Dispose
 ## <a name="13_6">13.6 泛型接口</a>
 
 C# 和 CLR 所支持的泛型接口为开发人员提供了许多非常出色的功能。本节要讨论泛型接口提供的一些好处。
+
+首先，泛型接口提供了出色的编译时类型安全性。有的接口(比如非泛型 `IComparable` 接口)定义的方法使用了 `Object` 参数或 `Object` 返回类型，在代码中调用这些接口方法时，可传递对任何类型的实例的引用。但这通常不是我们期望的。下面的代码对此进行了演示：
+
+```C#
+private void SomeMethod1() {
+    Int32 x = 1, y = 2;
+    IComparable c = x;
+
+    // CompareTo 期待 Int32，传递y (一个 Int32)没有问题
+    c.CompareTo(y);   // y 在这里不装箱
+
+    // CompareTo 期待 Int32，传递“2”(一个 String)造成编译,
+    // 但在运行时抛出 ArgumentException 异常
+    c.CompareTo("2");           
+}
+```
+
+接口方法理想情况下应该使用强类型。这正是 FCL 为什么包含泛型 `IComparable<in T>` 接口的原因。下面修改代码来使用泛型接口：
+
+```C#
+private void SomeMethod2() {
+    Int32 x = 1, y = 2;
+    IComparable<Int32> c = x;
+    
+    // CompareTo 期待 Int32， 传递 y (一个 Int32)没有问题
+    c.CompareTo(y);     // y 在这里不装箱
+
+    // CompareTo 期待 Int32，传递 "2"(一个 String)造成编译错误，
+    // 指出 String 不能被转换为 Int32
+    c.CompareTo("2");       // 错误
+}
+```
+
+泛型接口的第二个好处在于，处理值类型时装箱次数会少很多。在 `SomeMethod1` 中，非泛型 `IComparable` 接口的 `CompareTo` 方法期待获取一个 `Object`；传递 `y`(`Int32`值类型)会造成`y`中的值装箱。但在 `SomeMethod2` 中，泛型 `IComparable<in T>`接口的 `CompareTo`方法本来期待的就是 `Int32`；`y`以传值的方式传递，无需装箱。
+
+> 注意 FCL 定义了 `IComparable`，`ICollection`，`IList`和`IDictionary`等接口的泛型和非泛型版本。定义类型时要实现其中任何接口，一般应实现泛型版本。FCL 保留非泛型版本是为了向后兼容，照顾在 .NET Framework 支持泛型之前写的代码。非泛型版本还允许用户以较常规的、类型较不安全(more general,less type-safe)的方式处理数据。
+
+> 有的泛型接口继承了非泛型版本，所以必须同时实现接口的泛型和非泛型版本。例如，泛型 `IEnumerable<out T>`接口继承了非泛型`IEnumerable`接口，所以实现`IEnumerable<out T>`就必须实现`IEnumerable`。
+
+> 和其他代码集成时，有时必须实现非泛型接口，因为接口的泛型版本并不存在。这时，如果接口的任何方法获取或返回 `Object`，就会失去编译时的类型安全性，而且值类型将发生装箱。可利用本章 13.9 节“用显式接口方法实现来增强编译时类型安全性”介绍的技术来缓解该问题。
+
+泛型接口的第三个好处在于，类可以实现同一个接口若干次，只要每次使用不同的类型参数。以下代码对这个好处进行了演示：
+
+```C#
+using System;
+
+// 该类实现泛型 IComparable<T> 接口两次
+public sealed class Number : IComparable<Int32>, IComparable<String> {
+    private Int32 m_val = 5;
+
+    // 该方法实现 IComparable<Int32> 的 CompareTo 方法
+    public Int32 CompareTo(Int32 n) {
+        return m_val.CompareTo(n);
+    }
+
+    // 该方法实现 IComparable<String> 的 CompareTo 方法
+    public Int32 CompareTo(String s) {
+        return m_val.CompareTo(Int32.Parse(s));
+    }
+}
+
+public static class Program {
+    public static void Main() {
+        Number n = new Number();
+
+        // 将 n 中的值和一个 Int32(5) 比较
+        IComparable<Int32> cInt32 = n;
+        Int32 result = cInt32.CompareTo(5);
+
+        // 将 n 中的值和一个 String("5") 比较
+        IComparable<String> cString = n;
+        result = cString.CompareTo("5");
+    }
+}
+```
+
+接口的泛型类型参数可标记为逆变和协变，为泛型接口的使用提供更大的灵活性。欲知协变和逆变的详情，请参见 12.5 节“委托和接口的逆变和协变泛型类型实参”。
+
+## <a name="13_7">13.7 泛型和接口约束</a>
+
+上一节讨论了泛型接口的好处。本节要讨论将泛型类型参数约束为接口的好处。
+
+第一个好处在于，可将泛型类型参数约束为多个接口。这样一来，传递的参数的类型必须实现全部接口约束。例如：
+
+```C#
+public static class SomeType {
+    private static void Test() {
+        Int32 x = 5;
+        Guid g = new Guid();
+
+        // 对 M 的调用能通过编译，因为 Int32 实现了
+        // IComparable 和 IConvertible
+        M(x);
+
+        // 这个 M 调用导致编译错误，因为 Guid 虽然
+        // 实现了 IComparable，但没有实现 IConvertible
+        M(g);
+    }
+
+    // M 的类型参数 T 被约束为只支持同时实现了
+    // IComparable 和 IConvertible 接口的类型
+    private static Int32 M<T>(T t) where T : IComparable, IConvertible {
+        ...
+    }
+}
+```
+
+这真的很“酷”！定义方法参数时，参数的类型规定了传递的实参必须是该类型或者它的派生类型。如果参数的类型是接口，那么实参可以是任意类类型，只是该类实现了接口。使用多个接口约束，实际是表示向方法传递的实参必须实现多个接口。
+
+事实上，如果将 `T` 约束为一个类和两个接口，就表示传递的实参类型必须是指定的基类(或者它的派生类)，而且必须实现两个接口。这种灵活性使方法能细致地约束调用者能传递的内容。调用者不满足这些约束，就会产生编译错误。
+
+接口约束的第二个好处是传递值类型的实例时减少装箱。上述代码向 `M`方法传递了 `x`(值类型 `Int32` 的实例)。`x`传给`M`方法时不会发生装箱。如果`M`方法内部的代码调用`t.CompareTo(...)`，这个调用本身也不会引发装箱(但传给`CompareTo`的实参可能发生装箱)。
+
+另一方面，如果`M`方法像下面这样声明：
+
+```C#
+private static Int32 M(IComparable t) {
+    ...
+}
+```
+
+那么`x`要传给`M`就必须装箱。
+
+C# 编译器为接口约束生成特殊 IL 指令，导致直接在值类型上调用接口方法而不装箱。不用接口约束便没有其他办法让 C# 编译器生成这些 IL 指令，如此一来，在值类型上调用接口方法总是发生装箱。一个例外是如果值类型实现了一个接口方法，在值类型的实例上调用这个方法不会造成值类型的实例装箱。
+
+## <a name="13_8">13.8 实现多个具有相同方法名和签名的接口</a>
+
+定义实现多个接口的类型时，这些接口可能定义了具有相同名称和签名的方法。例如，假定有以下两个接口：
+
+```C#
+private interface IWindow {
+    Object GetMenu();
+}
+
+public Interface IRestaurant {
+    Object GetMenu();
+}
+```
+
+要定义实现这两个接口的类型，必须使用“显式接口方法实现”来实现这个类型的成员，如下所示：
+
+```C#
+// 这个类型派生自 System.Object
+// 并实现了 IWindow 和 IRestaurant 接口
+public sealed class MarioPizzeria : IWindow, IRestaurant {
+
+    // 这是 IWindow 的 GetMenu 方法的实现
+    Object IWindow.GetMenu() { ... }
+
+    // 这是 IRestaurant 的 GetMenu 方法的实现
+    Object IRestaurant.GetMenu() { ... }
+
+    // 这个 GetMenu 方法是可选的，与接口无关
+    public Object GetMenu() { ... }
+}
+```
+
+由于这个类型必须实现多个接口的 `GetMenu` 方法，所以要告诉 C# 编译器每个`GetMenu`方法对应的是哪个接口的实现。
+
+代码在使用`MarioPizzeria` 对象时必须将其转换为具体的接口才能调用所需的方法。例如：
+
+```C#
+MarioPizzeria mp = new MarioPizzeria();
+
+// 这行代码调用 MarioPizzeria 的公共 GetMenu 方法
+mp.GetMenu();
+
+// 以下代码调用 MarioPizzeria 的 IWindow.GetMenu 方法
+IWindow window = mp;
+window.GetMenu();
+
+// 以下代码调用 MarioPizzeria 的 IRestaurant.GetMenu 方法
+IRestaurant restaurant = mp;
+restaurant.GetMenu();
+```
+
+## <a name="13_9">13.9 用显式接口方法实现来增强编译时类型安全性</a>
+
+接口很好用，它们定义了在类型之间进行沟通的标准方式。前面曾讨论了泛型接口，讨论了它们如何增强编译时的类型安全性和减少装箱操作。遗憾的是，有时由于不存在泛型版本，所以仍需实现非泛型接口。接口的任何方法接受`System.Object`类型的参数或返回`System.Object`类型的值，就会失去编译时的类型安全性，装箱也会发生。本节将介绍如何用“显式接口方法实现”(EIMI)在某种程度上改善这个局面。
+
+下面是极其常用的`IComparable`接口：
+
+```C#
+public interface IComparable {
+    Int32 CompareTo(Object other);
+}
+```
+
+该接口定义了接受一个 `System.Object` 参数的方法。可以像下面这样定义实现了接口的类型：
+
+```C#
+internal struct SomeValueType : IComparable {
+    private SomeValueType(Int32 x) { m_x = x; }
+    public Int32 CompareTo(Object other) {
+        return (m_x - ((SomeValueType) other).m_x);
+    }
+}
+```
+
+可用`SomeValueType`写下面这样的代码：
+
+```C#
+public static void Main() {
+    SomeValueType v = new SomeValueType(0);
+    Object o = new Object();
+    Int32 n = v.CompareTo(v);       // 不希望的装箱操作
+    n = v.CompareTo(o);             // InvalidCastException 异常
+}
+```
+
+上述代码存在两个问题。
+
+* **不希望的装箱操作**  
+  `v`作为实参传给`CompareTo`方法时必须装箱，因为 `CompareTo`期待的是一个`Object`。
+
+* **缺乏类型安全性**  
+  代码能通过编译，但 `CompareTo` 方法内部试图将 `o` 转换为 `SomeValueType` 时抛出 `InvalidCastException` 异常。
+
+这两个问题都可以用 EIMI 解决。下面是 `SomeValueType` 的修改版本，这次添加了一个 EIMI：
+
+```C#
+internal struct SomeValueType : IComparable {
+    private Int32 m_x;
+    public SomeValueType(Int32 x) { m_x = x; }
+
+    public Int32 CompareTo(SomeValueType other) {
+        return (m_x - other.m_x);
+    }
+
+    // 注意以下代码没有指定 pulbic/private 可访问性
+    Int32 IComparable.CompareTo(Object other) {
+        return CompareTo((SomeValueType) other);
+    }
+}
+```
+
+注意新版本的几处改动。现在有两个 `CompareTo` 方法。第一个 `CompareTo` 方法不是获取一个 `Object` 作为参数，而是获取一个 `SomeValueType`了，所以用于强制类型转换的代码被去掉了。修改了第一个`CompareTo`方法使其变得类型安全之后，`SomeValueType`还必须实现一个`CompareTo`方法来满足`IComparable`的协定。这正是第二个`IComparable.CompareTo`方法的作用，它是一个EIMI。
+
+经过这两处改动之后，就获得了编译时的类型安全性，而且不会发生装箱：
+
+```C#
+public static void Main() {
+    SomeValueType v = new SomeValueType(0);
+    Object o = new Object();
+    Int32 n = v.CompareTo(v);   // 不发生装箱
+    n = v.CompareTo(o);         // 编译时错误
+}
+```
+
+不过，定义接口类型的变量会再次失去编译时的类型安全性，而且会再次发生装箱：
+
+```C#
+public static void Main() {
+    SomeValueType v = new SomeValueType(0);
+    IComparable c = v;          // 装箱！
+
+    Object o = new Object();
+    Int32 n = c.CompareTo(v);  // 不希望的装箱操作
+    n = c.CompareTo(o);        // InvalidCastException 异常    
+}
+```
+
+事实上，如本章前面所述，将值类型的实例换换为接口类型时，CLR 必须对值类型的实例进行装箱。因此，前面的 `Main` 方法中会发生两次装箱。
+
+实现 `IConvertible`，`ICollection`，`IList`和`IDictionary`等接口时 EIMI 很有用。可利用它为这些接口的方法创建类型安全的版本，并减少值类型的装箱。
+
+## <a name="#13_10">13.10 谨慎使用显式接口方法实现</a>
+
+使用 EIMI 也可能造成一些严重后果，所以应该尽量避免使用 EIMI。幸好，泛型接口可帮助我们在大多数时候避免使用 EIMI。但有时(比如实现具有相同名称和签名的两个接口方法时)仍然需要它们。EIMI 最主要的问题如下。
+
+* 没有文档解释类型具体如何实现一个 `EIMI` 方法，也没有`Microsoft Visual Studio`“智能感知”支持。
+
+* 值类型的实例在转换成接口时装箱。
+
+* `EIMI`不能由派生类型调用。
+
+下面详细讨论这些问题。
+
+文档在列出一个类型的方法时，会列出显式接口方法实现(EIMI)，但没有提供类型特有的帮助，只有接口方法的常规性帮助。例如，`Int32`类型的文档只是说它实现了`IConvertible`接口的所有方法。能做到这一步已经不错，它使开发人员知道存在这些方法。但也使开发人员感到困惑，因为不能直接在一个`Int32`上调用一个`IConvertible`方法。例如，下面的代码无法编译：
+
+```C#
+public static void Main() {
+    Int32 x = 5;
+    Single s = x.ToSingle(null);        // 试图调用一个 IConvertible 方法
+}
+```
+
+编译这个方法时，C# 编译器会报告以下消息：`error CS0117：“int”不包含“ToSingle”的定义`。这个错误信息使开发人员感到困惑，因为它明显是说`Int32`类型没有定义`ToSingle`方法，但实际上定义了。
+
+要在一个`Int32`上调用`ToSingle`，首先必须将其转换为`IConvertible`，如下所示：
+
+```C#
+public static void Main() {
+    Int32 x = 5;
+    Single s = ((IConvertible) x).ToSingle(null);
+}
+```
