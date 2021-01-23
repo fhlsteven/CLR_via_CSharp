@@ -33,3 +33,13 @@ CLR Via C# 第四版
 [第 13 章 接口](./chapters/ch13_Interfaces.md)
 
 ---
+第三部分 基本类型
+
+[第 14 章 字符、字符串和文本处理](./chapters/ch14_CharStringText.md)  
+第 15 章 枚举类型和位标志  
+第 16 章 数组  
+第 17 章 委托  
+第 18 章 定制特性  
+第 19 章 可空值类型  
+
+---

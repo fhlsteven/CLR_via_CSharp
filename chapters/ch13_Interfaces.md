@@ -591,3 +591,114 @@ public static void Main() {
     Single s = ((IConvertible) x).ToSingle(null);
 }
 ```
+
+对类型转换的要求不明确，而许多开发人员自己看不出来问题出在哪里。还有一个更让人烦恼的问题：`Int32`值类型转换为`IConvertible`会发生装箱，既浪费内存，又损害性能。这是本节开头提到的EIMI存在的第二个问题。
+
+EIMI的第三个也可能是最大的问题是，它们不能被派生类调用。下面是一个例子：
+
+```C#
+internal class Base : IComparable {
+
+    // 显式接口方法实现
+    Int32 IComparable.CompareTo(Object o) {
+        Console.WriteLine("Base's CompareTo");
+        return 0;
+    }
+}
+
+
+internal sealed class Derived : Base,IComparable {
+
+    // 一个公共方法，也是接口的实现
+    public Int32 CompareTo(Object o) {
+        Console.WriteLine("Derived's CompareTo");
+
+        // 试图调用基类的 EIMI 导致编译错误：
+        // error CS0117：“Base” 不包含 “CompareTo” 的定义
+        base.CompareTo(o);
+        return 0;
+    }
+}
+```
+
+在`Derived`的`CompareTo`方法中调用 `base.CompareTo`导致C#编译器报错。现在的问题是，`Base`类没有提供一个可供调用的或受保护`CompareTo`方法，它提供的是一个只能用`IComparable`类型的变量来调用的`CompareTo`方法。可将`Derived`的`CompareTo`方法修改成下面这样：
+
+```C#
+// 一个公共方法，也是接口的实现
+public Int32 CompareTo(Object o) {
+    Console.WriteLine("Derived's CompareTo");
+
+    // 试图调用基类的 EIMI 导致无穷递归
+    IComparable c = this;
+    c.CompareTo(o);
+
+    return 0;
+}
+```
+
+这个版本将`this`转换成`IComparable`变量`c`，然后用`c`调用`CompareTo`。但`Derived`的公共`CompareTo`方法充当了`Derived`的`IComparable.CompareTo`方法的实现，所以造成了无穷递归。这可以通过声明没有`IComparable`接口的`Derived`类来解决：
+
+`internal sealed class Derived : Base /*, IComparable */ { ... }`  
+
+现在，前面的`CompareTo`方法将调用`Base`中的`CompareTo`方法。但有时不能因为想在派生类中实现接口方法就将接口从类型中删除。解决这个问题的最佳方法是在基类中除了提供一个被选为显式实现的接口方法，还要提供一个虚方法。然后`Derived`类可以重写虚方法。下面展示了如何正确定义`Base`类和`Derived`类：
+
+```C#
+internal class Base : IComparable {
+    
+    // 显式接口方法实现(EIMI)
+    Int32 IComparable.CompareTo(Object o) {
+        Console.WriteLine("Base's IComparable.CompareTo");
+        return CompareTo(o);        // 调用虚方法
+    }
+
+    // 用于派生类的虚方法(该方法可为任意名称)
+    public virtual Int32 CompareTo(Object o) {
+        Console.WriteLine("Base's virtual CompareTo");
+        return 0;
+    }
+}
+
+internal sealed class Derived : Base, IComparable {
+
+    // 一个公共方法，也是接口的实现
+    public override Int32 CompareTo(Object o) {
+        Console.WriteLine("Derived's CompareTo");
+
+        // 现在可以调用 Base 的虚方法
+        return base.CompareTo(o);
+    }
+}
+```
+
+注意，这里是讲虚方法定义成公共方法，但有时可能需要定义成受保护方法。把方法定义为受保护(而不是公共)是可以的，但必须进行另一些小的改动。我们的讨论清楚证明了务必谨慎使用EIMI。许多开发人员在最初接触 EIMI 时，认为 EIMI 非常”酷“，于是开始肆无忌惮地使用。千万不要这样做！.NET在某些情况下确实有用，但应该尽量避免使用，因为它们导致类型变得不好用。
+
+## <a name="13_11">13.11 设计：基类还是接口</a>
+
+经常有人问：”英爱设计基类还是接口？“ 这个问题不能一概而论，以下设计规范或许能帮你理清思路：
+
+* **IS-A对比CAN-DO关系<sup>①</sup>**  
+  类型只能继承一个实现，如果派生类型和基类型建立不起 IS-A 关系，就不能用基类而用接口。接口意味着 CAN-DO 关系。如果多种对象类型都”能“做某事，就为它们创建接口。例如，一个类型能将自己的实例转换为另一个类型(`IConvertible`)，一个类型序列化自己的实例(`ISerializable`)。注意，值类型必须从`System.ValueType`派生，所以不能从任意的基类派生。这时必须使用CAN-DO关系并定义接口。
+
+> ① IS-A 是指”属于“，例如，汽车属于交通工具；CAN-DO 是指”能做某事“，例如，一个类型能将自己的实例转换为另一个类型。 ——译注
+
+* **易用性**  
+  对于开发人员，定义从基类派生的新类型通常比实现接口的所有方法容易得多。基类型可提供大量功能，所以派生类型可能只需稍做改动。而提供接口的话，新类型必须实现所有成员。
+
+* **一致性实现**  
+  无论接口协定(contract)订立得有多好，都无法保证所有人百分之百正确实现它。事实上，COM颇受该问题之累，导致有的 COM 对象只能正常用于Microsoft Office Word 或 Microsoft Internet Explorer。而如果为基类型提供良好的默认实现，那么一开始得到的就是能正常工作并经过良好测试的类型。以后根据需要修改就可以了。
+
+* **版本控制**  
+  向基类型添加一个方法，派生类型将继承新方法。一开始使用的就是一个能正常工作的类型，用户的源代码甚至不需要重新编译。而向接口添加新成员，会强迫接口的继承者更改其源代码并重新编译。
+
+FCL 中涉及数据流处理(streaming data)的类采用的是实现继承方案<sup>②</sup>。`System.IO.Stream`是抽象基类，提供了包括`Read`和`Write`在内的一组方法。其他类(`System.IO.FileStream`，`System.IO.MemoryStream`和`System.Net.Sockets.NetworkStream`)都从`Stream`派生。在这三个类中，每一个和`Stream`类都是 IS-A 关系，这使具体类<sup>③</sup>的实现变得更容易。例如，派生类只需实现同步 I/O 操作，异步 I/O 操作已经从`Stream`基类继承了。
+
+> ② 即继承基类的实现。 —— 译注  
+> ③ 对应于”抽象类“。 —— 译注
+
+必须承认，为流类(`XXXStream`)选择继承的理由不是特别充分，因为`Stream`基类实际只提供了很少的实现。那么就以 Microsoft Windows 窗体控件类为例好了。`Button`，`CheckBox`，`ListBox` 和所有其他窗体控件都从`System.Windows.Forms.Control`派生。`Control`实现了大量代码，各种控件类简单继承一下即可正常工作。这时选择继承应该没有疑问了吧？
+
+相反，Microsoft 采用基于接口的方式来设计FCL中的集合。`System.Collections.Generic`命名空间定义了几个与集合有关的接口：`IEnumerable<out T>`，`ICollection<T>`，`IList<T>`和`IDictionary<TKey, Tvalue>`。然后，Microsoft 提供了大量类来实现这些接口组合，包括`List<T>`，`Dictionary<Tkey, TValue>`，`Queue<T>`和`Stack<T>`等等。设计者在类和接口之间选择 CAN-DO 关系，因为不同集合类的实现迥然有异。换句话说，`List<T>`，`Dictionary<Tkey, Tvalue>`和`Queue<T>`之间没有多少能共享的代码。
+
+不过，这些集合类提供的操作相当一致。例如，都维护了一组可枚举的元素，而且都允许添加和删除元素。假定有一个对象引用，对象的类型实现了`IList<T>`接口，就可在不需要知道集合准确类型的前提下插入、删除和搜索元素。这个机制太强大了！
+
+最后要说的是，两件事情实际能同时做：定义接口，*同时*提供实现该接口的基类。例如，FCL定义了`ICOmparable<in T>`接口，任何类型都可选择实现该接口。此外，FCL提供了抽象基类`Comparer<T>`，它实现了该接口，同时为非泛型`IComparer`的`Compare`方法提供了默认实现。接口定义和基类同时存在带来了很大的灵活性，开发人员可根据需要选择其中一个。
