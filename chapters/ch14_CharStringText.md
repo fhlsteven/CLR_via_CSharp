@@ -289,4 +289,134 @@ public enum CompareOptions {
 
 以语言文化正确的方式比较字符串时，有时需要指定另一种语言文化，而不是使用与调用线程关联的哪一种。这时可用前面列出的`StartsWith`，`EndsWith`和`Compare`方法的重载版本，它们都接受`Boolean`和`CultureInfo`参数。
 
-> 重要提示 除了前面列出之外，`String`类型还为`Equals`，`StartsWith`,`EndsWith`和`Compare`方法定义了其他几个重载版本。但是，Microsoft 建议避免使用这些额外的版本(也就是本书没有列出的版本)。除此之外，```
+> 重要提示 除了前面列出之外，`String`类型还为`Equals`，`StartsWith`,`EndsWith`和`Compare`方法定义了其他几个重载版本。但是，Microsoft 建议避免使用这些额外的版本(也就是本书没有列出的版本)。除此之外，`String` 的其他比较方法——`CompareTo`(`IComparable`接口所要求的)、用这些方法和操作符，是因为调用者不显式指出以什么方式执行字符串比较，而你无法从方法名看出默认比较方式。例如，`CompareTo` 默认执行对语言文化敏感的比较，而 `Equals` 执行普通的序号(ordinal)比较。如果总是显式地指出以什么方式执行字符串比较，代码将更容易阅读和维护。
+
+现在重点讲一下如何执行语言文化正确的比较。.NET Framework 使用 `System.Globalization.CultureInfo` 类型表示一个“语言/国家”对(根据RFC 1766标准)。例如，“en-US”代表美国英语，“en-AU”代表澳大利亚英语，而“de-DE”代表德国德语。在CLR中，每个线程都关联了两个特殊属性，每个属性都引用一个`CultureInfo`对象。两个属性的具体描述如下。
+
+* **CurrentUICulture 属性** 该属性获取要向用户显示的资源。它在 GUI 或 Web 窗体应用程序中特别有用，因为它标识了在显示 UI 元素(比如标签和和按钮)时应使用的语言。创建线程时，这个线程属性会被设置成一个默认的 `CultureInfo` 对象，该对象标识了正在运行应用程序的 Windows 版本所用的语言。而这个语言是用 Win32 函数 `GetUserDefaultUILanguage` 来获取的。如果应用程序在 Windows 的 MUI (多语言用户界面，Multilingual User Interface)版本上运行，可通过控制面板的“区域和语言”对话框来修改语言。在非 MUI 版本的 Windows 上，语言由安装的操作系统的本地化版本(或者安装的语言包)决定，而且这个语言不可更改。
+
+* **CurrentCulture 属性** 不合适使用`CurrentUICulture`属性的场合就使用该属性，例如数字和日期格式化、字符串大小写转换以及字符串比较。格式化要同时用到`CultureInfo`对象的“语言”和“国家”部分。创建线程时，这个线程属性被设为一个默认的`CultureInfo`对象，其值通过调用 Win32 函数`GetUserDefaultLCID`来获取。可通过 Windows 控制面板的“区域和语言”对话框来修改这个值。
+
+在许多计算机上，线程的 `CultureUIInfo` 和 `CurrentCulture` 属性都被设为同一个`CultureInfo` 对象。也就是说，它们使用相同的“语言/国家信息”。但也可把它们设为不同对象。例如，在美国运行的一个应用程序可能要用西班牙语来显示它的所有菜单项以及其他 GUI 元素，同时仍然要正确显示美国的货币和日期格式。为此，线程的`CurrentUICulture`属性要引用另一个`CultureInfo`对象，用“en-US”初始化。
+
+`CultureInfo`对象内部的一个字段引用了一个`System.Globalization.CompareInfo`对象，该对象封装了语言文化的字符排序表信息(根据 Unicode 标准的定义)。以下代码演示了序号比较和对语言文化敏感的比较的区别：
+
+```C#
+using System;
+using System.Globalization;
+
+public static class Program {
+    public static void Main() {
+        String s1 = "Strasse";
+        String s2 = "Straße";
+        Boolean eq;
+
+        // Compare 返回非零值 ①
+        eq = String.Compare(s1, s2, StringComparison.Ordinal) == 0;
+        Console.WriteLine("Ordinal comparison:'{0}' {2} '{1}'", s1, s2, eq ? "==" : "!=");
+
+        // 面向在德国(DE)说德语(de)的人群，
+        // 正确地比较字符串
+        CultureInfo ci = new CultureInfo("de-DE");
+
+        // Compare 返回零值
+        eq = String.Compare(s1, s2, true, ci) == 0;
+        Console.WriteLine("Cultural comparison:'{0}' {2} '{1}'", s1, s2, eq ? "==" : "!=");
+    }
+}
+```
+
+> ① `Compare`返回`Int32`值；非零表示不相等，零表示相等。非零和零分别对应`true`和`false`，所以后面的代码将比较结果与`0(false)`进行比较，将`true`或`false`结果赋给`eq`变量。 ——译注
+
+生成并运行上述代码得到以下输出：
+
+```cmd
+Ordinal comparison: 'Strasse' != 'Straße'
+Cultural comparison: 'Strasse' == 'Straße' 
+```
+
+> 注意 `Compare`方法如果执行的不是序号比较就会进行“字符展开”(character expansion)，也就是将一个字符展开成忽视语言文化的多个字符。在前例中，德语 Eszet 字符 “ß” 总是展开成“ss”。类似地，“Æ” 连字总是展开成“AE”。所以在上述代码中，无论传递什么语言文化，对`Compare`的第二个调用始终返回0.
+
+比较字符串以判断相等性或执行排序时，偶尔需要更多的控制。例如，比较日语字符串时就可能有这个需要。额外的控制通过`CultureInfo`对象的`CompareInfo`属性获得。前面说过，`CompareInfo` 对象封装了一种语言文化的字符比较表，每种语言文化只有一个`CompareInfo`对象。
+
+调用`String`的`Compare`方法时，如果调用者指定了语言文化，就使用指定的语言文化，就使用指定的语言文化；如果没有指定，就使用调用线程的`CurrentCulture`属性值。`Compare`方法内部会获取与特定语言文化匹配的`CompareInfo`对象引用，并调用`CompareInfo`对象的`Compare`方法，传递恰当的选项(比如不区分大小写)。自然，如果需要额外的控制，可以自己调用一个特定`CompareInfo`对象的`Compare`方法。
+
+`CompareInfo`类型的`Compare`方法获取来自 `CompareOptions` 枚举类型<sup>①</sup>的一个值作为参数。该枚举类型定义的符号代表一组位标志(bit flag)，对这些位标志执行 OR 运算就能更全面地控制字符串比较。请参考文档获取这些符号的完整描述。
+
+> ① 前面已经展示过 `CompareOptions` 枚举类型。
+
+以下代码演示了语言文化对于字符串排序的重要性，并展示了执行字符串比较的各种方式：
+
+```C#
+using System;
+using System.Text;
+using System.Windows.Forms;
+using System.Globalization;
+using System.Threading;
+
+public sealed class Program {
+    public static void Main() {
+        String output = String.Empty;
+        String[] symbol = new String[] { "<", "=", ">" };
+        Int32 x;
+        CultureInfo ci;
+
+        // 以下代码演示了在不同语言文化中，
+        // 字符串的比较方式也有所不同
+        String s1 = "coté";
+        String s2 = "côte";
+
+        // 为法国法语排序字符串
+        ci = new CultureInfo("fr-FR");
+        x = Math.Sign(ci.CompareInfo.Compare(s1, s2));
+        output += String.Format("{0} Compare: {1} {3} {2}",
+        ci.Name, s1, s2, symbol[x + 1]);
+        output += Environment.NewLine;
+
+        // 为日本日语排序字符串
+        ci = new CultureInfo("ja-JP");
+        x = Math.Sign(ci.CompareInfo.Compare(s1, s2));
+        output += String.Format("{0} Compare: {1} {3} {2}",
+        ci.Name, s1, s2, symbol[x + 1]);
+        output += Environment.NewLine;
+
+        // 为当前线程的当前语言文化排序字符串
+        ci = Thread.CurrentThread.CurrentCulture;
+        x = Math.Sign(ci.CompareInfo.Compare(s1, s2));
+        output += String.Format("{0} Compare: {1} {3} {2}",
+        ci.Name, s1, s2, symbol[x + 1]);
+        output += Environment.NewLine + Environment.NewLine;
+        
+        // 以下代码演示了如何将 CompareInfo.Compare 的
+        // 高级选项应用于两个日语字符串。
+        // 一个字符串代表用平假名写成的单词“shinkansen”(新干线)；
+        // 另一个字符串代表用片假名写成的同一个单词
+        s1 = "しんかんせん"; // ("\u3057\u3093\u304B\u3093\u305b\u3093")
+        s2 = "シンカンセン"; // ("\u30b7\u30f3\u30ab\u30f3\u30bb\u30f3")
+                 
+        // 以下是默认比较结果
+        ci = new CultureInfo("ja-JP");
+        x = Math.Sign(String.Compare(s1, s2, true, ci));
+        output += String.Format("Simple {0} Compare: {1} {3} {2}",
+        ci.Name, s1, s2, symbol[x + 1]);
+        output += Environment.NewLine;
+        
+        // 以下是忽略日语假名的比较结果
+        CompareInfo compareInfo = CompareInfo.GetCompareInfo("ja-JP");
+        x = Math.Sign(compareInfo.Compare(s1, s2, CompareOptions.IgnoreKanaType));
+        output += String.Format("Advanced {0} Compare: {1} {3} {2}",
+        ci.Name, s1, s2, symbol[x + 1]);
+        MessageBox.Show(output, "Comparing Strings For Sorting");
+    }
+}
+```
+
+生成并运行以上代码得到如图 14-1 所示的结果。
+
+图 14-1 字符串排序结果
+
+> 注意<sup>①</sup> 源代码不要用 ANSI 格式保存，否则日语字符会丢失。要在 Microsoft Visual Studio中保存这个文件，请打开“另存文件为”对话框，单击“保存”按钮右侧的下箭头，选择“编码保存”，并选择“Unicode(UTF-8带签名)-代码页 65001”。Microsoft C# 编译器用这个代码也就能成功解析源代码文件了。
+
+> ① 中文版 Visual Studio 可忽略这个“注意”。——译注
+
+除了`Compare`，`CompareInfo` 类还提供了`IndexOf`，`LastIndexOf`，`IsPrefix`和`IsSuffix`方法。由于所有这些方法都提供了接受`CompareOptions`枚举值的重载版本，所以能提供比`String`类定义的`Compare`，`IndexOf`，`LastIndexOf`，`````````
