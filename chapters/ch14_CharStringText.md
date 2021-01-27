@@ -456,4 +456,52 @@ s2 = String.Intern(s2);
 Console.Writeline(Object.ReferenceEquals(s1, s2)); // 显示 'True'
 ```
 
-在第一个`ReferenceEquals`方法调用中，`s1`引用堆中的`"Hello"`字符串对象，而`s2`引用堆中
+在第一个`ReferenceEquals`方法调用中，`s1`引用堆中的`"Hello"`字符串对象，而`s2`引用堆中的另一个"`Hello`"对象。由于引用不同，所以应该显示`False`。但在 CLR 的 4.5 版本上运行，实际显示的是 `True`。这是由于这个版本的 CLR 选择忽视 C# 编译器插入的特性和标志。程序集加载到 AppDomain 中时，CLR 对字面值(literal)字符串`"Hello"`进行留用，结果是 `s1`和`s2`引用堆中的同一个`“Hello”`字符串。但如前所述，你的代码永远不要依赖这个行为，因为未来版本的 CLR 有可能会重视这些特性和标志，从而不对`“Hello”`字符串进行留用。事实上，使用 NGen.exe 实用程序编译这个程序集的代码，CLR 的 4.5 版本确实会使用这些特性和标志。
+
+在第二个`ReferenceEquals`方法调用之前，`“Hello”`字符串被显式留用，`s1`现在引用已留用的`“Hello”`。然后，通过再次调用`Intern`，`s2`引用和`s1`一样的`“Hello”`字符串。所以第二个`ReferenceEquals`调用保证结果是`True`，无论程序集在编译时是否设置了特性和标志。
+
+现在通过一个例子理解如何利用字符串留用来提升性能并减少内存耗用。以下`NumTimesWordAppearsEquals`方法获取两个参数：一个单词和一个字符串数组。每个数组元素都引用了一个单词。方法统计指定单词在单词列表中出现了多少次并返回计数：
+
+```C#
+private static Int32 NumTimesWordAppearsEquals(String word, String[] wordlist) {
+    Int32 count = 0;
+    for (Int32 wordnum = 0; wordnum < wordlist.Length; wordnum++) {
+        if (word.Equals(wordlist[wordnum], StringComparison.Ordinal))
+            count++;
+    }
+    return count;
+}
+```
+
+这个方法调用了`String`的`Equals`方法，后者在内部比较字符串的各个单独字符，并核实所有字符都匹配。这个比较可能很慢。此外，`wordlist`数组可能有多个元素引用了含有相同字符内容的不同`String`对象。这意味着堆中可能存在多个内容完全相同的字符串，并会在将来进行垃圾回收时幸存下来。
+
+现在看一下这个方法的另一个版本。新版本利用了字符串留用：
+
+```C#
+private static Int32 NumTimesWordAppearsIntern(String word, String[] wordlist) {
+    // 这个方法假定 wordlist 中的所有数组元素都引用已留用的字符串
+    word = String.Intern(word);
+    Int32 count = 0;
+    for (Int32 wordnum = 0; wordnum < wordlist.Length; wordnum++) {
+        if (Object.ReferenceEquals(word, wordlist[wordnum]))
+            count++;
+    }
+    return count;
+}
+```
+
+这个方法留用了单词，并假定`wordlist` 包含对已留用字符串的引用。首先，假如一个单词在单词列表中多次出现，这个版本有助于节省内存。因为在这个版本中，`worldlist`会包含对堆中同一个`String`对象的多个引用。其次，这个版本更快。因为比较指针就知道指定单词是否在数组中。
+
+虽然`NumTimesWordAppearsIntern`方法本身比`NumTimesWordAppearsEquals`方法快，但在使用`NumTimesWordAppearsIntern`方法时，应用程序的总体性能是可能变慢的。这是因为所有字符串在添加到`wordlist`数组时(这里没有列出具体的代码)都要花时间进行留用。但如果应用程序要为同一个`wordlist`多次调用`NumTimesWordAppearsIntern`，这个方法真的能提升应用程序性能和内存利用率。总之，字符串留用虽然有用，但使用须谨慎。事实上，这正式 C# 编译器默认不想启用字符串留用的原因。<sup>①</sup>
+
+> ① 虽然编译器应用了特性并设置了不进行字符串留用的标志，但 CLR 选择忽视这些设置你也没有办法。 ——译注
+
+### 14.2.5 字符串池
+
+编译源代码时，编译器必须处理每个字面值(literal)字符串，并在托管模块的元数据中嵌入。同一个字符串在源代码中多次出现，把它们都嵌入元数据会使生成的文件无谓地增大。
+
+为了解决这个问题，许多编译器(包括 C#编译器)只在模块的元数据中只将字面值字符串写入一次。引用该字符串的所有代码都被改成引用元数据中的同一个字符串。编译器将单个字符串的多个实例合并成一个实例，能显著减少模块的大小。但这并不是新技术，C/C++ 编译器多年来一直在采用这个技术(Micrisoft 的 C/C++ 编译器称之为“字符串池”)。尽管如此，字符串池仍是提升字符串性能的另一种行之有效的方式，而你应注意到它的存在。
+
+### 14.2.6 检查字符串中的字符和文本元素
+
+```````
