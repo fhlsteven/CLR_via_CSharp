@@ -504,4 +504,179 @@ private static Int32 NumTimesWordAppearsIntern(String word, String[] wordlist) {
 
 ### 14.2.6 检查字符串中的字符和文本元素
 
-```````
+虽然字符串比较于排序或测试相等性很有用，但有时只是想检查一下字符串中的字符。`String`类型为此提供了几个属性和方法，包括 `Length`，`Chars`(一个 C# 索引器<sup>②</sup>)，`GetEnumerator`，`ToCharArray`，`Contains`，`IndexOf`，`IndexOfAny`和`LastIndexOfAny`。
+
+> ② 或者说有参属性。 ——译注
+
+`String.Char`实际代表一个 16 位 Unicode 码值，而且该值不一定就等于一个抽象 Unicode 字符。例如，有的抽象 Unicode 字符是两个码值的组合。U+0625(阿拉伯字母 Alef with Hamza below)和 U+0650(Arabic Kasra)字符组合起来就构成了一个抽象字符或者**文本元素**(text element)。
+
+除此之外，有的 Unicode 文本元素要求用两个16 位值表示。第一个称为“高位代理项”(high surrogate)。其中，高位代理项范围在 U+D800 到 U+ DBFF 之间，低位代理项范围在 U+DC00 到 U+DFFF 之间。有了代理项，Unicode 就能表示 100 万个以上不同的字符。
+
+美国和欧洲很少使用代理项，东亚各国则很常用。为了正确处理文本元素，应当使用`System.Globalization.StringInfo`类型。使用这个类型最简单的方式就是构造它的实例，向构造器传递一个字符串。然后可以查询`StringInfo`的`LengthInTextElements`属性来了解字符串中有多少个文本元素。接着就可以调用`StringInfo`的`SubstringByTextElements`方法来提取所有文本元素，或者提取指定数量的连续文本元素。
+
+`StringInfo`类还提供了静态方法`GetTextElementEnumerator`，它返回一个`System.Globalization.TextElementEnumerator`对象，允许枚举字符串中包含的所有抽象 Unicode 字符。最后，可调用`StringInfo` 的静态方法`ParseCombiningCharacters`来返回一个`Int32`数组。从数组长度就能可以字符串包含多少个文本元素。每个数组元素都是一个文本元素的起始码值索引。
+
+以下代码演示了使用 `StringInfo` 类来处理字符串中的文本元素的各种方式：
+
+```C#
+using System;
+using System.Text;
+using System.Globalization;
+using System.Windows.Forms;
+
+public sealed class Program {
+    public static void Main() {
+        // 以下字符串包含组合字符
+        String s = "a\u0304\u0308bc\u0327";
+        SubstringByTextElements(s);
+        EnumTextElements(s);
+        EnumTextElementIndexes(s);
+    }
+
+    private static void SubstringByTextElements(String s) {
+        String output = String.Empty;
+
+        StringInfo si = new StringInfo(s);
+        for (Int32 element = 0; element < si.LengthInTextElements; element++) {
+            output += String.Format("Text element {0} is '{1}'{2}", element, si.SubstringByTextElements(element, 1), Environment.NewLine);
+        }
+        MessageBox.Show(output, "Result of SubstringByTextElements");
+    }
+
+    private static void EnumTextElements(String s) {
+        String output = String.Empty;
+
+        TextElementEnumerator charEnum = StringInfo.GetTextElementEnumerator(s);
+        while (charEnum.MoveNext()) {
+            output += String.Format("Character at index {0} is '{1}'{2}", charEnum.ElementIndex, charEnum.GetTextElement(), Environment.NewLine);
+        }
+        MessageBox.Show(output, "Result of GetTextElementEnumerator");
+    }
+
+    private static void EnumTextElementIndexes(String s) {
+        String output = String.Empty;
+
+        Int32[] textElemIndex = StringInfo.ParseCombiningCharacters(s);
+        for (Int32 i = 0; i < textElemIndex.Length; i++) {
+            output += String.Format("Character {0} starts at index {1}{2}", i, textElemIndex[i], Environment.NewLine);
+        }
+        MessageBox.Show(output, "Result of ParseCombiningCharacters");
+    }
+}
+```
+
+编译并运行上述代码，会显示如图 14-2、图 14-3 和 图 14-4 所示的对话框。
+
+![14_2](../resources/images/14_2.png)  
+图 14-2 `SubstringByTextElements`的结果 
+
+![14_3](../resources/images/14_3.png)  
+图 14-3 `GetTextElementEnumerator`的结果  
+
+![14_4](../resources/images/14_4.png)  
+图 14-4 `ParseCombiningCharacters`的结果  
+
+### 14.2.7 其他字符串操作
+
+还可利用`String`类型提供的一些方法来复制整个字符串或者它的一部分。表 14-1 总结了这些方法。
+
+表 14-1 用于复制字符串的方法 
+|成员名称|方法类型|说明|
+|:---:|:---:|:---:|
+|`Clone`|实例|返回对同一个对象(`this`)的引用。能这样做是因为`String`对象不可变(immutable)。该方法实现了 `String` 的 `ICloneable`接口|
+|`Copy`|静态|返回指定字符串的新副本。该方法很少用，它的存在只是为了帮助一些需要把字符串当作 token 来对待的应用程序。通常，包含相同字符内容的多个字符串会被“留用”(intern)为单个字符串。该方法创建新字符串对象，确保即时字符串包含相同字符内容，引用(指针)也有所不同|
+|`CopyTo`|实例|将字符串中的部分字符复制到一个字符数组中|
+|`Substring`|实例|返回代表原始字符串一部分的新字符串|
+|`ToString`|实例|返回对同一个对象(`this`)的引用|
+
+除了这些方法，`String`还提供了多个用于处理字符串的静态方法和实例方法，比如`Insert`，`Remove`，`PadLeft`，`Replace`，`Split`，`Join`，`ToLower`，`ToUpper`，`Trim`，`Concat`，`Format`等。使用所有这些方法时都请牢记一点，它们返回的都是新的字符串对象。这是由于字符串是不可变的。一经创建，便不能修改(使用安全代码的话)。
+
+## <a name="14_3">14.3 高效率构造字符串</a>
+
+由于`String`类型代表不可变字符串，所以 FCL 提供了 `System.Text.StringBuilder` 类型对字符串和字符进行高效动态处理，并返回处理好的`String`对象。可将`StringBuilder`想像成创建 `String` 对象的特殊构造器。你的方法一般应获取 `String` 参数而非 `StringBuilder`参数。
+
+从逻辑上说，`StringBuilder`对象包含一个字段，该字段引用了由`Char`结构构成的数组。可利用`StringBuilder`的各个成员来操纵该字符数组，高效率地缩短字符串或更改字符串中的字符。如果字符串变大，超过了事先分配的字符数组大小，`StringBuilder`会自动分配一个新的、更大的数组，复制字符，并开始使用新数组。前一个数组被垃圾回收。
+
+用 `StringBuilder` 对象构造好字符串后，调用`StringBuilder`的`ToString`方法即可将`StringBuilder`的字符数组“转换”成`String`。这样会在堆上新建`String`对象，其中包含调用`ToString`时存在于`StringBuilder`中的字符串。之后可继续处理`StringBuilder`中的字符串。以后可再次调用`ToString`把它转换成另一个`String`对象。
+
+### 14.3.1 构造`StringBuilder`对象
+
+和`String`类不同，CLR 不觉得`StringBuilder`类有什么特别。此外，大多数语言(包括C#)都不将`StringBuilder`类视为基元类型。要像构造其他任何非基元类型那样构造`StringBuilder`对象：  
+
+`StringBuilder sb = new StringBuilder();` 
+
+`StringBuilder`类型提供了许多构造器。每个构造器的职责是分配和初始化由每个`StringBuilder`对象维护的状态。下面解释了`StringBuilder`类的关键概念。
+
+* **最大容量**  
+  一个`Int32`值，指定了能放到字符串中的最大字符数。默认值是`Int32.MaxValue`(约 20 亿)。一般不用更改这个值，但有时需要指定较小的最大容量以确保永远不会创建超出特定长度的字符串。构造好之后，这个`StringBuilder`的最大容量就固定下来了，不能再变。
+  
+* **容量**  
+  一个`Int32`值，指定了由`StringBuilder`维护的字符数组的长度。默认为`16`。如果事先知道要在这个`StringBuilder`中放入多少字符，那么构造`StringBuilder`对象时应该自己设置容量。  
+  向字符数组追加字符时，`StringBuilder`会检测数组会不会超过设定的容量。如果会，`StringBuilder`会自动倍增容量字段，用新容量来分配新数组，并将原始数组的字符复制到新数组中。随后，原始数组可以被垃圾回收。数组动态扩容会损害性能。要避免就要设置一个合适的初始容量。
+  
+* **字符数组**  
+  一个由`Char` 结构构成的数组，负责维护“字符串”的字符内容。字符数总是小于或等于“容量”和“最大容量”值。可用`StringBuilder`的`Length`属性来获取数组中已经使用的字符数。`Length`总是小于或等于`StringBuilder`的“容量”值。可在构造`StringBuilder`时传递一个`String`来初始化字符数组。不传递字符串，数组刚开始不包含任何字符——也就是说，`Length`属性返回`0`。
+
+### 14.3.2 `StringBuilder`的成员 
+
+和`String`不同，`StringBuilder`代表可变(mutable)字符串。也就是说，`StringBuilder`的大多数成员都能更改字符数组的内容，同时不会造成在托管堆上分配新对象。`StringBuilder`只有以下两种情况才会分配新对象。
+
+* 动态构造字符串，其长度超过了设置的“容量”。
+* 调用`StringBuilder`的`ToString`方法。
+
+表 14-2 总结了 `StringBuilder`的成员。
+
+表 14-2 StringBuilder 的成员
+
+|成员名称|成员类型|说明|
+|:---:|:---:|:---:|
+|`MaxCapacity`|只读属性|返回字符串能容纳的最大字符串(最大容量)|
+|`Capacity`|可读/可写属性|获取或设置字符数组的长度(容量)。将容量设得比字符串长度小或者比`MaxCapacity`大将抛出`ArgumentOutOfRangeException`异常|
+|`EnsureCapacity`|方法|保证字符数组至少具有指定的长度(容量)。如果传给方法的值大于`StringBuilder`的当前容量，当前容量会自动增大。如果当前容量已大于传给该属性的值，则不发生任何变化|
+|`Length`|可读/可写属性|获取或设置“字符串”中的字符数。它可能小于字符数组的当前容量。将这个属性设为`0`，会将`StringBuilder`的内容重置为肯空字符串|
+|`ToString`|方法|这个方法的无参版本返回代表`StringBuilder`的字符数组的一个`String`|
+|`Chars`|可读/可写索引器属性|获取或设置字符数组指定索引位置的字符。在C#中，这是一个索引器(有参属性)，要用数组语法(`[]`)来访问|
+|`Clear`|方法|清除`StringBuilder`对象的内容，等同于把它的`Length`属性设为`0`|
+|`Append`|方法|在字符数组末尾追加一个对象；如果必要，数组会进行扩充。使用常规格式和与调用线程关联的语言文化将对象转换成字符串|
+|`Insert`|方法|在字符数组中插入一个对象；如果必要，数组会进行扩充。使用常规格式和与调用线程关联的语言文化将对象转换成字符串|
+|`AppendFormat`|方法|在字符数组末尾追加指定的零个或多个对象；如有必要，数组会进行扩充。使用调用者提供的格式化和语言文化信息，将这些对象转换成字符串。`AppendFormat`是处理`StringBuilder`对象时最常用的方法之一|
+|`AppendLine`|方法|在字符数组末尾追加一个行中止符或者一个带行中止符的字符串；如有必要，会增大数组的容量|
+|`Replace`|方法|将字符数组中的一个字符替换成另一个字符，或者将一个字符串替换成另一个字符串|
+|`Remove`|方法|从字符数组中删除指定范围的字符|
+|`Equals`|方法|只有两个`StringBuilder`对象具有相同最大容量、字符数组容量和字符内容才返回`true`|
+|`CopyTo`|方法|将`StringBuilder`的字符内容的一个子集复制到一个`Char`数组中|
+
+使用`StringBuilder`的方法要注意，大多数方法返回的都是对同一个`StringBuilder`对象的引用，所以几个操作能连接到一起完成：
+
+```C#
+StringBuilder sb = new StringBuilder();
+String s = sb.AppendFormat("{0} {1}", "Jeffrey", "Richter").Replace(' ', '-').Remove(4, 3).ToString();
+Console.WriteLine(s);       // 显示"Jeff-Richter"
+```
+
+`String`和`StringBuilder`类提供的方法并不完全对应。例如，`String`提供了`ToLower`，`ToUpper`，`EndsWith`，`PadLeft`，`PadRight`,`Trim`等方法；但 `StringBuilder` 类没有提供任何与之对应的方法。另一方面，`StringBuilder`类提供了功能更全面的`Replace`方法，允许替换作为字符串一部分的字符或者子字符串(而不是一定要替换整个字符串)。由于两个类不完全对应，所以有时需要在`String`和`StringBuiler`之间转换以完成特定任务。例如，要构造字符串将所有字符转换成大写，再在其中插入一个子字符串，需要写下面这样的代码：
+
+```C#
+// 构造一个 StringBuilder 来执行字符串操作
+StringBuilder sb = new StringBuilder();
+
+// 使用 StringBuilder 来执行一些字符串操作
+sb.AppendFormat("{0} {1}", "Jeffrey", "Richter");
+
+// 将 StringBuilder 转换成 String，以便将所有字符转换成大写
+String s = sb.ToString().ToUpper();
+
+// 清除 StringBuilder (分配新的 Char 数组)
+sb.Length = 0;
+
+// 将全部字符大写的 String 加载到 StringBuilder 中，执行其他操作
+sb.Append(s).Insert(8, "Marc-");
+
+// 将 StringBuilder 转换回 String
+s = sb.ToString();
+
+// 向用户显示 String
+Console.WriteLine(s);  // “JEFFREY-Marc-RICHTER”
+```
+
+仅仅因为 `StringBuilder`没有提供`String`提供的所有操作就要像这样写代码，显然是不方便的，效率也很低。希望 Microsoft 将来能为`StringBuilder`添加更多的字符串操作，进一步完善这个类。
