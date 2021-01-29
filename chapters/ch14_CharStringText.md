@@ -681,7 +681,7 @@ Console.WriteLine(s);  // “JEFFREY-Marc-RICHTER”
 
 仅仅因为 `StringBuilder`没有提供`String`提供的所有操作就要像这样写代码，显然是不方便的，效率也很低。希望 Microsoft 将来能为`StringBuilder`添加更多的字符串操作，进一步完善这个类。
 
-## <a name="14_4">14.4 获取对象的字符串表示：ToString</a>
+## <a name="14_4">14.4 获取对象的字符串表示：`ToString`</a>
 
 经常都要获取对象的字符串表示。例如，可能需要向用户显示数值类型(比如 `Byte`，`Int32`和`Single`)或者`DateTime`对象。由于.NET Framework 是面向对象的平台，每个类型都有责任提供代码将实例的值转换成字符串表示。FCL 的设计者为此规划了统一的模式。本节将描述这个模式。
 
@@ -691,4 +691,128 @@ Console.WriteLine(s);  // “JEFFREY-Marc-RICHTER”
 
 任何类型要想提供合理的方式获取对象当前值的字符串表示，就应重写`ToString`方法。FCL 内建的许多核心类型(`Byte`，`Int32`，`UInt64`，`Double`等)都重写了`ToString`，能返回符合语言文化的字符串。在 Visual Studio 调试器中，鼠标移动变量上方会出现一条数据提示(datatip)。提示中的文本正是通过调用对象的`ToString`方法来获取的。所以，定义类时应该总是重写`ToString`方法，以提供良好的调试支持。
 
+### 14.4.1 指定具体的格式和语言文化
 
+无参 `ToString` 方法由两个问题。首先，调用者无法控制字符串的格式。例如，应用程序可能需要将数字格式化成货币、十进制、百分比或者十六禁止字符串。其次，调用者不能方便地选择一种特定语言文化来格式化字符串。相较于客户端代码，服务器端应用程序在第二个问题上尤其麻烦。极少数时候，应用程序需要使用与调用线程不同的语言文化来格式化字符串。为了对字符串格式进行更多的控制，你重写的`ToString`方法应该允许指定具体的格式和语言文化信息。
+
+为了使调用者能选择格式和语言文化，类型应该实现 `System.IFormattable`接口：
+
+```C#
+public interface IFormattable {
+    String ToString(String format, IFormatProvider formatProvider);
+}
+```
+
+FCL 的所有基类型(`Byte`，`SByte`，`Int16/UInt16`，`Int32/UInt32`，`Int64/UInt64`，`Single`，`Double`，`Decimal`和`DateTime`)都实现了这个接口。此外，还有一些类型(比如`Guid`)也实现了它。最后，每个枚举类型定义都自动实现`IFormattable`接口，以便从枚举类型的实例获取一个有意义的字符串符号。
+
+`IFormattable`的`ToString`方法获取两个参数。第一个是`format`，这个特殊字符串告诉方法应该如何格式化对象。第二个是`formatProvider`，是实现了`System.IFormatProvider`接口的一个类型的实例。该类型为`ToString`方法提供具体的语言文化信息。稍后还要详细讨论。
+
+实现`IFormattable`接口的`ToString`方法的类型决定哪些格式字符串能被识别。如果传递的格式字符串无法识别，类型应抛出`System.FormatException`异常。
+
+Microsoft 在 FCL 中定义的许多类型都能同时识别几种格式。例如，`DateTime`类型支持用“d”表示短日期，用“D”表示长日期，用“g”表示常规(general)，用“M”表示月/日，用“s”表示可排序(sortable)，用“T”表示长时间，用“u”表示 ISO 8601 格式的协调世界时，用“G”表示常规，用“F”表示标志(flag)，用“D”表示十进制，用“X”表示十六进制。第 15 章“枚举类型和位标志”将详细讨论枚举类型的格式化。
+
+此外，所有内建数值类型都支持用“C”表示货币格式，用“D”表示十进制格式，用“E”表示科学计数法(指数)格式，用“F”表示定点(fix-point)格式，用“G”表示常规格式，用“N”表示数字格式，用“P”表示百分比格式，用“R”表示往返行程(round-trip)格式<sup>①</sup>，用“X”表示十六进制格式。事实上，数值类型还支持 picture 格式字符串<sup>②</sup>，它是考虑到在某些时候，简单的格式字符串可能无法完全满足需求。picture 格式字符串包含一些特殊字符，他们告诉类型的`ToString`方法具体要显示多少个数位、具体在什么放置一个小数分隔符以及具体有多少位小数等。欲知详情，请查阅文档中的“自定义数字格式字符串”主题。
+
+> ① 文档中的“标准数字格式字符串”一节对 R 符号(文档中称为说明符)的解释是：往返行程说明符保证转换为字符串的数值再次被分析为相同的数值。使用此说明符格式化数值时，首先使用常规格式对其进行测试：`Double` 使用 15 位精度， `Single` 使用 7 位精度。如果此值被成功地分析回相同的数值，则使用常规格式说明符对其进行格式化。但是，如果此值未被成功地分析为相同数值，则它这样格式化：`Double` 使用 17 位精度，`Single` 使用9位精度。虽然精度说明符可以附加到往返行程格式说明符，但它将被忽略。使用此说明符时，往返行程优先于精度。此格式仅有浮点型(`Single`和`Double`)支持。——译注
+
+> ② picture 确实可以理解成“图片”。例如，使用 picture 数值格式字符串 `###,###` 可以显示千分位分隔符。换言之，像画图那样指定确切的显示格式。——译注
+
+对于大多数类型，调用 `ToString` 并为格式字符串传递 `null` 值完全等价于调用`ToString`并为格式字符串传递“G”。换言之，对象默认使用“常规格式”对自身进行格式化。实现类型时，要选择自己认为最常用的一种格式：这个格式就是“常规格式”。顺便说一句，无参的`ToString`方法假定调用者希望的是“常规格式”。
+
+理解了格式字符串之后，接着研究一下语言文化的问题。字符串默认使用与调用线程关联的语言文化信息进行格式化。无参`ToString`方法就是这么做的；另外，为`formatProvider`参数传递`null`值，`IFormattable`的`ToString`方法也这么做。
+
+格式化数字(货币、整数、浮点数、百分比、日期和时间)适合应用对语言文化敏感的信息。`Guid`类型的`ToString`方法只返回代表 `GUID` 值的字符串。生成`Guid`的字符串时不必考虑语言文化，因为 `GUID` 只用于编程。
+
+格式化数字时，`ToString`方法检查为`formatProvider`参数传递的值。如果传递`null`，`ToString`读取`System.Globalization.CultureInfo.CurrentCulture`属性来判断与调用线程关联的语言文化。该属性返回`System.Globalization.CultureInfo`类型的一个实例。
+
+利用这个对象，`ToString`会读取它的`NumberFormat`或`DateTimeFormat`属性(具体取决于要格式化数字还是日期/时间)。这两个属性分别返回`System.Globalization.NumberFormatInfo`或`System.Globalization.DateTimeFormatInfo`类型的实例。`NumberFormatInfo`类型定义了`CurrencyDecimalSeparator`，`CurrencySymbol`，`NegativeSign`，`NumberGroupSeparator`和`PercentSymbol`等属性。而`DateTimeFormatInfo`类型定义了`Calendar`，`DateSeparator`，`DayNames`，`LongDatePattern`，`ShortTimePattern`和`TimeSeparator`等属性。`ToString`会在构造并格式化字符串时读取这些属性。
+
+调用`IFormattable`的`ToString`方法可以不传递`null`，而是传递一个对象引用，该对象的类型实现了`IFormatProvider`接口：
+
+```C#
+public interface IFormatProvider {
+    Object GetFormat(Type formatType);
+}
+```
+
+`IFormatProvider`接口的基本思路是：当一个类型实现了该接口，就认为该类型的实例能提供对语言文化敏感的格式信息，与调用线程关联的语言文化应被忽略。
+
+FCL 的类型只有少数实现了`IFormatProvider`接口。`System.Globalization.CultureInfo`类型就是其中之一。例如，要为越南地区格式化字符串，就需要构造一个`CultureInfo`对象，并将那个对象作为`ToString`的`formatProvider`参数来传递。以下代码将以越南地区适用的货币格式来获取一个`Decimal`数值的字符串表示：
+
+```C#
+Decimal price = 123.54M;
+String s = price.ToString("C", new CultureInfo("vi-VN"));
+MessageBox.Show(s);
+```
+
+生成并运行上述代码，会显示如果 14-5 所示的消息框。
+
+![14_5](../resources/images/14_5.png)  
+图 14-5 数值正确格式化以表示越南货币
+ 
+在内部，`Decimal`的`ToString`方法发现`formatProvider`实参不为`null`，所以会像下面这样调用对象的`GetFormat`方法：
+
+`NumberFormatInfo nfi = (NumberFormatInfo) formatProvider.GetFormat(typeof(NumberFormatInfo));`
+
+`ToString`正是采取这种方式从 `CultureInfo` 对象获取恰当获取恰当的数字格式信息。数值类型(比如 `Decimal`)只请求数字格式信息。但其他类型(如 `DateTime`)可能像下面这样调用 `GetFormat`: 
+
+`DateTimeFormatInfo dtfi = (DateTimeFormatInfo)formatProvider.GetFormat(typeof(DateTimeFormatInfo));`
+
+实际上，由于 `GetFormat` 的参数能标识任何类型，所以该方法非常灵活，能请求任意类型的格式信息。.NET Framework 中的类型在调用 `GetFormat` 时，暂时只会请求数字或日期/时间信息，但未来可能会请求其他格式信息。
+
+顺便说一句，如果对象不针对任何具体的语言文化而格式化，那么为了获取它的字符串表示，应调用 `System.Globalization.CultureInfo` 的静态 `InvariantCulture` 属性，并将返回的对象作为`ToString`的`formatProvider`参数来传递：
+
+```C#
+Decimal price = 123.45M;
+String s = price.ToString("C", CultureInfo.InvariantCulture);
+MessageBox.Show(s);
+```
+
+生成并运行上述代码，会出现如果 14-6 所示的消息框。注意，在生成的字符串中，第一个字符是`¤`，即国际通用货币符号(U+00A4)。
+
+![14_6](../resources/images/14_6.png)  
+
+图 14-6 格式化数值来表示语言文化中性的货币值
+
+用 `InvariantCulture` 格式化的字符串一般都不是向用户显示的。相反，一般将这种字符串保存到数据文件中供将来解析。
+
+FCL 只有 3 个类型实现了`IFormatProvider`接口。第一个是前面解释过的`CultureInfo`。另外两个是`NumberFormatInfo`和`DateTimeFormatInfo`。在`NumberFormatInfo`对象上调用`GetFormat`，方法会检查被请求的类型是不是一个`NumberFormatInfo`。如果是就返回`this`，否则返回`null`。类似地，在`DateTimeFormatInfo`对象上调用`GetFormat`，如果请求的是一个`DateTimeFormatInfo`就返回`this`，否则返回`null`。这两个类型实现`IFormatProvider`接口是为了简化编程。试图获取对象的字符串表示时，调用者通常要指定格式，并使用与调用线程关联的语言文化。因此，经常都要调用`ToString`，为`format`参数传递一个字符串，并为`formatProvider`参数传递`null`。为简化`ToString`调用，许多类型都提供了`ToString`方法的多个重载版本。例如，`Decimal`类型提供了4个不同的`ToString`方法：
+
+```C#
+// 这个版本调用 ToString(null, null)
+// 含义：采用常规数值格式，采用线程的语言文化信息
+public override String ToString();
+
+// 这个版本是 ToString 的真正实现
+// 这个版本实现了 IFormattable 的 ToString 方法
+// 含义：采用由调用者指定的格式和语言文化信息
+public  String ToString(String format, IFormatProvider formatProvider);
+
+// 这个版本简单地调用 ToString(format, null)
+// 含义：采用由调用者指定的格式，采用线程的语言文化信息
+public String ToString(String format);
+
+// 这个版本简单地调用 ToString(null, formatProvider)
+// 这个版本实现了 IConvertible 的 ToString 方法
+// 含义：采用常规格式，采用由调用者指定的语言文化信息
+public String ToString(IFormatProvider formatProvider);
+```
+
+### 14.4.2 将多个对象格式化成一个字符串
+
+到日前为止讲的都是一个单独的类型如何格式化它自己的对象。但有时需要构造由多个已格式化对象构成的字符串。例如，以下字符串由一个日期、一个人名和一个年龄构成：
+
+```C#
+String s = String.Format("On {0}, {1} is {2} years old.", new DateTime(2012, 4, 22, 14, 35, 5), "Aidan", 9);
+Console.WriteLine(s);
+```
+
+生成并运行上述代码，而且“en-US”是线程当前的语言文化，就会看到以下输出：
+
+`On 4/22/2012 2:35:05 PM, Aidan is 9 years old.`
+
+`String`的静态`Format`方法获取一个格式字符串。在格式字符串中，大括号中的数字指定了可供替换的参数。本例的格式字符串告诉`Format`方法将`{0}`替换成格式字符串之后的第一个参数(日期/时间)，将`{1}`替换成格式字符串之后的第二个参数(`“Aidan”`)，将`{2}`替换成格式字符串之后的第三个参数`(9)`。
+
+在内部，`Format`方法会调用每个对象的`ToString`方法来获取对象的字符串表示。返回的字符串依次连接到一起，并返回最终的完整字符串。看起来不错，但它意味着所有对象都要使用它们的常规格式和调用线程的语言文化信息来格式化。
+
+``
