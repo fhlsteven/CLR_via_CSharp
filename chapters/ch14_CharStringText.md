@@ -815,4 +815,392 @@ Console.WriteLine(s);
 
 在内部，`Format`方法会调用每个对象的`ToString`方法来获取对象的字符串表示。返回的字符串依次连接到一起，并返回最终的完整字符串。看起来不错，但它意味着所有对象都要使用它们的常规格式和调用线程的语言文化信息来格式化。
 
-``
+在大括号内指定格式信息，可以更全面地控制对象格式化。例如，以下代码和上例几乎完全一致，只是为可替换参数 0 和 2 添加了格式化信息：
+
+```C#
+String s = String.Format("On (0:D), {1} is {2:E} years old.", new DateTime(2012, 4, 22, 14, 35, 5), "Aidan", 9);
+Console.WriteLine(s);
+```
+
+生成并云心上述代码，同时“en-US”是线程当前的语言文化，会看到以下输出：
+
+`On Sunday, April 22, 2012, Aidan is 9.000000E+000 years old.`
+
+`Format` 方法解析格式字符串时，发现可替换参数 0 应该调用它的`IFormattable` 接口的`ToString`方法，并为该方法的两个参数分别传递`"D"`和` null`。类似地，`Format`会调用可替换的参数 2 的`IFormattable`接口的`ToString`方法，并传递`"E"`和`null`。假如可替换参数 0 和参数 2 的类型没有实现`IFormattable`接口，`Format`会调用从`Object`继承(而且有可能重写)的无参`ToString`方法，并将默认格式附加到最终生成的字符串中。
+
+`String`类提供了静态`Format`方法的几个重载版本。一个版本获取实现了`IFormatProvider`接口的对象，允许使用由调用者指定的语言文化信息来格式化所有可替换参数。显然，这个版本的`Format`会调用每个对象的`IFormattable.ToString`方法，并将传给`Format`的任何`IFormatProvider`对象传给它。
+
+如果使用`StringBuilder`而不是`String`来构造字符串，可以调用`StringBuilder`的`AppendFormat`方法。它的原理与`String`的`Format`方法相似，只是会格式化字符串并将其附加到`StringBuilder`的字符数组中。和`String`的`Format`方法一样，`AppendFormat`也要获取格式字符串，而且也有获取一个`IFormatProvider`的版本。
+
+`Syste.Console`的`Write`和`WriteLine`方法也能获取格式字符串和可替换参数。但`Console`的`Write`和`WriteLine`方法没有重载版本能获取一个`IFormatProvider`。要格式化符合特定语言文化的字符串，必须调用`String`的`Format`方法，首先传递所需的`IFormatProvider`对象，再将结果字符串传给`Console`的`Write`或`WriteLine`方法。但这应该不是一个大问题。正如前文所述，客户端代码极少需要使用有别于调用线程的其他语言文化来格式化字符串。
+
+### 14.4.3 提供定制格式化器
+
+现在应该很清楚了，.NET Framework 的格式化功能旨在提供更大的灵活性和更多的控制。但讨论还没有完。可以定义一个方法，在任何对象需要格式化成字符串的时候由`StringBuilder`的`AppendFormat`方法调用该方法。也就是说，`AppendFormat`不是为每个对象调用`ToString`，而是调用定制的方法，按照我们希望的任何方式格式化部分或全部对象。下面的讨论也适用于`String`的`Format`方法。
+
+下面通过一个例子来解释这个机制。假定需要格式化用户在 Internet 浏览器中查看的 HTML 文本，希望所有`Int32`值都加粗显示。所以，每次将`Int32`值格式化成`String`时，都要用`<B>`和`</B>`标记将字符串包围起来。以下代码演示了要做到这一点是多么容易：
+
+```C#
+using System;
+using System.Text;
+using System.Threading;
+
+public static class Program {
+    public static void Main() {
+        StringBuilder sb = new StringBuilder();
+        sb.AppendFormat(new BoldInt32s(), "{0} {1} {2:M}", "Jeff", 123, DateTime.Now);
+        Console.WriteLine(sb);
+    }
+
+    internal sealed class BoldInt32s : IFormatProvider, ICustomFormatter {
+        public Object GetFormat(Type formatType) {
+            if (formatType == typeof(ICustomFormatter)) return this;
+            return Thread.CurrentThread.CurrentCulture.GetFormat(formatType);
+        }
+
+        public String Format(String format, Object arg, IFormatProvider formatProvider) {
+            String s;
+
+            IFormattable formattable = arg as IFormattable;
+
+            if (formattable == null) s = arg.ToString();
+            else s = formattable.ToString(format, formatProvider);
+
+            if (arg.GetType() == typeof(Int32))
+                return "<B>" + s + "</B>";
+
+            return s;
+        }
+    }
+}
+```
+
+编译并运行上述代码，而且“en-US”是线程当前的语言文化，控制台上将显示以下输出(你的日期当然不同):
+
+`Jeff <B>123</B> January 30` 
+
+`Main`构造了一个空白`StringBuilder`，在其中附加了格式化好的字符串。调用`AppendFormat`时，第一个参数是`BoldInt32s`类的实例。该类实现了前面描述的`IFormatProvider`接口，另外还实现了`ICustomFormatter`接口，另外还实现了`ICustomFormatter`接口：
+
+```C#
+public interface ICustomFormatter {
+    String Format(String foramt, Object arg, IFormatProvider formatProvider);
+}
+```
+
+任何时候只要`StringBuilder`的`AppendFormat`方法需要获取对象的字符串表示，就会调用这个接口的`Format`方法。可以方法内部通过一些巧妙的操作对字符串格式化进行全面控制。现在深入`AppendFormat`方法内部，看看它具体如何工作。以下伪代码展示了`AppendFormat`的工作方式：
+
+```C#
+public StringBuilder AppendFormat(IFormatProvider formatProvider, String format, params Object[] args) {
+    // 如果传递了一个 IFormatProvider，
+    // 就调查它是否提供了一个 ICustomFormatter 对象 
+    ICustomFormatter cf = null;
+            
+    if (formatProvider != null)
+        cf = (ICustomFormatter)formatProvider.GetFormat(typeof(ICustomFormatter));
+
+    // 在 StringBuilder 的字符数组中连续附加
+    // 字面值 (literal) 字符 (伪代码未显示) 和可替换参数
+    Boolean MoreReplaceableArgumentsToAppend = true;
+    while (MoreReplaceableArgumentsToAppend) {
+        // argFormat 引用从 format 参数获取的可替换格式字符串
+        String argFormat = /* .... */;
+
+        // argObj 引用来自 args 数组参数的对应元素
+        Object argObj = /* ... */;
+
+        // argStr 引用要在最终生成的字符串后面附加的格式化好的字符串
+        String argStr = null;
+
+        // 如果存在定制格式化器，就让它对传递的实参进行格式化，
+        // 就尝试别的操作
+        if (cf != null)
+            argStr = cf.Format(argFormat, argObj, formatProvider);
+
+        // 如果存在定制格式化器，或者它不对实参进行格式化
+        // 就尝试别的操作
+        if(argStr == null) {
+            // 实参的类型支持通过 IFormattable 接口来实现的
+            // 富格式化操作(rich formatting)吗
+            IFormattable formattable = argObj as IFormattable;
+            if (formattable != null) {
+                // 是：向类型的 IFormattable ToString 方法传递
+                // 格式字符串和 formatProvider 参数
+                argStr = formattable.ToString(argFormat, formatProvider);
+            } else {
+                // 否： 使用线程的语言文化信息来获取默认格式
+                if (argObj != null) argStr = argObj.ToString();
+                else argStr = String.Empty;
+            }
+        }
+
+        // 将 argStr 的字符附加到“字符数组”字段成员
+        /* ... */
+
+        // 检查剩余的参数是否需要格式化
+        MoreReplaceableArgumentsToAppend = /* ... */;
+    }
+    return this;
+}
+```
+
+当`Main`调用`AppendFormat`时，`AppendFormat`会调用我的格式提供器(format provider)的`GetFormat`方法，向它传递`ICustomFormatter`类型。在`BoldInt32s` 类型中定义的`GetFormat`方法发现当前请求了`ICustomFormatter`，所以会返回对它自身的引用，因为它已实现了该接口。调用我的`GetFormat`方法时，如果传递的是其他任何类型，就调用与线程关联的`CultureInfo`对象的`GetFormat`方法。
+
+`AppendFormat`需要格式化一个可替换参数时，会调用`ICustomFormatter`的`Format`方法。在本例中，`AppendFormat`调用由`BoldInt32s`类型定义的`Format`方法。我的这个`Format`方法核实要格式化的对象是否支持通过`IFormattable`接口来实现的富格式化操作。如果对象不支持，就调用简单的、无参的`ToString`方法(从`Object`继承)来格式化对象。如果对象支持`IFormattable`，就调用支持富格式化的`ToString`，向它传递格式字符串和格式提供器。
+
+现在已经有了格式化好的字符串。接着要核实对应的对象是不是一个`Int32`类型；如果是，就将格式化好的字符串放到`<B>`和`</B>`这两个 HTML 标记之间，然后返回新字符串。如果不是，就简单地返回格式化好的字符串，不做进一步处理。
+
+## <a name="14_5">14.5 解析字符串来获取对象：`Parse`</a>
+
+上一节解释了如何获取对象并得到它的字符串表示。本节讨论与之相反的操作，即如何获取字符串并得到它的对象表示。从字符串获得对象，这并不是一个常见的操作，但偶尔也会用到。Microsoft 觉得有必要规划一个正式的机制将字符串解析成对象。
+
+能解析字符串的任何类型都提供了公共静态方法`Parse`。方法获取一个`String` 并返回类型的实例。从某种意义上说，`Parse`扮演了一个工厂(factory)的角色。在 FCL 中，所有数值类型、`DateTime`、`TimeSpan`以及其他一些类型(比如各种 SQL 数据类型)均提供了 `Parse` 方法。
+
+来看看如何将字符串解析成数值类型。所有数值类型(`Byte`，`SByte`，`Int16/UInt16`，`Int32/UInt32`，`Int64/UInt64`，`Single`，`Double`和`Decimal`)都提供了至少一个`Parse`方法。以`Int32`类型的`Parse`方法为例(其他数值类型的`Parse`方法与此相似)：
+
+`public static Int32 Parse(String s, NumberStyles style, IFormatProvider provider);`
+
+从原型就能猜出方法具体如何工作。`String`参数`s`是希望解析成`Int32`对象的一个数字的字符串表示。`System.Globalization.NumberStyles`参数`style`是位标志(bit flag)集合，标识了`Parse`应在字符串查找的字符(也就是字符串 `s` 中允许的样式，有不允许的样式会抛出异常)。如本章前面所述，`IFormatProvider`参数`provider`标识了一个对象，`Parse`方法通过该对象获取语言文化特有的信息。
+
+例如，以下代码造成`Parse`抛出`System.FormatException`异常，因为要解析的字符串包含前导空白字符：
+
+`Int32 x = Int32.Parse(" 123", NumberStyles.None, null);`
+
+要允许`Parse`跳过前导的空白字符，要像下面这样修改`style`参数：
+
+`Int32 x = Int32.Parse(" 123", NumberStyles.AllowLeadingWhite, null);`
+
+请参考文档来完整地了解`NumberStyles`枚举类型定义的位符号和常见组合。
+
+以下代码段展示了如何解析十六进制数：
+
+```C#
+Int32 x = Int32.Parse("1A ", NumberStyles.HexNumber, null);
+Console.WriteLine(x);       // 显示：“26”
+```
+
+这个 `Parse` 方法接受 3 个参数。为简化编程，许多类型都提供了额外的`Parse`重载版本，所以不需要传递如此多的实参。例如，`Int32`提供了`Parse`方法的4个重载版本：
+
+```C#
+// 为 style 参数传递 NumberStyles.Integer，
+// 并传递线程的语言文化提供者信息
+public static Int32 Parse(String s);
+
+// 传递线程的语言文化提供者信息
+public static Int32 Parse(String s, NumberStyles style);
+
+// 为 style 参数传递 NumberStyles.Integer
+public static Int32 Parse(String s, IFormatProvider provider);
+
+// 以下是刚才展示的版本
+public static Int32 Parse(String s, NumberStyles style, IFormatProvider provider);
+```
+
+`DateTime`类型也提供了一个`Parse`方法：
+
+`public static DateTime Parse(String s, IFormatProvider provider, DateTimeStyles styles);`
+
+这个方法与数值类型定义的`Parse`方法相似，只是`DateTime`的`Parse`方法获取的是由`System.Globalization.DateTimeStyles`枚举类型(而不是`NumberStyles`枚举类型)定义的位标志集合。参考文档来全面了解`DateTimeStyles`类型定义的位符号和常见组合。
+
+为简化编程，`DateTime`类型提供了`Parse`方法的 3 个重载版本：
+
+```C#
+// 传递线程的语言文化的提供者信息
+// 并为 style 参数传递 DateTimeStyles.None
+public static DateTime Parse(String s);
+
+// 为 style 参数传递 DateTimeStyles.None
+public static DateTime Parse(String s, IFormatProvider provider);
+
+// 以下是刚才展示的版本
+public static DateTime Parse(String s, IFormatProvider provider, DateTimeStyles styles);
+```
+
+对日期和时间的解析比较复杂。许多开发人员都感觉`DateTime`类型的`Parse`方法过于宽松，有时会解析不含日期或时间的字符串。有鉴于此，`DateTime`类型还提供了`ParseExact`方法，它接受一个 picture 格式字符串，能准确描述应该如何格式化日期/时间字符串，以及如何对它进行解析。欲知详情，请在文档中查阅`DateTimeFormatInfo`类。
+
+> 注意 一些开发人员向 Microsoft 报告了这样一个问题：如果应用程序频繁调用`Parse`，而且`Parse`频繁抛出异常时(由于无效的用户输入)，应用程序的性能会显著下降。为此，Microsoft 在所有数值数据类型、`DateTime`类型、`TimeSpan`类型、甚至`IPAddress`类型中加入了`TryParse`方法。下面是`Int32`的 `TryParse` 方法的两个重载版本之一：
+
+> `public static Boolean TryParse(String s, NumberStyles style, IFormatProvider provider, out Int32 result);`
+
+> 可以看出，方法会返回`true`或`false`，指出传递的字符串是否能解析成`Int32`。如果返回`true`，以“传引用”的方式传给`result`参数的变量将包含解析好的数值，`TryXXX`模式的详情将在第 20 章“异常和状态管理”中讨论。
+
+## <a name="14_6">14.6 编码：字符和字节的相互转换</a>
+
+Win32 开发人员经常要写代码将 Unicode 字符和字符串转换成“多字节字符集”(Multi-Byte Character Set, MBCS)格式。我个人就经常写这样的代码，这个过程很繁琐，还容易出错。在 CLR 中，所有字符都表示成 16 位 Unicode 码值，而所有字符串都由 16 位 Unicode 码值构成，这简化了运行时的字符和字符串处理。
+
+但偶尔也想要将字符串保存到文件中，或者通过网络传输。如果字符串中的大多数字符都是英语用户用的，那么保存或传输一系列 16 位值，效率就显得不那么理想，因为写入的半数字节都只由零构成。相反，更有效的做法是将 16 位值编码成压缩的字节数组，以后再将字节数组解码回 16 位值的数组。
+
+这种编码技术还使托管应用程序能和非Unicode 系统创建的字符串进行交互。例如，要生成能由 Windows 95 日文版本上运行的应用程序读取的文件，必须使用 Shift-JIS (代码页 932)保存 Unicode 文本。类似地，要用 Shift-JIS 编码将 Windows 95 日文版生成的文本文件读入 CLR。
+
+用`System.IO.BinaryWriter`或者`System.IO.StreamWriter`类型将字符串发送给文件或网络流时，通常要进行编码。对应地，用`System.IO.BinaryReader`或者`System.IO.StreamReader`类型从文件或网络流中读取字符串时，通常要进行解码。不显式指定一种编码方案，所有这些类型都默认使用 UTF-8<sup>①</sup>。但有时还是需要显式编码或解码字符串。即使不需要显式编码或解码，也能通过本节的学习，对流中的字符串读写有一个更清醒的认识。
+
+> ① UTF 全称是 Unicode Transformation Format，即“Unicode转换格式”。 —— 译注
+
+幸好，FCL 提供了一些类型来简化字符编码和解码。两种最常用对的编码方案是 UTF-16 和 UTF-8，如下所述。
+
+* UTF-16 将每个 16 位字符编码成 2 个字节。不对字符产生任何影响，也不发生压缩 ———— 性能非常出色。UTF-16编码也称为“Unicode 编码”。还要注意，UTF-16 可用于从 “低位优先”(little-endian)转换成“高位优先”(big-endian)，或者从“高位优先”转换成“低位优先”。
+
+* UTF-8 将部分字符编码成 1 个字节，部分编码成 2 个字节，部分编码成 3 个字节，再有部分编码成 4 个字节。值在 0x0080 之下的字符压缩成 1 个字节，适合表示美国使用的字符。 0x0080~0x07FF 的字符转换成 2 个字节，适合欧洲和中东语言。0x0800 以及之上的字符转换成 3 个字节，适合东亚语言。最后，代理项对(surrogate pair)表示成 4 字节。UTF-8 编码方案非常流行，但如果要编码的许多字符都具有0x0080 或者之上的值，效率反而不如UTF-16。
+
+UTF-16 和 UTF-8 编码是目前最常用的编码方案。FCL 还支持了下面这些不常用的。
+
+* UTF-32 使用 4 个字节来编码所有字符。要写简单算法来遍历所有字符，同时不愿意花额外精力应付字节数可变的字符，就适合采用这种编码。例如，使用 UTC-32 根本不需要考虑代理项的问题，因为每个字符都是 4 字节。当然，UTF-32 的内存使用并不高效，所以很少用它将字符串保存到文件或者通过网络来传输字符串。这种编码方案通常在程序内部使用。还要注意，UFT-32 可用于“低位优先”和“高位优先”之间的相互转换。
+
+* UTF-7 编码用于旧式系统。在那些系统上，字符可以使用 7 位值来表示。应该避免使用这种编码，因为它最终通常会使数据膨胀，而不是压缩。这种编码方案已被 Unicode 协会淘汰。
+
+* ASCII 编码方案将 16 为字符编码成 ASCII 字符：也就是说，值小于 0x0080 的 16 位字符被转换成单字节。值超过 0x007F 的任何字符都不能被转换，否则字符的值会丢失。假如字符串完全由 ASCII 范围(0x00~0x007F)内的字符构成，ASCII 编码方案就能将数据压缩到原来的一半，而且速度非常快(高位字节被直接截掉)。但如果一些字符在 ASCII 范围之外，这种编码方案就不适合了，因为字符的值会丢失。
+
+最后，FCL 还允许将 16 为字符编码到任意代码页。和 ASCII 一样，编码到代码页也是危险的，因为代码页表示不了的任何字符都会丢失。除非必须和使用其他编码方案的遗留文件或应用程序兼容，否则应该总是选择 UTF-16 或 UTF-8 编码。
+
+要编码或解码一组字符时，应该取从`System.Text.Encoding`派生的一个类的实例。抽象基类`Encoding`提供了几个静态只读属性，每个属性都返回从`Encoding`派生的一个类的实例。
+
+下例使用 UTF-8 进行字符编码/解码。
+
+```C#
+using System;
+using System.Text;
+
+public static class Program {
+    public static void Main() {
+        // 准备编码的字符串
+        String s = "Hi there.";
+
+        // 获取从 Encoding 派生的一个对象，
+        // 它知道怎样使用 UTF8 来进行编码/解码
+        Encoding encodingUTF8 = Encoding.UTF8;
+
+        // 将字符串编码成字节数组
+        Byte[] encodedBytes = encodingUTF8.GetBytes(s);
+
+        // 显示编好码的字节值
+        Console.WriteLine("Encoded bytes: " + BitConverter.ToString(encodedBytes));
+
+        // 将字节数组解码回字符串
+        String decodedString = encodingUTF8.GetString(encodedBytes);
+
+        // 显示解码的字符串
+        Console.WriteLine("Decoded string: " + decodedString);
+    }
+}
+```
+
+上述代码的输出如下：
+
+```cmd
+Encoded bytes: 48-69-20-74-68-65-72-65-2E
+Decoded string: Hi there.
+```
+
+除了 `UTF8` 静态属性，`Encoding`类还提供了以下静态属性：`Unicode`，`BigEndianUnicode`，`UTF32`，`UTF7`，`ASCII`和`Default`。`Default`属性返回的对象使用用户当前的代码页来进行编码/解码。当前用户的代码页是在控制面板的“区域和语言选项”对话框中，通过“非Unicode 程序中所使用的当前语言”区域的选项来指定的(查阅 Win32 函数 `GetACP` 了解详情)。但不鼓励使用`Default`属性，因为这样一来，应用程序的行为就会随着机器的设置而变。也就是说，一旦更改系统默认代码页，或者应用程序在另一台机器上运行，应用程序的行为就会改变。
+
+除了这些属性，`Encoding` 还提供了静态`GetEncoding`方法，允许指定代码页(整数或字符串形式)，并返回可以使用指定代码页来编码/解码的对象。例如，可调用 `GetEncoding` 并传递`"Shift-JIS"`或者`932`。
+
+首次请求一个编码对象时，`Encoding`类的属性或者`GetEncoding`方法会为请求的编码方案构造对象，并返回该对象。假如请求的编码对象以前请求过，`Encoding`类会直接返回之前构造好的对象；不会为每个请求都构造新对象。这一举措减少了系统中的对象数量，也缓解了堆的垃圾回收压力。
+
+除了调用`Encoding`的某个静态属性或者它的`GetEncoding`方法，还可构造以下某个类的实例：`System.Text.UnicideEncoding`,`System.Text.UTF8Encoding`，`System.Text.UTF32Encoding`，`System.Text.UTF7Encoding`或者`System.Text.ASCIIEncoding`。但要注意，构造任何这些类的实例都会在托管堆中创建新对象，对性能有损害。
+
+其中 4 个类(`UnicodeEncoding`，`UTF8Encoding`，`UTF32Encoding`和`UTF7Encoding`)提供了多个构造器，允许对编码和前导码<sup>①</sup>进行更多的控制(前导码有时也称为”字节顺序标记“，即 Byte Order Mark 或者 BOM)。在这 4 个类中，前 3 个类还提供了特殊的构造器，允许在对一个无效的字节序列进行解码的时候抛出异常。如果需要保证应用程序的安全性，防范无效的输入数据，就应当使用这些能抛出异常的类。
+
+> ① reamble 在文档中翻译成”前导码“，可通过`Encoding.GetPreamble`方法获取。 ——译注
+
+处理`BinaryWriter`或`StreamWriter`时，显式构造这些`Encoding`类型的实例是可以的。但`ASCIIEncoding`类仅一个构造器，没有提供更多的编码控制。所以如果需要`ASCIIEncoding`对象，请务必查询`Encoding`的`ASCII`属性来获得。该属性返回的是一个`ASCIIEncoding`对象引用。自己构造`ASCIIEncoding`对象会在堆上创建更多的对象，无谓地损害应用程序的性能。
+
+一旦获得从`Encoding`派生的对象，就可调用`GetBytes`方法将字符串或字符数组转换成字节数组(`GetBytes` 有几个重载版本)。要将字节数组转换成字符数组或字符串，需要调用`GetChars`方法或者更有用的`GetString`方法(这两个方法都有几个重载版本)。前面的示例代码演示了如何调用`GetBytes`和`GetString`方法。
+
+从`Encoding`派生的所有类型都提供了`GetByteCount`方法，它能统计对一组字符进行编码所产生的字节数，同时不实际进行编码。虽然 `GetByteCount`的用处不是很大，但在分配字节数组时还是可以用一下的。另有一个`GetCharCount`方法，它返回解码得到的字符数，同时不实际进行解码。要想节省内存和重用数组，可考虑使用这些方法。
+
+`GetByteCount`和`GetCharCount`方法的速度一般，因为必须分析字符或字节数组才能返回准确的结果。如果更加追求速度而不是结果的准确性，可改为代用`GetMaxByteCount`或`GetMaxCharCount`方法。这两个方法获取代表字符数或字节数的一个整数，返回最坏情况下的值。<sup>②</sup>
+
+> ② 算如果对指定数量的字符/字节进行编码/解码，那么所产生的最大字节数/字符数。 —— 译注
+
+从 `Encoding` 派生的每个对象都提供了一组公共只读属性，可查询这些属性来获取有关编码的详细信息。详情请参考文档。
+
+以下程序演示了大多数属性及其含义，它将显示几个不同的编码的属性值：
+
+```C#
+using System;
+using System.Text;
+
+public static class Program {
+    public static void Main() {
+        foreach (EncodingInfo ei in Encoding.GetEncodings()) {
+            Encoding e = ei.GetEncoding();
+
+            Console.WriteLine("{1}{0}" +
+                "\tCodePage={2}, WindowsCodePage={3}{0}" +
+                "\tWebName={4}, HeaderName={5}, BodyName={6}{0}" +
+                "\tIsBrowserDisplay={7}, IsBrowserSave={8}{0}" +
+                "\tIsMailNewsDisplay={9}, IsMailNewsSave={10}{0}",
+
+                Environment.NewLine,
+                e.EncodingName, e.CodePage, e.WindowsCodePage,
+                e.WebName, e.HeaderName, e.BodyName,
+                e.IsBrowserDisplay, e.IsBrowserSave,
+                e.IsMailNewsDisplay, e.IsMailNewsDisplay);
+        }
+    }
+}
+```
+
+运行上述程序将得到以下输出(为节省篇幅删除了部分内容)：
+
+```
+IBM EBCDIC (美国-加拿大)
+    CodePage=37, WindowsCodePage=1252
+    WebName=IBM037, HeaderName=IBM037, BodyName=IBM037
+    IsBrowserDisplay=False, IsBrowserSave=False
+    IsMailNewsDisplay=False, IsMailNewsSave=False
+
+OEM 美国
+    CodePage=437, WindowsCodePage=1252
+    WebName=IBM437, HeaderName=IBM437, BodyName=IBM437
+    IsBrowserDisplay=False, IsBrowserSave=False
+    IsMailNewsDisplay=False, IsMailNewsSave=False
+
+IBM EBCDIC (国际)
+    CodePage=500, WindowsCodePage=1252
+    WebName=IBM500, HeaderName=IBM500, BodyName=IBM500
+    IsBrowserDisplay=False, IsBrowserSave=False
+    IsMailNewsDisplay=False, IsMailNewsSave=False
+
+阿拉伯字符 (ASMO 708)
+    CodePage=708, WindowsCodePage=1256
+    WebName=ASMO-708, HeaderName=ASMO-708, BodyName=ASMO-708
+    IsBrowserDisplay=True, IsBrowserSave=True
+    IsMailNewsDisplay=False, IsMailNewsSave=False
+
+Unicode
+    CodePage=1200, WindowsCodePage=1200
+    WebName=utf-16, HeaderName=utf-16, BodyName=utf-16
+    IsBrowserDisplay=False, IsBrowserSave=True
+    IsMailNewsDisplay=False, IsMailNewsSave=False
+
+Unicode (Big-Endian)
+    CodePage=1201, WindowsCodePage=1200
+    WebName=unicodeFFFE, HeaderName=unicodeFFFE, BodyName=unicodeFFFE
+    IsBrowserDisplay=False, IsBrowserSave=False
+    IsMailNewsDisplay=False, IsMailNewsSave=False
+
+西欧字符 (DOS)
+    CodePage=850, WindowsCodePage=1252
+    WebName=ibm850, HeaderName=ibm850, BodyName=ibm850
+    IsBrowserDisplay=False, IsBrowserSave=False
+    IsMailNewsDisplay=False, IsMailNewsSave=False
+
+Unicode (UTF-8)
+    CodePage=65001, WindowsCodePage=1200
+    WebName=utf-8, HeaderName=utf-8, BodyName=utf-8
+    IsBrowserDisplay=True, IsBrowserSave=True
+    IsMailNewsDisplay=True, IsMailNewsSave=True 
+```
+
+表 14-3 总结了 `Encoding` 的所有派生类都提供的常用方法。
+
+表 14-3 Encoding 的派生类提供的方法
+|方法名称|说明|
+|:---:|:---:|
+|`GetPreamble`|返回一个字节数组，指出在写入任何已编码字节之前，首先应该在一个流中写入什么字节。这些字节经常称为"前导码"(preamble)或”字节顺序标记“(Byte Order Mark，BOM)字节。开始从一个流中读取时，BOM 字节自动帮助检测当初写入流时采用的编码，以确保使用正确的解码器。对于从`Encoding`派生的一些类，这个方法返回 0 字节的数组——即没有前导码字节。显式构造 `UTF8Encoding` 对象，这个方法将返回一个 3 字节数组(包含 0xEF， 0xBB 和 0xBF)。显式构造`UTF8Encoding`对象，这个方法将返回一个 3 字节数组(包含 0xFE 和 0xFF)来表示”高位优先“(big-endian)编码，或者返回一个 2 字节数组(包含 0xFF 和 0xFE)来表示"低位优先"(little-endian)编码。默认为低位优先|
+|`Convert`|将字节数组从一种编码(来源编码)转换为另一种(目标编码)。在内部，这个静态方法调用来源编码对象的 `GetChars` 方法，并将结果传给目标编码对象的 `GetBytes` 方法。结果字节数组返回给调用者|
+|`Equals`|如果从`Encoding`派生的两个对象代表相同的代码页和前导码设置，就返回`true`|
+|`GetHashCode`|返回当前`Encoding`实例的哈希码|
+
+``````
