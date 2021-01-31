@@ -1307,7 +1307,7 @@ public static class Program {
             DisplaySecureString(ss);
         }
 
-        // using 之后，SecureString 被 dispose，内存中午敏感数据
+        // using 之后，SecureString 被 dispose，内存中无敏感数据
     }
 
     // 这个方法是不安全的，因为它要访问非托管内存
