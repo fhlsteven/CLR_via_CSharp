@@ -1203,4 +1203,142 @@ Unicode (UTF-8)
 |`Equals`|如果从`Encoding`派生的两个对象代表相同的代码页和前导码设置，就返回`true`|
 |`GetHashCode`|返回当前`Encoding`实例的哈希码|
 
-``````
+### 14.6.1 字符和字节流的编码和解码
+
+假定现在要通过`System.Net.Sockets.NetworkStream`对象来读取一个 UTF-16 编码字符串。字节流通常以数据块(data chunk)的形式传输。换言之，可能是从流中读取 5 个字节，再读取 7 个字节。UTF-16 的每个字符都由 2 个字节构成。所以，调用`Encoding`的`GetString`方法并传递第一个 5 字节数组，返回的字符串只包含 2 个字符。再次调用 `GetString` 并传递接着的 7 个字节，将返回只包含3个字符的字符串。显然，所有 code point<sup>①</sup>都会存储错误的值！
+
+> ① code point 是一个抽象概念。可将每个字符都想像成一个抽象的 Unicode code point，可能需要使用多个字节来表示一个 code point。——译注
+
+之所以会造成数据损坏，是由于所有`Encoding`派生都不维护多个方法调用之间的状态。要编码或解码以数据块形式传输的字符/字节，必须进行一些额外的工作来维护方法调用之间的状态，从而防止丢失数据。
+
+字节块解码首先要获取一个 `Encoding` 派生对象引用(参见上一节)，再调用其 `GetDecoder` 方法。方法返回对一个新构造对象的引用，该对象的类型从`System.Text.Decoder` 类派生。和 `Encoding` 类一样，`Decoder` 也是抽象基类。查阅文档，会发现找不到任何具体实现了`Decoder`的类。但 FCL 确实定义了一系列`Decoder`派生类。这些类在 FCL 内部使用。但是，`GetDecoder` 方法能构造这些类的实例，并将这些实例返回给应用程序代码。
+
+`Decoder`的所有派生类都提供了两个重要的方法：`GetChars`和`GetCharCount`。显然，这些方法的作用是对字节数组进行解码，工作方式类似于前面讨论过的`Encoding`的`GetChars`和`GetCharCount`方法。调用其中一个方法时，它会尽可能多地解码字节数组。假如字节数组包含的字节不足以完成一个字符，剩余的字节会保存到`Decoder`对象内部。下次调用其中一个方法时，`Decoder`对象会利用之前剩余的字节再加上传给它的新字节数组。这样一来，就可以确保对数据块进行正确解码。从流中读取字节时`Decoder`对象的作用很大。
+
+从`Encoding`派生的类型可用于无状态(中途不保持状态)编码和解码。而从`Decoder`派生的类型只能用于解码。以成块的方式编码字符串需要调用`GetEncoder`方法，而不是调用`Encoding`对象的`GetDecoder`方法。`GetEncoder`返回一个新构造的对象，它的类型从抽象基类`System.Text.Encoder`派生。在文档中同样找不到谁具体实现了`Encoder`。但 FCL 确实定义了一系列 `Encoder` 派生类。和从`Decoder`派生的类一样，这些类全都在 FCL 内部使用，只是 `GetEncoder` 方法能构造这些类的实例，并将这些实例返回给应用程序代码。
+
+从`Encoder`派生的所有类都提供了两个重要方法：`GetBytes` 和 `GetByteCount`。每次调用，从`Encoder`派生的对象都会维护余下数据的状态信息，以便以成块的方式对数据进行编码。
+
+### 14.6.2 Base-64 字符串编码和解码
+
+写作本书时，UTF-16 和 UTF-8 编码已相当流行。另一个流行的方案是将字节序列编码成 Base-64 字符串。FCL 专门提供了进行 Base-64 编码和解码的方法。你可能以为这是通过一个从 `Encoding` 派生的类型来完成的。但考虑到某些原因，Base-64 编码和解码用 `System.Convert` 类型提供的一些静态方法来进行。
+
+将 Base-64 字符串编码成字节数组需调用 `Convert` 的静态 `FromBase64String` 或 `FromBase64CharArray` 方法。类似地，将字节数组解码成 Base-64 字符串需调用 `Convert` 的静态`ToBase64String` 或者 `ToBase64CharArray` 方法。以下代码演示了如何使用其中的部分方法：
+
+```C#
+using System;
+
+public static class Program {
+    public static void Main() {
+        // 获取一组 10 个随机生成的字节
+        Byte[] bytes = new Byte[10];
+        new Random().NextBytes(bytes);
+
+        // 显示字节
+        Console.WriteLine(BitConverter.ToString(bytes));
+
+        // 将字节解码成 Base-64 字节串，并显示字符串
+        String s = Convert.ToBase64String(bytes);
+        Console.WriteLine(s);
+
+        // 将 Base-64 字符串编码回字节，并显示字节
+        bytes = Convert.FromBase64String(s);
+        Console.WriteLine(BitConverter.ToString(bytes));
+    }
+}
+```
+
+编译并执行上述代码得到以下输出(因为是随机生成的字节，所以你的输出可能不同)：
+
+```cmd
+1F-4A-1F-C9-C4-35-B4-EC-33-17
+H0ofycQ1tOwzFw==
+1F-4A-1F-C9-C4-35-B4-EC-33-17
+```
+
+## <a name="14_7">14.7 安全字符串</a>
+
+`String` 对象可能包含敏感数据，比如用户密码或信用卡资料。遗憾的是，`String`对象在内存中包含一个字符数组。如果允许执行不安全或者非托管的代码，这些代码就可以扫描进程的地址空间，找到包含敏感数据的字符串，并以非授权的方式加以利用。即使`String`对象只用一小段时间就进行垃圾回收，CLR 也可能无法立即重用 `String` 对象的内存，致使`String`的字符长时间保留在进程的内存中(尤其是假如 `String` 对象时较老的一代<sup>①</sup>)，造成机密数据泄露。此外，由于字符串不可变(immutable)，所以当你处理它们时，旧的副本会逗留在内存中，最终造成多个不同版本的字符串散布在整个内存空间中。
+
+有的政府部门有严格的安全要求，对各种安全措施进行了非常具体的规定。为了满足这些要求，Microsoft 在 FCL 中增添了一个更安全的字符串类，即`System.Security.SecureString`。构造`SecureString`对象时，会在内部分配一个非托管内存块，其中包含一个字符数组。使用非托管内存是为了避开垃圾回收器的“魔爪”。
+
+这些字符串的字符是经过加密的，能防范任何恶意的非安全/非托管代码获取机密信息。利用以下任何一个方法，即可在安全字符串中附加、插入、删除或者设置一个字符：`AppendChar`，`InsertAt`，`RemoveAt`和`SetAt`。调用其中任何一个方法时，方法内部会解密字符，执行指定的操作，再重新加密字符。这意味着字符有一小段时间出于未加密状态。还意味着这些操作的性能会比较一般。所以，应该尽可能少地执行这些操作。
+
+`SecureString`类实现了`IDisposable`接口，允许以简单的方式确定性地摧毁字符串的安全内容。应用程序不再需要敏感的字符串内容时，只需调用`SecureString`的`Dispose`方法。在内部，`Dispose` 会对内存缓冲区的内容进行清零，确保恶意代码无法获得敏感信息，然后释放缓冲区。`SecureString`对象内部的一个字段引用了一个从`SafeBuffer`派生的对象，它负责维护实际的字符串。由于 `SafeBuffer` 类最终从`CriticalFinalizerObject`类派生<sup>②</sup>，所以字符串在垃圾回收时，它的字符内容保证会被清零，而且缓冲区会得到释放。和`String`对象不同，`SecureString`对象在被回收之后，加密字符串的内容将不再存在于内存中。
+
+> ② 第 21 章 “自动内存管理(垃圾回收)”将讨论该抽象基类。
+
+知道了如何创建和修改`SecureString`对象之后，接着讨论如何使用它。遗憾的是，最新的 FCL 限制了对 `SecureString` 类的支持。也就是说，只有少数方法才能接受 `SecureString` 参数。在 .NET Framework 4中，以下情况允许将 `SecureString` 作为密码传递。
+
+* 与加密服务提供程序(Cryptographic Service Provider, CSP)协作。参见 `System.Security.Cryptography.CspParaeters`类。
+
+* 创建、导入或导出 X.509 证书。参见 `System.Security.Cryptography.X509Certificates.X509Certificate` 类和 `System.Security.Cryptography.X509Certificates.X509Certificate2`类。
+
+* 在特定用户账户下启动新进程。参见 `System.Diagnostics.Process` 和 `System.Diagnostics.ProcessStartInfo`类。
+
+* 构造事件日志会话。参见 `System.Diagnostics.Eventing.Reader.EventLogSession` 类。
+
+* 使用 `System.Windows.Controls.PasswordBox` 控件。参见该类的 `SecurePassword` 属性。
+
+最后，可以创建自己的方法来接受 `SecureString` 对象参数。方法内部必须先让 `SecureString` 对象创建一个非托管内存缓冲区，它将用于包含解密过的字符，然后才能让该方法使用缓冲区。为了最大程度降低恶意代码获取敏感数据的风险，你的代码在访问解密过的字符串时，时间应尽可能短。结束使用字符串之后，代码应尽快清零并释放缓冲区。此外，绝对不要将 `SecureString` 的内容放到一个 `String` 中。否则，`String`会在堆中保持未加密状态，只有经过垃圾回收，而且内存被重用的时候，它的字符内容才会被清零。`SecureString` 类特地没有重写 `ToString` 方法，目的就是避免泄露敏感数据。
+
+下例演示了如何初始化和使用一个 `SecureString`(编译时要为 C# 编译器指定`/unsafe`开关选项)：
+
+```C#
+using System;
+using System.Security;
+using System.Runtime.InteropServices;
+
+public static class Program {
+    public static void Main() {
+        using (SecureString ss = new SecureString()) {
+            Console.WriteLine("Please enter password: ");
+            while (true) {
+                ConsoleKeyInfo cki = Console.ReadKey(true);
+                if (cki.Key == ConsoleKey.Enter) break;
+
+                // 将密码字符附加到 SecureString 中
+                ss.AppendChar(cki.KeyChar);
+                Console.WriteLine("*");
+            }
+            Console.WriteLine();
+
+            // 密码已输入，出于演示的目的显示它
+            DisplaySecureString(ss);
+        }
+
+        // using 之后，SecureString 被 dispose，内存中午敏感数据
+    }
+
+    // 这个方法是不安全的，因为它要访问非托管内存
+    private unsafe static void DisplaySecureString(SecureString ss) {
+        Char* pc = null;
+        try {
+            // 将 SecureString 解密到一个非托管内存缓冲区中
+            pc = (Char*) Marshal.SecureStringToCoTaskMemUnicode(ss);
+
+            // 访问包含已解密 SecureString 的非托管内存缓冲区
+            for (Int32 index = 0; pc[index] != 0; index++)
+                Console.Write(pc[index]);
+        }
+        finally {
+            // 确定清零并释放包含已解密 SecureString 字符的非托管内存缓冲区
+            if (pc != null)
+                Marshal.ZeroFreeCoTaskMemUnicode((IntPtr)pc);
+        }
+    }
+}
+```
+
+`System.Runtime.InteropServices.Marshal` 类提供了 5 个方法来将一个 `SecureString` 的字符解密到非托管内存缓冲区。所有方法都是静态方法，所有方法都接受一个 `SecureString` 参数，而且所有方法都返回一个 `IntPtr`。每个方法都另有一个配对的方法，必须调用配对方法来清零并释放内部缓冲区。表 14-4 总结了 `System.Runtime.InteropServices.Marshal` 类提供的将 `SecureString` 解密到内部缓冲区的方法以及对应的清零和释放缓冲区的方法。
+
+表 14-4 `Marshal` 类提供的用于操纵安全字符串的方法 
+
+|将 `SecureString` 解密到缓冲的方法| 清零并释放缓冲区的方法|
+|:---:|:---:|
+|`SecureStringToBSTR`|`ZeroFreeBSTR`|
+|`SecureStringToCoTaskMemAnsi`|`ZeroFreeCoTaskMemAnsi`|
+|`SecureStringToCoTaskMemUnicode`|`ZeroFreeCoTaskMemUnicode`|
+|`SecureStringToGlobalAllocAnsi`|`ZeroFreeGlobalAllocAnsi`|
+|`SecureStringToGlobalAllocUnicode`|`ZeroFreeGlobalAllocUnicode`|
+
