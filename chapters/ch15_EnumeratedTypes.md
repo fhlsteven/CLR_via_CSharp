@@ -157,3 +157,118 @@ public static TEnum[] GetEnumValues<TEnum>() where TEnum : struct {
 
 `Color[] colors = GetEnumValues<Color>();`
 
+前面的讨论展示了可以对枚举类型执行的一些很“酷”的操作。在程序的 UI 元素(列表框、组合框等)中显示符号名称时，我认为经常使用的会是 `ToString` 方法(常规格式)，前提是字符串不需要本地化(因为枚举类型没有提供本地化支持)。除了 `GetValues` 方法， `System.Enum` 和 `System.Type` 类型提供了以下方法来返回枚举类型的符号：
+
+```C#
+// 返回数值的字符串表示
+public static String GetName(Type enumType, Object value);      // System.Enum 中定义
+public String GetEnumName(Object value);                        // System.Type 中定义 
+
+// 返回一个 String 数组， 枚举中每个符号都对应一个 String
+public static String[] GetNames(Type enumType);                 // System.Enum 中定义
+public String[] GetEnumNames();                                 // System.Type 中定义
+```
+
+前面讨论了用于查找枚举类型中的符号的多种方法。但还需要一个方法来查找与符号对应的值。例如，可利用这个操作转换用户在文本框中输入的一个符号。利用 `Enum` 提供的静态 `Parse` 和 `TryParse` 方法，可以很容易地将符号转换为枚举类型的实例：
+
+```C#
+public static Object Parse(Type enumType, String value);
+public static Object Prase(Type enumType, String value, Boolean ignoreCase);
+public static Boolean TryParse<TEnum>(String value, out TEnum result) where TEnum : struct;
+public static Boolean TryParse<TEnum>(String value, Boolean ignoreCase, out TEnum result) where TEnum : struct;
+```
+
+以下代码演示了如何使用这些方法：
+
+```C#
+// 因为 Orange 定义为 4，'c' 被初始化为 4
+Color c = (Color) Enum.Parse(typeof(Color), "Orange", true);
+
+// 因为没有定义 Brown， 所以抛出 ArgumentException 异常
+Color c = (Color) Enum.Parse(typeof(Color), "Brown", false);
+
+// 创建值为 1 的 Color 枚举类型实例
+Enum.TryParse<Color>("1", false, out c);
+
+// 创建值为 23 的 Color 枚举类型实例
+Enum.TryParse<Color>("23", false, out c);
+```
+
+以下是 `Enum` 的静态 `IsDefined` 方法和 `Type` 的 `IsEnumDefined`:
+
+```C#
+public static Boolean IsDefined(Type enumType, Object value);       // System.Enum 中定义
+public Boolean IsEnumDefined(Object value);                         // System.Type 中定义
+```
+
+可利用 `IsDefined` 方法判断数值对于某枚举类型是否合法：
+
+```C#
+// 显示 “True”，因为 Color 将 Red 定义为 1
+Console.WriteLine(Enum.IsDefined(typeof(Color), 1));
+
+// 显示 “True”，因为 Color 将 White 定义为 0 
+Console.WriteLine(Enum.IsDefined(typeof(Color), "White"));
+
+// 显示 “False”， 因为检查要区分大小写
+Console.WriteLine(Enum.IsDefined(typeof(Color), "white"));
+
+// 显示“False”，因为 Color 没有和值 10 对应的符号
+Console.WriteLine(Enum.IsDefined(typeof(Color), 10));
+```
+
+`IsDefined` 方法被经常用于参数校验，如下例所示：
+
+```C#
+public void SetColor(Color c) {
+    if (!Enum.IsDefined(typeof(Color), c)) {
+    throw(new ArgumentOutOfRangeException("c", c, "无效颜色值。"));
+    }
+    // 将颜色设置为 White, Red, Green, Blue 或 Orange
+    ...
+}
+```
+
+参数校验是和有用的一个功能，因为其他人可能像下面这样调用 `SetColor`:
+
+`SetColor((Color)) 547);`
+
+没有和值 547 对应的符号，所以 `SetColor` 方法 `ArgumentOutOfRangeException` 异常，指出哪个参数无效，并解释为什么无效。
+
+> 重要提示 `IsDefined` 方法很方便，但必须慎用。首先，`IsDefined` 总是执行区分大小写的查找，而且完全没有办法让它执行不区分大小写的查找。其次，`IsDefined` 相当慢，因为它在内部使用了反射。如果写代码来手动检查每一个可能的值，应用程序的性能极有可能变得更好。最后，只有当枚举类型本身在调用`IsDefined`的同一个程序集中定义，`SetColor`方法在另一个程序集中定义。`SetColor` 方法调用 `IsDefined`，假如颜色是 `White`，`Red`,`Green`,`Blue` 或者 `Orange`，那么 `SetColor` 能正常执行。然而，假如 `Color` 枚举将来发生了变化，在其中包含了 `Purple`，那么 `SetColor` 现在就会接受 `Purple`，这是以前没有预料到的。因此，方法现在可能返回无法预料的结果。
+
+最后，`System.Enum` 类型提供了一组静态 `ToObject` 方法。这些方法将 `Byte`，`SByte`，`Int16`，`UInt16`，`Int32`，`UInt32`，`Int64` 或 `UInt64` 类型的实例转换为枚举类型的实例。
+
+枚举类型总是要与另外某个类型结合使用，一般作为类型的方法参数或返回类型、属性和字段使用。初学者经常提出的一个问题是：枚举类型是嵌套定义在需要它的类型中，还是和该类型同级？检查 FCL，会发现枚举类型通常与需要它的类同级。原因很简单，就是减少代码的录入量，使开发人员的工作变得更轻松。所以，除非担心名称冲突，否则你定义的枚举类型应该和需要它的类型同级。
+
+## <a name="15_2">15.2 位标志</a>
+
+程序员经常要和位标志(bit flag)集合打交道。调用 `System.IO.File` 类型的 `GetAttributes` 方法，会返回 `FileAttributes` 类型的一个实例。 `FileAttributes` 类型是基本类型为 `Int32` 的枚举类型，其中每一位都反映了文件的一个特性(attribute)。`FileAttributes` 类型在 FCL 中的定义如下：
+
+```C#
+[Flags, Serializable]
+public enum FileAttributes {
+    ReadOnly            = 0x00001,
+    Hidden              = 0x00002,
+    System              = 0x00004,
+    Directory           = 0x00010,
+    Archive             = 0x00020,
+    Device              = 0x00040,
+    Normal              = 0x00080,
+    Temporary           = 0x00100,
+    SparseFile          = 0x00200,
+    ReparsePoint        = 0x00400,
+    Compressed          = 0x00800,
+    Offline             = 0x01000,
+    NotContentIndexed   = 0x02000,
+    Encrypted           = 0x04000,
+    IntegrityStream     = 0x08000,
+    NoScrubData         = 0x20000
+} 
+```
+
+判断文件是否隐藏可执行以下代码：
+
+```C#
+String 
+```
