@@ -270,5 +270,169 @@ public enum FileAttributes {
 判断文件是否隐藏可执行以下代码：
 
 ```C#
-String 
+String file = Assembly.GetEntryAssembly().Location;
+FileAttributes attributes = File.GetAttributes(file);
+Console.WriteLine("Is {0} hidden? {1}", file, (attributes & FileAttributes.Hidden) != 0);
+```
+
+> 注意 `Enum` 类定义了一个 `HasFlag` 方法：  
+  `public Boolean HasFlag(Enum flag);`  
+可利用该方法重写上述 `Console.WriteLine` 调用：  
+`Console.WriteLine("Is {0} hidden? {1}", file, attributes.HasFlag(FileAttributes.Hidden));`  
+但我建议避免使用 `HasFlag` 方法，理由是：由于它获取 `Enum` 类型的参数，所以传给它的任何值都必须装箱，产生一次内存分配。
+
+以下代码演示了如何为文件设置只读和隐藏特性：
+
+`File.SetAttributes(file, FileAttributes.ReadOnly | FileAttributes.Hidden);`
+
+正如 `FileAttributes` 类型展示的那样，经常都要用枚举类型来表示一组可以组合的位标志。不过，虽然枚举类型和位标志相似，但它们的语义不尽相同。例如，枚举类型表示单个数值，而位标志表示位集合，其中一些位出于 on 状态，一些处于 off 状态<sup>①</sup>。
+
+> ① 进制 1 代表 “on”，二进制 0 代表“off”。 ——译注
+
+定义用于标识位标志的枚举类型时，当然应该显式为每个符号分配一个数值。通常，每个符号都有单独的一个位处于 on 状态。此外，经常都要定义一个值为 `0` 的 `None` 符号。还可定义一些符合来代表常见的位组合(参见下面的 `ReadWrite` 符号)。另外，强烈建议向枚举类型应用定制特性类型 `System.FlagsAttribute` ，如下所示：
+
+```C#
+[Flags]   // C# 编译器允许 “Flags” 或 “FlagsAttribute” 
+internal enum Actions {
+    None        = 0,
+    Read        = 0x0001,
+    Write       = 0x0002,
+    ReadWrite   = Actions.Read | Actions.Write,
+    Delete      = 0x004,
+    Query       = 0x0008,
+    Sync        = 0x0010
+}
+```
+
+由于 `Actions` 是枚举类型，所以在操纵位标志枚举类型时，可以使用上一节描述的所有方法。不过，假如其中一些方法的行为稍有区别，效果会更加理想。例如，假设有以下代码：
+
+```C#
+Actions actions = Actions.Read | Actions.Delete;    // 0x0005
+Console.WriteLine(actions.ToString());              // “Read, Delete”
+```
+
+调用 `ToString` 时，它会试图将数值转换为对应的符号。现在的数值是`0x0005`，没有对应的符号。不过，`ToString` 方法检测到 `Actions` 类型上存在 `[Flags]` 特性，所以 `ToString` 方法现在不会将该数值视为单独的值。相反，会把它视为一组位标志。由于 `0x0005` 由 `0x0001` 和 `0x0004` 组合而成，所以 `ToString` 会生成字符串 “`Read,Delete`”。从 `Actions` 类型中删除 `[Flags]` 特性， `ToString` 方法将返回“`5`”。
+
+上一节已讨论了 `ToString` 方法，指出它允许以 3 种方式格式化输出：”G“(常规)、”D“(十进制)和”X“(十六进制)。使用常规格式化枚举类型的实例时，首先会检查类型，看它是否应用了`[Flags]` 这个特性。没有应用就查找与该数值匹配的符号并返回符号。如果应用了`[Flags]`特性，`ToString`方法的工作过程如下所示。
+
+1. 获取枚举类型定义的数值集合，降序排列这些数值。
+
+2. 每个数值都和枚举实例中的值进行”按位与“计算，假如结果等于数值，与该数值关联的字符串就附加到输出字符串上，对应的位会被认为已经考虑过了，会被关闭(设为 0)。这一步不断重复，直到检查完所有数值，或直到枚举实例的所有位都被关闭。
+
+3. 检查完所有数值后，如果枚举实例仍然不为 0，表明枚举实例中一些处于 on 状态的位不对应任何已定义的符号。在这种情况下，`ToString`将枚举实例中的原始数值作为字符串返回。
+
+4. 如果枚举实例原始值不为 0，返回符号之间以逗号分隔的字符串。
+
+5. 如果枚举实例原始值为 0， 而且枚举类型定义的一个符号对应的是 0 值，就返回这个符号。
+
+6. 如果到达这这一步，就返回”0“。
+
+如果愿意，可定义没有 `[Flags]` 特性的 `Actions` 类型，并用 ”F“ 格式获得正确的字符串：
+
+```C#
+// [Flags]              // 现在已经被注释掉6
+internal enum Actions
+{
+    None        = 0,
+    Read        = 0x0001,
+    Write       = 0x0002,
+    ReadWrite   = Actions.Read | Actions.Write,
+    Delete      = 0x004,
+    Query       = 0x0008,
+    Sync        = 0x0010
+}
+
+Actions actions = Actions.Read | Actions.Delete;    // 0x0005
+Console.WriteLine(actions.ToString(”F“));              // “Read, Delete”
+```
+
+如果数值有一个位不能映射到一个符号，返回的字符串只包含一个代表原始数值的十进制数；字符串中不会有符号。
+
+注意，枚举类型中定义的符号不一定是 2 的整数次方。例如，`Actions`类型可定义一个名为 `All` 的符号，它对应的值是`0x001F`<sup>①</sup>。如果`Actions`类型的一个实例的值是 `0x001F`，格式化该实例就会生成一个含有”`All`“的字符串。其他符号字符串不会出现。
+
+> ① 计算可知，二进制 00000001(Read) | 00000010(Write) | 00000100(Delete) | 00001000(Query) | 00010000(Sync) = 00011111(All) = 十六进制 0x001F。 —— 译注
+
+前面讨论的是如何将数值转换成标志字符串(string of flag)。还可将以逗号分隔的符号字符串转换成数值，这是通过调用`Enum`的静态方法`Parse` 和`TryParse`来实现的。以下代码演示了如何使用这些方法;
+
+```C#
+// 由于 Query 被定义为 8， 所以 'a' 被初始化为 8
+Actions a = (Actions)Enum.Parse(typeof(Actions), "Query", true);
+Console.WriteLine(a.ToString());        // Query
+
+// 由于 Query 和 Read 已定义，所以 ‘a’ 被初始化为 9
+Enum.TryParse<Actions>("Query, Read", false, out a);
+Console.WriteLine(a.ToString());        // "Read, Query"
+
+// 创建一个 Actions 枚举类型实例，其值 28
+a = (Actions)Enum.Parse(typeof(Actions), "28", false);
+Console.WriteLine(a.ToString());        // "Delete, Query, Sync"
+```
+
+`Parse` 和 `TryParse` 方法在调用时，会在内部执行以下动作。
+
+1. 删除字符串头尾的所有空白字符。
+
+2. 如果字符串第一个字符是数字、加号(`+`)或减号(`-`)，该字符串会被认为是一个数字，方法返回一个枚举类型实例，其数值等于字符串转换后的数值。
+
+3. 传递的字符串被分解为一组以逗号分隔的 token，每个 token 的空白字符都被删除。
+
+4. 在枚举类型的已定义符号中查找每个 token 字符串。如果没有找到相应的符号，`Parse`会抛出 `System.ArgumentException` 异常‘而`TryParse`会返回`false`。如果找到符号，就将它对应的数值与当前的一个动态结果进行”按位或“计算，再查找下一个符号。
+
+5. 查找并找到了所有标记之后，返回这个动态结果。
+
+永远不要对位标志枚举类型使用 `IsDefined` 方法。以下两方面原因造成该方法无法使用。
+
+* 向 `IsDefined` 方法传递字符串，它不会将这个字符串拆分为单独的 token 来进行查找，而是试图查找整个字符串，把它看成是包含逗号的一个更大的符号。由于不能在枚举类型中定义含有逗号的符号，所以这个符号永远找不到。
+
+* 向`IsDefined` 方法传递一个数值，它会检查枚举类型是否定义了其数值和传入数值匹配的一个符号。由于位标志不能这样简单地匹配<sup>①</sup>，所以`IsDefined`通常会返回`false`。
+
+## <a name="15_3">15.3 向枚举类型添加方法</a>
+
+本章早些时候曾指出，不能将方法定义为枚举类型的一部分。多年以来，我对此一直感到很”郁闷“，因为很多时候都需要为我的枚举类型提供一些方法。幸好，现在可以利用 C# 的扩展方法功能(参见第 8 章”方法“)模拟向枚举类型添加方法。
+
+要为 `FileAttributes` 枚举类型添加方法，先定义一个包含了扩展方法的静态类，如下所示：
+
+```C#
+internal static class FileAttributesExtensionMethods {
+    public static Boolean IsSet(this FileAttributes flags, FileAttributes flagToTest) {
+        if (flagToTest == 0)
+            throw new ArgumentOutOfRangeException("flagToTest", "Value must not be 0");
+        return (flags & flagToTest) == flagToTest;
+    }
+
+    public static Boolean IsClear(this FileAttributes flags, FileAttributes flagToTest) {
+        if (flagToTest == 0)
+            throw new ArgumentOutOfRangeException("flagToTest", "Value must not be 0");
+        return !IsSet(flags, flagToTest);
+    }
+
+    public static Boolean AnyFlagsSet(this FileAttributes flags, FileAttributes testFlags) {
+        return ((flags & testFlags) != 0);
+    }
+
+    public static FileAttributes Set(this FileAttributes flags, FileAttributes setFlags) {
+        return flags | setFlags;
+    }
+
+    public static FileAttributes Clear(this FileAttributes flags, FileAttributes clearFlags) {
+        return flags & ~clearFlags;
+    }
+
+    public static void ForEach(this FileAttributes flags, Action<FileAttributes> processFlag) {
+        if (processFlag == null) throw new ArgumentNullException("processFlag");
+        for (UInt32 bit = 1; bit != 0; bit <<= 1) {
+            UInt32 temp = ((UInt32)flags) & bit;
+            if (temp != 0) processFlag((FileAttributes)temp);
+        }
+    }
+}
+```
+
+以下代码演示了如何调用其中的一些方法。从表面上看，似乎真的是在枚举类型上调用这些方法：
+
+```C#
+FileAttributes fa = FileAttributes.System;
+fa = fa.Set(FileAttributes.ReadOnly);
+fa = fa.Clear(FileAttributes.System);
+fa.ForEach(f => Console.WriteLine(f));
 ```
