@@ -38,6 +38,11 @@ myControls = new Control[50];       // 创建含有 50 个 Control 引用的数�
 图 16—1 中，`Control` 数组显示了执行以下各行代码之后的结果：
 
 ```C#
-
+myControls[1] = new Button();
+myControls[2] = new TextBox();
+myControls[3] = myControls[2];
+myControls[46] = new DataGrid();
+myControls[48] = new ComboBox();
+myControls[49] = new Button();
 ```
 
