@@ -253,3 +253,92 @@ oa[3] = 5;                  // 性能损失：CLR 检查 oa 的元素类型是�
 
 在上述代码中，`oa` 变量被定义为 `Object[]` 类型，但实际引用的是一个 `String[]`。编译器允许代码将 5 放到数组元素中，因为 5 是 `Int32`,而 `Int32` 派生自 `Object`。虽然编译能通过，但 CLR 必须保证类型安全。对数组元素赋值时，它必须保证赋值的合法性。所以，CLR 必须在运行时检查数组包含的是不是 `Int32` 元素。在本例中，在本例中，答案是否定的，所有不允许赋值；CLR 抛出 `ArrayTypeMismatchException` 异常。
 
+> 注意 如果只是需要将数组的某些元素复制到另一个数组，可选择`System.Buffer` 的 `BlockCopy` 方法，它比 `Array` 的 `Copy`方法快。但`Buffer` 的 `BlockCopy` 方法只支持基于类型，不提供像`Array`的`Copy`方法那样的转型能力。方法的`Int32`参数代表的是数组中的字节偏移量，而非元素索引。设计`BlockCopy`的目的实际是将按位兼容(bitwise-compatible)<sup>①</sup>的数据从一个数组类型复制到另一个按位兼容的数据类型，比如将包含 Unicode 字符的一个 `Byte[]`(按字节的正确顺序)复制到一个 `Char[]` 中，该方法一定程度上弥补了不能将数组当作任意类型的内存块来处理的不足。
+
+> 要将一个数组的元素可靠地复制到另一个数组，应该使用`System.Array`的`ConstrainedCopy`方法。该方法要么完成复制，要么抛出异常，总之不会破坏目标数组中的数据。这就允许`ConstrainedCopy`在约束执行区域(Constrained Execution Region, CER)中执行。为了提供这种保证，`ConstrainedCopy` 要求源数组的元素类型要么与目标数组的元素类型相同，要么派生自目标数组的元素类型。另外，它不执行任何装箱、拆箱或向下类型转型。
+
+>> ① “按位兼容”因为英文原文是 bitwise-compatible，所以人们发明了 blittable 一词来表示这种类型。这种类型在托管和非托管内存中具有相同的表示。一部分基元类型是 blittable 类型。如果一维数组包含的是 blittable 类型。另外，格式化的值类型如果包含 blittable 类型，该值类型也是 blittable 类型。欲知详情，请在 MSDN 文档中搜索“可直接复制到本机结构中的类型和非直接复制到本机结构中的类型”这一主题。——译注
+
+## <a name="16_3">16.3 所有数组都隐式派生自 `System.Array`</a>
+
+像下面这样声明数组变量：
+
+`FileStream[] fsArray;`  
+
+CLR 会自动为 AppDomain 创建一个 `FileStream[]` 类型。该类型隐式派生自 `System.Array`类型；因此，`System.Array`类型定义的所有实例方法和属性都将由 `FileStream[]` 继承，使这些方法和属性能通过 `fsArray` 变量调用。这极大方便了数组处理，因为`System.Array`定义了许多有用的实例方法和属性，比如 `Clone`，`CopyTo`，`GetLength`，`GetLongLength`，`GetLowerBound`，`GetUpperBound`，`Length`，`Rank`等。
+
+`System.Array`类型还公开了很多有用的、用于数组处理的静态方法。这些方法均获取一个数组引用作用作为参数。一些有用的静态方法包括：`AsReadOnly`，`BinarySearch`，`Clear`，`ConstrainedCopy`，`ConvertAll`，`Copy`，`Exists`，`Find`，`FindAll`，`FindIndex`，`FindLast`，`FindLastIndex`，`Foreach`，`IndexOf`，`LastIndexOf`，`Resize`，`Sort`和`TrueForAll`。这些方法中，每个都有多个重载版本，能保障编译时的类型安全性和良好的性能。鼓励大家查阅文档，体会这些方法究竟多么有用和强大！
+
+## <a name="16_4">16.4 所有数组都隐式实现 `IEnumerable`，`ICollection`和`IList`</a>
+
+许多方法都能操纵各种各样的集合对象，因为它们声明为允许获取`IEnumerable`，`ICollection`和`IList`等参数。可将数组传给这些方法，因为`System.Array`也实现了这三个接口。`System.Array`之所以实现这些非泛型接口，是因为这些接口将所有元素都视为`System.Object`。然后，最后是让`System.Array`实现这些接口的泛型形式，提供更好的编译时类型安全性和更好的性能。
+
+不过，由于涉及多维数组和非 0 基数组的问题，CLR 团队不希望 `System.Array` 实现`IEnumerable<T>`，`ICollection<T>`和`IList<T>`。若在`System.Array`上定义这些接口，就会为所有数组类型启用这些接口。所以，CLR没有那么做，而是耍了一个小花招；创建一维 0 基数组类型时，CLR 自动使数组类型实现`IEnumerable<T>`，`ICollection<T>`和`IList<T>`(`T`是数组元素的类型)。同时，还为数组类型实现这三个接口，只要它们是引用类型。以下层次结构图对此进行了澄清：
+
+```C#
+Object
+    Array (非泛型 IEnumerable, ICollection, IList)
+        Object[]            (IEnumerable, ICollection, IList of Object)
+          String[]          (IEnumerable, ICollection, IList of String)
+          Stream[]          (IEnumerable, ICollection, IList of Stream)
+            FileStream[]    (IEnumerable, ICollection, IList of FileStream)
+         .
+         .      (其他引用类型的数组)
+         .
+```
+
+所以，如果执行以下代码：
+
+`FileStream[] fsArray;`
+
+那么当 CLR 创建`FileStream[]`类型时，会自动为这个类型实现 `IEnumerable<FileStream>`，`ICollection<FileStream>`和`IList<FileStream>`接口。此外，`FileStream[]`类型还会为基类型实现接口：`IEnumerable<Stream>`，`IEnumerable<Object>`，`ICollection<Stream>`，`ICollection<Object>`，`IList<Stream>`和`IList<Object>`。由于所有这些接口都由 CLR 自动实现，所以在存在这些接口任何地方都可以使用 `fsArray` 变量。例如，可将 `fsArray` 变量传给具有以下任何一种原型的方法：
+
+```C#
+void M1(IList<FileStream> fsList) { ... }
+void M2(ICollection<Stream> sCollection) { ... }
+void M3(IEnumerable<Object> oEnumerable) { ... }
+```
+
+注意，如果数组包含值类型的元素，数组类型不会为元素的基类型实现接口。例如，如果执行以下代码：
+
+`DateTime[] dtArray;        // 一个值类型的数组`
+
+那么 `DateTime[]` 类型只会实现 `IEnumerable<DateTime>`，`ICollection<DateTime>`和`IList<DateTime>`接口，不会为`DateTime`的基类型(包括`System.ValueType`和`System.Object`)实现这些泛型接口。这意味着`dtArray`变量不能作为实参传给前面的`M3`方法。这是因为值类型的数组在内存中的布局与引用类型的数组不同。数组内存的布局请参见本章前面的描述。
+
+## <a name="16_5">16.5 数组的传递和返回</a>
+
+数组作为实参传给方法时，实际传递的是对该数组的引用。因此，被调用的方法能修改数组中的元素。如果不想被修改，必须生成数组的拷贝并将拷贝传给方法。注意，`Array.Copy` 方法执行的是浅拷贝。换言之，如果数组元素是引用类型，新数组将引用现有的对象。
+
+类似地，有的方法会返回对数组的引用。如果方法构造并初始化数组，返回数组引用是没有问题的。但假如方法返回的是对字段所维护的一个内部数组的引用，就必须决定是否想让该方法的调用者直接访问这个数组及其元素。如果是，就可以返回数组引用。但更常见的情况是，你并不希望方法的调用者获得这个访问权限。所以，方法应该构造一个新数组，并调用`Array.Copy`返回对新数组的引用。再次提醒，`Array.Copy`执行的是对原始数组的浅拷贝。
+
+如果定义返回数组引用的方法，而且数组中不包含元素，那么方法既可以返回`null`，也可以返回对包含零个元素的一个数组的引用。实现这种方法时，Microsoft 强烈建议让它返回后者，因为这样能简化调用该方法时需要写的代码<sup>①</sup>。例如，以下代码很容易理解。而且即使没有可供遍历的约会(即 `appointments` 数组中没有元素)，也能正确运行：
+
+```C#
+// 这段代码更容易写，更容易理解
+Appointment[] appointments = GetAppointmentsForToday();
+for (Int32 a = 0; a < appointments.Length; a++) {
+    // 对 appointments[a]执行操作
+}
+```
+
+> ① 因为不需要执行 `null` 值检测。 —— 译注
+
+以下代码也能在没有约会的前提下正确运行，但写起来麻烦一些，而且不好理解：
+
+```C#
+// 这段代码写起来麻烦一些，而且不好理解
+Appointment[] appointments = GetAppointmentsForToday();
+if (appointments != null) {
+    for (Int32 a = 0; a < appointments.Length; a++) {
+        // 对 appointments[a] 执行操作
+    }
+}
+```
+
+将方法设计为返回对含有 0 个元素的一个数组的引用，而不是返回 `null`，该方法的迪用者就能更轻松地使用该方法。顺便提一句，对字段也应如此。如果类型中有一个字段是数组引用，应考虑让这个字段始终引用数组，即使数组中不包含任何元素。
+
+## <a name="16_6">16.6 创建下限非零的数组</a>
+
+前面提到过，能创建和操作下限非 0 的数组。可以调用数组的静态 `CreatInstance` 方法来动态创建自己的数组。该方法有若干个重载版本，允许指定数组元素的类型、数组的维数、每一维的下限和每一维的元素数目。`CreateInstance` 为数组分配内存，将参数信息保存到数组的内存块的开销(overhead)部分，然后返回对该数组的引用。如果数组维数是2 或 2 以上，就可以把 `CreateInstance` 返回的引用转型为一个 `ElementType[]` 变量(`ElementType`要替换为类型名称)，以简化对数组中的元素的访问。如果只有一维，C# 要求必须使用该 `Array` 的 `GetValue` 和 `SetValue`方法访问数组元素。
+
+以下代码演示了如何动态创建由 `System.Decimal` 值构成的二维数组。第一维代表 2005 到 2009(含)年份，
