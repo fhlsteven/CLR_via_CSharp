@@ -341,4 +341,195 @@ if (appointments != null) {
 
 前面提到过，能创建和操作下限非 0 的数组。可以调用数组的静态 `CreatInstance` 方法来动态创建自己的数组。该方法有若干个重载版本，允许指定数组元素的类型、数组的维数、每一维的下限和每一维的元素数目。`CreateInstance` 为数组分配内存，将参数信息保存到数组的内存块的开销(overhead)部分，然后返回对该数组的引用。如果数组维数是2 或 2 以上，就可以把 `CreateInstance` 返回的引用转型为一个 `ElementType[]` 变量(`ElementType`要替换为类型名称)，以简化对数组中的元素的访问。如果只有一维，C# 要求必须使用该 `Array` 的 `GetValue` 和 `SetValue`方法访问数组元素。
 
-以下代码演示了如何动态创建由 `System.Decimal` 值构成的二维数组。第一维代表 2005 到 2009(含)年份，
+以下代码演示了如何动态创建由 `System.Decimal` 值构成的二维数组。第一维代表 2005 到 2009(含)年份，第二维 1 到 4(含)季度。代码遍历动态数组中的所有元素。我本来可以将数组的上下限硬编码到代码中，这样能获取更好的性能。但我最后决定使用`System.Array`的`GetLowerBound`和`GetUpperBound`方法来演示它们的用法：
+
+```C#
+using System;
+
+public sealed class DynamicArrays {
+    public static void Main() {
+        // 我想创建一个二维数组 [2005..2009][1..4]
+        Int32[] lowerBounds = { 2005, 1 };
+        Int32[] lengths     = {    5, 4 };
+        Decimal[,] quarterlyRevenue = (Decimal[,]) 
+            Array.CreateInstance(typeof(Decimal), lengths, lowerBounds);
+
+        Console.WriteLine("{0,4} {1,9} {2,9} {3,9} {4,9}", "Year", "Q1", "Q2", "Q3", "Q4");
+        Int32 firstYear    = quarterlyRevenue.GetLowerBound(0);
+        Int32 lastYear     = quarterlyRevenue.GetUpperBound(0);
+        Int32 firstQuarter = quarterlyRevenue.GetLowerBound(1);
+        Int32 lastQuarter  = quarterlyRevenue.GetUpperBound(1);
+
+        for (Int32 year = firstYear; year <= lastYear; year++) {
+            Console.Write(year + " ");
+            for (Int32 quarter = firstQuarter; quarter <= lastQuarter; quarter++) {
+                Console.Write("{0,9:C} ", quarterlyRevenue[year, quarter]);
+            }
+            Console.WriteLine();
+        }
+    }
+}
+```
+
+编译并运行这段代码将得到以下输出：
+
+```cmd
+Year     Q1        Q2        Q3        Q4
+2005     $0.00     $0.00     $0.00     $0.00 
+2006     $0.00     $0.00     $0.00     $0.00 
+2007     $0.00     $0.00     $0.00     $0.00 
+2008     $0.00     $0.00     $0.00     $0.00 
+2009     $0.00     $0.00     $0.00     $0.00 
+```
+
+## <a name="16_7">16.7 数组的内部工作原理</a>
+
+CLR 内部实际支持两种不同的数组。
+
+* 下限为 0 的一维数组。这些数组有时称为 SZ(single-dimensional,zero-based, 一维 0 基)数组或向量(vector)。
+
+* 下限未知的一维或多维数组。
+
+可执行以下代码来实际地查看不同种类的数组(注释显示了输出)
+
+```C#
+using System;
+
+public sealed class DynamicArrays {
+    public static void Main() {
+        Array a;
+
+        // 创建一维的 0 基数组，不包含任何元素
+        a = new String[0];
+        Console.WriteLine(a.GetType());     // "System.String[]"
+
+        // 创建一维 0 基数组，不包含任何元素
+        a = Array.CreateInstance(typeof(String), new Int32[] { 0 }, new Int32[] { 0 });
+        Console.WriteLine(a.GetType());     // "System.String[]"
+
+        // 创建一维 1 基数组，其中不包含任何元素
+        a = Array.CreateInstance(typeof(String), new Int32[] { 0 }, new Int32[] { 1 });
+        Console.WriteLine(a.GetType());     // "System.String[*]"  <-- 这个显示很奇怪，不是吗？
+
+        Console.WriteLine();
+
+        // 创建二维 0 基数组，其中不包含任何元素
+        a = new String[0, 0];
+        Console.WriteLine(a.GetType());     // "System.String[,]"
+
+        // 创建二维 0 基数组，其中不包含任何元素
+        a = Array.CreateInstance(typeof(String), new Int32[] { 0, 0 }, new Int32[] { 0, 0 });
+        Console.WriteLine(a.GetType());    // "System.String[,]"
+
+        //
+        a = Array.CreateInstance(typeof(String), new Int32[] { 0, 0 }, new Int32[] { 0, 0 });
+        Console.WriteLine(a.GetType());    // "System.String[,]"
+    }
+}
+```
+
+每个 `Console.WriteLine` 语句后都有一条指出其输出的注释。对于一维数组，0 基数组显示的类型名称是 `System.String[]`，但 1 基数组显示的是 `System.String[*]`。`*` 符号表明 CLR 知道该数组不是 0 基的。注意，C# 不允许声明 `String[*]` 类型的变量，因此不能使用 C# 语法来访问一维非 0 基数组。尽管可以调用 `Array` 的 `GetValue` 和 `SetValue` 方法来访问这种数组的元素，但速度会比较慢，因为有方法调用的开销。
+
+对于多维数组，0 基和 1 基数组会显示同样的类型名称：`System.String[,]`。在运行时，CLR 将所有多维数组都视为非 0 基数组。这自然会让人觉得类型名称应该显示为`System.String[*,*]`。但是，对于多维数组，CLR 决定不使用`*`符号。这是由于假如使用`*`，那么它们始终都会存在，而大量的`*`会使开发人员产生混淆。
+
+访问一维 0 基数组的元素比访问非 0 基一维或多维数组的元素稍快。这是多方面的原因造成的。首先，有一些特殊 IL 指令，比如 `newarr`，`ldelem`，`ldelema`，`ldlen`和`stelem`，用于处理一维 0 基数组，这些特殊 IL 指令会导致 JIT 编译器生成优化代码。例如，JIT 编译器生成的代码假定数组时 0 基的，所以在访问元素时不需要从指定索引中减去一个偏移量。其次，一般情况下，JIT 编译器能将索引范围检查代码从循环中拿出，导致它只执行一次。以下面这段常见的代码为例：
+
+```C#
+using System;
+
+public static class Program {
+    public static void Main() {
+        Int32[] a = new Int32[5];
+        for (Int32 index = 0; index < a.Length; index++) {
+            // 对 a[index] 执行操作
+        }
+    }
+}
+```
+
+对于以上代码，首先注意在 `for` 循环的测试表达式中对数组的 `Length` 属性的调用。由于 `Length` 是属性，所以查询长度实际是方法调用。但 JIT 编译器知道 `Length` 是 `Array` 类的属性，所以在生成的代码中，实际只调用该属性一次，结果存储到一个临时表变量中。每次循环迭代检查的都是这个临时变量中。每次循环迭代检查的都是这个临时变量。这就加快了 JIT 编译的代码的速度。但有的开发人员低估了 JIT 编译器的“本事”，试图自己写一些“高明”的代码来“帮助”JIT编译器。任何自作聪明的尝试几乎肯定会对性能造成负面影响，还会使代码更难阅读，妨碍可维护性。在上述代码中，最好保持对数组`Length`属性的调用，而不要自己用什么局部变量来缓存它的值。
+
+其次要注意，JIT 编译器知道 `for` 循环要访问 `0` 到 `Length - 1`的数组元素。所以，JIT 编译器会生成代码，在运行时测试所有数组元素的访问都在数组有效范围内。具体地说，JIT 编译器会生成代码来检查是否`(0 >= a.GetLowerBound(0)) && ((Length - 1)) <= a.GetUpperBound(0))`。这个检查在循环之前发生。如果在数组有效范围内，JIT 编译器不会在循环内部生成代码验证每一次数组访问都在有效范围内。这样一来，循环内部的数组访问变得非常快。
+
+遗憾的是，正如前文所述，访问“非 0 基一维数组” 或 “多维数组” 的速度比不上一维 0 基数组。对于这些数组类型，JIT 编译器不会将索引检查从循环中拿出来，所以每次数组访问都要验证指定的索引。此外，JIT 编译器还要添加代码从指定索引中减去数组下限，这进一步影响了代码执行速度，即使此时使用的多维数组碰巧是 0 基数组。所以，如果很关心性能，考虑用由数组构成的数组(即交错数组)代替矩形数组。
+
+C# 和 CLR 还允许使用 `unsafe`(不可验证)代码访问数组。这种技术实际能在访问数组时关闭索引上下限检查。这种不安全的数组访问技术适合以下元素类型的数组：`SByte`、`Byte`、`Int16`、`UInt16`、`Int32`、`UInt32`、`Int64`、`UInt64`、`Char`、`Single`、`Double`、`Decimal`、`Boolean`、枚举类型或者字段为上述任何类型的值类型结构。
+
+这个功能很强大，但使用须谨慎，因为它允许直接内存访问。访问越界(超出数组上下限)不会抛出异常，但会损失内存中的数据，破坏类型安全性，并可能造成安全漏洞！有鉴于此，包含 `unsafe` 代码的程序集必须被授予完全信任，或至少启用“跳过验证”安全权限。
+
+以下 C# 代码演示了访问二维数组的三种方式(安全、交错和不安全)：
+
+```C#
+using System;
+using System.Diagnostics;
+
+public static class Program {
+    private const Int32 c_numElements = 10000;
+     
+    public static void Main() {
+        // 声明二维数组
+        Int32[,] a2Dim = new Int32[c_numElements, c_numElements];
+
+        // 将二维数组声明为交错数组(向量构成的向量)
+        Int32[][] aJagged = new Int32[c_numElements][];
+        for (Int32 x = 0; x < c_numElements; x++)
+            aJagged[x] = new Int32[c_numElements];
+
+        // 1：用普通的安全技术访问数组中的所有元素
+        Safe2DimArrayAccess(a2Dim);
+
+        // 2：用交错数组技术访问数组中的所有元素
+        SafeJaggedArrayAccess(aJagged);
+
+        // 3：用 unsafe 技术访问数值中的所有元素
+        Unsafe2DimArrayAccess(a2Dim);
+    }
+
+    private static Int32 Safe2DimArrayAccess(Int32[,] a) {
+        Int32 sum = 0;
+        for (Int32 x = 0; x < c_numElements; x++) {
+            for (Int32 y = 0; y < c_numElements; y++) {
+                sum += a[x, y];
+            }
+        }
+        return sum;
+    }
+
+    private static Int32 SafeJaggedArrayAccess(Int32[][] a) {
+        Int32 sum = 0;
+        for (Int32 x = 0; x < c_numElements; x++) {
+            for (Int32 y = 0; y < c_numElements; y++) {
+                sum += a[x][y];
+            }
+        }
+        return sum;
+    }
+
+    private static unsafe Int32 Unsafe2DimArrayAccess(Int32[,] a) {
+        Int32 sum = 0;
+        fixed (Int32* pi = a) {
+            for (Int32 x = 0; x < c_numElements; x++) {
+                Int32 baseOfDim = x * c_numElements;
+                for (Int32 y = 0; y < c_numElements; y++) {
+                    sum += pi[baseOfDim + y];
+                }
+            }
+        }
+        return sum;       
+    }
+}
+```
+
+`Unsafe2DimArrayAccess` 方法标记了 `unsafe` 修饰符，这是使用 C# 的 `fixed` 语句所必须的。编译这段代码要求在运行 C# 编译器时指定 `/unsafe` 开关，或者在 Microsoft Visual Studio 的项目属性页的“生成”选项卡中勾选“允许不安全代码”。
+
+写代码时，不安全数据访问技术有时或许是你的最佳选择，但要注意该技术的三处不足。
+
+* 相较于其他技术，处理数组元素的代码更复杂，不容易读和写，因为要使用 C# `fixed` 语句，要执行内存地址计算。
+
+* 计算过程中出错，可能访问到不属于数组的内存。这会造成计算错误，损坏内存数据，破坏类型安全性，并可能造成安全漏洞。
+
+* 因为这些潜在的问题，CLR 禁止在降低了安全级别的环境(如 Microsoft Silverlight)中运行不安全代码。
+
+## <a name="16_8">16.8 不安全的数组访问和固定大小的数组</a>
+
+不安全
