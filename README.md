@@ -38,7 +38,7 @@ CLR Via C# 第四版
 [第 14 章 字符、字符串和文本处理](./chapters/ch14_CharStringText.md)    
 [第 15 章 枚举类型和位标志](./chapters/ch15_EnumeratedTypes.md)    
 [第 16 章 数组](./chapters/ch16_Arrays.md)    
-第 17 章 委托  
+[第 17 章 委托](./chapters/ch17_Delegates.md)    
 第 18 章 定制特性  
 第 19 章 可空值类型  
 

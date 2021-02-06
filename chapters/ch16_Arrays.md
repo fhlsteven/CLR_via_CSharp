@@ -532,4 +532,78 @@ public static class Program {
 
 ## <a name="16_8">16.8 不安全的数组访问和固定大小的数组</a>
 
-不安全
+不安全的数组访问非常强大，因为它允许访问以下元素。
+
+* 堆上的托管数组对象中的元素(上一节对此进行了演示)。
+
+* 非托管堆上的数组中的元素。第 14 章的 SecureString 示例演示了如何调用 `System.Runtime.InteropServices.Marshal` 类的 `SecureStringToCoTaskMemUnicode` 方法来返回一个数组，并对这个数组进行不安全的数组访问。
+
+* 线程栈上的数组中的元素。
+
+如果性能是首要目标，请避免在堆上分配托管的数组对象。相反，在线程栈上分配数组。这是通过 C# 的 `stackalloc` 语句来完成的(它在很大程度上类似于 C 的 `alloca` 函数)。`stackalloc`语句只能创建一维 0 基、由值类型元素构成的数组，而且值类型绝对不能包含任何引用类型的字段。实际上，应该把它的作用看成是分配一个内存块，这个内存块可以使用不安全的指针来操纵。所以，不能将这个内存缓冲区的地址传给大部分 FCL 语法。当然，栈上分配的内存(数组)会在方法返回时自动释放；这对增强性能起了一定作用。使用这个功能要求为 C# 编译器指定`/unsafe`开关。
+
+以下代码中的`StackallocDemo`方法演示如何使用C# `stackalloc`语句：
+
+```C#
+using System;
+
+public static class Program {
+    public static void Main() {
+        StackallocDemo();
+        InlineArrayDemo();
+    }
+
+    private static void StackallocDemo() {
+        unsafe {
+            const Int32 width = 20;
+            Char* pc = stackalloc Char[width];      // 在栈上分配数组 
+
+            String s = "Jeffrey Richter";           // 15个字符
+
+            for (Int32 index = 0; index < width; index++) {
+                pc[width - index - 1] = (index < s.Length) ? s[index] : '.';
+            }
+
+            // 下面这行代码显示“.....rethciR yerffeJ”
+            Console.WriteLine(new String(pc, 0, width));
+        }
+    }
+
+    private static void InlineArrayDemo() {
+        unsafe {
+            CharArray ca;           // 在栈上分配数组
+            Int32 widthInBytes = sizeof(CharArray);
+            Int32 width = widthInBytes / 2;
+
+            String s = "Jeffrey Richter";       // 15 个字符
+
+            for (Int32 index = 0; index < width; index++) {
+                ca.Characters[width - index - 1] = (index < s.Length) ? s[index] : '.';
+            }
+
+            // 下面这行代码显示 “.....rethciR yerffeJ”
+            Console.WriteLine(new String(ca.Characters, 0, width));
+        }
+    }
+}
+
+internal unsafe struct CharArray {
+    // 这个数组内联(嵌入)到结构中
+    public fixed Char Characters[20];
+}
+```
+
+通常，由于数组是引用类型，所以结构中定义的数组字段实际只是指向数组的指针或引用；数组本身在结构的外部。不过，也可像上述代码中的`CharArray`结构那样，直接将数组嵌入结构。在结构中嵌入数组需满足以下几个条件。
+
+* 类型必须是结构(值类型)；不能在类(引用类型)中嵌入数组。
+
+* 字段或其定义结构必须用`unsafe`关键字标记。
+
+* 数组字段必须用 `fixed` 关键字标记。
+
+* 数组必须是一维 0 基数组。
+
+* 数组的元素类型必须是以下类型之一：`Boolean`，`Char`，`SByte`，`Byte`，`Int16`，`Int32`，`UInt16`，`UInt32`，`Int64`，`Single`或`Double`。
+
+要和非托管代码进行互操作，而且非托管数据结构也有一个内联数组，就特别适合使用内联的数组。但内联数组也能用于其他地方。上述代码中的 `InlineArrayDemo` 方法提供了如何使用内联数组的一个例子。它执行和 `StackallocDemo` 方法一样的功能，只是用了不一样的方式。
+ 
