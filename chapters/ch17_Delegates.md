@@ -169,4 +169,76 @@ C#编译器将不会编译以上代码，并报告以下错误：`error CS0123:"
 
 从表面看，委托似乎很容易使用：用 C#的`delegate`关键字定义，用熟悉的`new`操作符构造委托实例，用熟悉的方法调用语法来调用回调函数(用引用了委托对象的变量替代方法名)。
 
-```````````
+但实际情况比前几个例子演示的要复杂一些。编译器和 CLR 在幕后做了大量工作来隐藏复杂性。本节要解释编译器和 CLR 如何协同工作来实现委托。掌握这些知识有助于加深对委托的理解，并学会如何更高效地使用。另外，还要介绍通过委托来实现的一些附加功能。
+
+首先重新审视这一行代码：
+
+`internal delegate void Feedback(Int32 value);`
+
+看到这行代码后，编译器实际会像下面这样定义一个完整的类：
+
+```C#
+internal class Feedback : System.MulticastDelegate {
+    // 构造器
+    public Feedback(Object @object, IntPtr method);
+
+    // 这个方法的原型和源代码指定的一样
+    public virtual void Invoke(Int32 value);
+
+    // 以下方法实现对回调方法的异步问题
+    public virtual IAsyncResult BeginInvoke(Int32 value, AsyncCallback callback, Object @object);
+    public virtual void EndInvoke(IAsyncResult result);
+}
+```
+
+编译器定义的类有 4 个方法：一个构造器、`Invoke`、`BeginInvoke`和`EndInvoke`。本章重点解释构造器和`Invoke`。`BeginInvoke`和`EndInvoke`方法将留到第 27 章讨论。
+
+事实上，可用 ILDasm.exe 查看生成的程序集，验证编译器真的会自动生成这个类，如果 17-1 所示。
+
+![17_1](../resources/images/17_1.png)  
+
+图 17-1 ILDasm.exe 显示了编译器为委托生成的元数据
+
+在本例中，编译器定义了 `Feedback` 类，它派生自 FCL 定义的`System.MulticastDelegate` 类型(所有委托类型都派生自`MulticastDelegate`)。
+
+> 重要提示 `System.MulticastDelegate`派生自`System.Delegate`，后者又派生自 `System.Object`。是历史原因造成有两个委托类。这实在是令人遗憾———— FCL 本该只有一个委托类。没有办法，我们对这两个类都要有所了解。即使创建的所有委托类型都将`MulticastDelegate`作为基类，个别情况下仍会使用 `Delegate` 类(而非`MulticastDelegate`类)定义的方法处理自己的委托类型。例如，`Delegate`类的两个静态方法`Combine`和`Remove`(后文将解释其用途)的签名都指出要获取`Delegate`参数。由于你创建的委托类型派生自`MulticastDelegate`，后者又派生自`Delegate`，所以你的委托类型的实例是可以传给这两个方法的。
+
+这个类的可访问性是`private`，因为委托在源代码中声明为`internal`。如果源代码改成使用`public`可见性，编译器生成的`Feedback`类也会变成公共类。要注意的是，委托类既可嵌套在一个类型中定义，也可在全局范围中定义。简单地说，由于委托是类，所以凡是能够定义类的地方，都能定义委托。
+
+由于所有委托类型都派生自`MulticastDelegate`，所以它们继承了`MulticastDelegate`的字段、属性和方法。在所有这些成员中，有三个非公共字段是最重要的。表 17-1 总结了这些重要字段。
+
+表 17-1 `MulticastDelegate` 的三个重要的非公共字段  
+|字段|类型|说明|
+|:---:|:---:|:---:|
+|`_target`|`System.Object`|当委托对象包装一个静态方法时，这个字段为`null`。当委托对象包装一个实例方法时，这个字段引用的是回调方法要操作的对象。换言之，这个字段指出要传给实例方法的隐式参数 `this` 的值|
+|`_methodPtr`|`System.IntPtr`|一个内部的整数值，CLR用它标识要回调的方法|
+|`_invocationList`|`System.Object`|该字段通常为 `null`。构造委托链时它引用一个委托数组(详情参见下一节)|  
+
+注意，所有委托都有一个构造器，它获取两个参数：一个是对象引用，另一个是引用了回调方法的整数。但如果仔细查看前面的源代码，会发现传递的是`Program.FeedbackToConsole`或`p.FeedbackToFile`这样的值。根据迄今为止学到的编程知识，似乎没有可能通过编译！
+
+然而，C# 编译器知道要构造的是委托，所以会分析源代码来确定引用的是哪个对象和方法。对象引用被传给构造器的 `object` 参数，标识了方法的一个特殊 `IntPtr` 值(从 `MethodDef` 或 `MemberRef` 元数据 token 获得)被传给构造器的 `method` 参数。对于静态方法，会为 `object` 参数传递 `null` 值。在构造器内部，这两个实参分别保存在 `_target` 和 `_methodPtr` 私有字段中。除此以外，构造器还将 `_invocationList` 字段设为`null`，对这个字段的讨论将推迟到 17.5 节 “用委托回调多个方法(委托链)”进行。
+
+所以，每个委托对象实际都是一个包装器，其中包装了一个方法和调用该方法时要操作的对象。例如，在执行以下两行代码之后：
+
+```C#
+Feedback fbStatic = new Feedback(Program.FeedbackToConsole);
+Feedback fbInstance = new Feedback(new Program().FeedbackToFile);
+```
+
+`fbStatic` 和 `fbInstance` 变量将引用两个独立的、初始化好的 `Feedback` 委托对象，，如图 17-2 所示。
+
+![17_2](../resources/images/17_2.png)  
+
+图 17-2 在两个变量引用的委托中，一个包装静态方法，另一个包装实例方法
+
+知道委托对象如何构造并了解其内部结构之后，再来看看回调方法时如何调用的。为方便讨论，下面重复了 `Counter` 方法的定义：
+
+```C#
+private static void Counter(Int32 from, Int32 to, Feedback fb) {
+    for (Int32 val = from; val <= to; val++) {
+        // 如果指定了任何回调，就调用它们
+        if (fb != null)
+            fb(val);
+    }
+}
+```
