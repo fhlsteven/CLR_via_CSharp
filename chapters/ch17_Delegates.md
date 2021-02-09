@@ -366,5 +366,241 @@ public void Invoke(Int32 value) {
 
 `public delegate Int32 Feedback(Int32 value);`
 
+如果是这样定义的，那么该委托的 `Invoke` 方法就应该像下面这样(又是伪代码形式)：
 
+```C#
+public Int32 Invoke(Int32 value) {
+    Int32 result;
+    Delegate[] delegateSet = _invocationList as Delegate[];
 
+    if(delegateSet != null) {
+        // 这个委托数组指定了应该调用的委托
+        foreach (Feedback d in delegateSet)
+            result = d(value);      // 调用每个委托
+    } else {  // 否则就不是委托链
+        // 该委托标识了要回调的单个方法，
+        // 在指定的目标对象上调用这个回调方法
+        result = _methodPtr.Invoke(_target, value);
+        // 上面这行代码接近实际的代码
+        // 实际发生的事情用 C# 是表示不出来的
+    }
+    return result;
+}
+```
+
+数组中的每个委托被调用时，其返回值被保存到 `result` 变量中。循环完成后，`result` 变量只包含调用的最后一个委托的结果(前面的返回值会被丢弃)，该值返回给调用 `Invoke` 的代码。
+
+### 17.5.1 C# 对委托链的支持
+
+为方便 C# 开发人员，C# 编译器自动为委托类型的实例重载了 `+=` 和 `-=`操作符。这些操作符分别调用 `Delegate.Combine` 和 `Delegate.Remove`。可用这些操作符简化委托链的构造。在 17.1 节的示例代码中，`ChainDelegateDemo1` 和 `ChainDelegateDemo2` 方法生成的 IL 代码完全一样。唯一的区别是 `ChainDelegateDemo2` 方法利用 C# 的`+=`和`-=`操作符简化了源代码。
+
+要想证明两个方法生成的 IL 代码一样，可利用 ILDasm.exe 查看生成的 IL 代码。会看到 C#编译器用 `Delegate` 类型的 `Combine` 和 `Remove` 公共静态方法调用分别替换了 `+=` 和 `-=` 操作符。
+
+### 17.5.2 取得对委托链调用的更多控制
+
+此时，想必你以已理解了如何创建委托对象链，以及如何调用链中的所有对象。链中的所有项都会被调用，因为委托类型的`Invoke`方法包含了对数组中的所有项进行遍历的代码。这是一个很简单的算法。尽管这个简单的算法足以应付很多情形，但也有它的局限性。例如，除了最后一个返回值，其他所有回调方法的返回值都会被丢弃。但局限并不止于此。如果被调用的委托中有一个抛出了异常或阻塞了相当长一段时间，会出现什么情况呢？由于这个简单的算法是顺序调用链中的每一个委托，所以一个委托对象出现问题，链中后续的所有对象都调用不了。显然，这个算法还不够健壮。<sup>①</sup>
+
+> ① 健壮性(鲁棒性)和可靠性是有区别的，两者对应的英文单词分别是 robustness 和 reliability。 健壮性主要描述一个系统对于参数变化的不敏感性，而可靠性主要描述一个系统的正确性，也就是在你固定提供一个参数时，它应该产生稳定的、能预测的输出。例如一个程序，它的设计目标是获取一个参数并输出一个值。假如它能正确完成这个设计目标，就说它是可靠的。但在这个程序执行完毕后，假如没有正确释放内存，或者说系统没有自动帮它释放占用的资源，就认为这个程序及其“运行时”不具备健壮性或者鲁棒性。————译注
+
+由于这个算法有的时候不胜其任，所以 `MulticastDelegate` 类提供了一个实例方法 `GetInvocationList`，用于显式调用链中的每一个委托，并允许你使用需要的任何算法：
+
+```C#
+public abstract class MulticastDelegate : Delegate {
+    // 创建一个委托数组，其中每个元素都引用链中的一个委托
+    public sealed override Delegate[] GetInvocationList();
+}
+```
+
+`GetInvocationList` 方法操作从 `MulticastDelegate` 派生的对象，返回包含 `Delegate` 引用的一个数组，其中每个引用都指向链中的一个委托对象。在内部，`GetInvocationList` 构造并初始化一个数组，让它的每个元素都引用链中的一个委托，然后返回对该数组的引用。如果`_invaocationList`字段为`null`，返回的数组就只有一个元素，该元素引用链中唯一的委托，即委托实例本身。
+
+可以很容易地写一个算法来显式调用数组中每个对象。以下代码进行了演示：
+
+```C#
+using System;
+using System.Reflection;
+using System.Text;
+
+// 定义一个 Light(灯) 组件
+internal sealed class Light {
+    // 该方法返回灯的状态
+    public String SwitchPosition() {
+        return "The light is off";
+    }
+}
+
+// 定义一个 Fan(风扇)组件
+internal sealed class Fan {
+    // 该方法返回风扇的状态
+    public String Speed() {
+        throw new InvalidOperationException("The fan broke due to overheating");
+    }
+}
+
+// 定义一个 Speaker(扬声器)组件
+internal sealed class Speaker {
+    // 该方法返回扬声器的状态
+    public String Volume() {
+        return "The volume is loud";
+    }
+}
+
+public sealed class Program {
+
+    // 定义委托来查询一个组件的状态
+    private delegate String GetStatus();
+
+    public static void Main() {
+        // 声明空委托链
+        GetStatus getStatus = null;
+
+        // 构造 3 个组件，将它们的状态方法添加到委托链中
+        getStatus += new GetStatus(new Light().SwitchPosition);
+        getStatus += new GetStatus(new Fan().Speed);
+        getStatus += new GetStatus(new Speaker().Volume);
+
+        // 显示整理好的状态报告，反映这 3 个组件的状态
+        Console.WriteLine(GetComponentStatusReport(getStatus));
+    }
+
+    // 该方法查询几个组件并返回状态报告
+    private static String GetComponentStatusReport(GetStatus status) {
+
+        // 如果委托链为空，就不进行任何操作
+        if (status == null) return null;
+
+        // 用下面的变量来创建状态报告
+        StringBuilder report = new StringBuilder();
+
+        // 获得一个数组，其中每个元素都是链中的委托
+        Delegate[] arrayOfDelegates = status.GetInvocationList();
+
+        // 遍历数组中的每一个委托
+        foreach (GetStatus getStatus in arrayOfDelegates) {
+
+            try {
+                // 获得一个组件的状态字符串，把它附加到报告中
+                report.AppendFormat("{0}{1}{1}", getStatus(), Environment.NewLine);
+            }
+            catch (InvalidOperationException e) {
+                // 在状态报告为该组件生成一个错误记录
+                Object component = getStatus.Target;
+                report.AppendFormat("Failed to get status from {1}{2}{0}  Error: {3}{0}{0}", Environment.NewLine,
+                    ((component == null) ? "" : component.GetType() + "."),
+                    getStatus.Method.Name,
+                    e.Message);
+            }
+        }
+
+        // 把整理好的报告返回给调用者
+        return report.ToString();
+    }
+}
+```
+
+```cmd
+The light is off
+
+Failed to get status from Fan.Speed
+  Error: The fan broke due to overheating
+
+The volume is loud
+```
+
+## <a name="17_6">17.6 委托定义不要太多(泛型委托)</a>
+
+许多年前，Microsoft 在刚开始开发 .NET Framework 的时候引入了委托类型。随着时间的推移，他们定义了许多委托。事实上，现在仅仅在 MSCorLib.dll 中，就有接近 50 个委托类型。下面只列出其中少数几个：
+
+```C#
+public delegate void TryCode(Object userData);
+public delegate void WaitCallback(Object state);
+public delegate void TimerCallback(Object state);
+public delegate void ContextCallback(Object state);
+public delegate void SendOrPostCallback(Object state);
+public delegate void ParameterizedThreadStart(Object obj);
+```
+
+发现这几个委托的共同点了吗？它们其实都是一样的：这些委托类型的变量所引用的方法都是获取一个 `Object`，并返回 `void`。没理由定义这么多委托类型，留一个就可以了！
+
+事实上， .NET Framework 现在支持泛型，所以实际只需几个泛型委托(在 `System` 命名空间中定义)就能表示需要获取多达 16 个参数的方法：
+
+```C#
+public delegate void Action();   // OK，这个不是泛型
+public delegate void Action<T>(T obj);
+public delegate void Action<T1, T2>(T1 arg1, T2 arg2);
+public delegate void Action<T1, T2, T3>(T1 arg1, T2 arg2, T3 arg3);
+...
+public delegate void Action<T1, ..., T16>(T1 arg1, ..., T16 arg16);
+```
+
+所以，.NET Framework 现在提供了 17 个 `Action` 委托，它们从无参数到最多 16 个参数。如需获取 16 个以上的参数，就必须定义自己的委托类型，但这种情况极其罕见。除了 `Action` 委托，.NET Framework 还提供了 17 个 `Func` 函数，允许回调方法返回值：
+
+```C#
+public delegate TResult Func<TResult>();
+public delegate TResult Func<T, TResult>(T1 arg1, T2 arg2);
+public delegate TResult Func<T1, T2, TResult>(T1 arg1, T2 arg2, T3 arg3);
+public delegate TResult Func<T1, T2, T3, TResult>(T1 arg1, T2 arg2, T3 arg3);
+...
+public delegate TResult Func<T1,..., T16, TResult>(T1 arg1, ..., T16 arg16);
+```
+
+建议尽量使用这些委托类型，而不是在代码中定义更多的委托类型。这样可减少系统中的类型数量，同时简化编码。然而，如需使用`ref`或`out`关键字以传引用的方式传递参数，就可能不得不定义自己的委托：
+
+`delegate void Bar(ref Int32 z);`
+
+如果委托要通过 C#的 `params` 关键字获取数量可变的参数，要为委托的任何参数指定默认值，或者要对委托的泛型类型参数进行约束，也必须定义自己的委托类型。
+
+获取泛型实参并返回值的委托支持逆变和协变，而且建议总是利用这些功能，因为它们没有副作用，而且使你的委托适用于更多情形。欲知逆变和协变的详情，请参见 12.5 节“委托和接口的逆变和协变泛型类型实参”。
+
+## <a name="17_7">17.7 C#为委托提供的简化语法</a>
+
+许多程序员因为语法奇怪而对委托有抗拒感。例如下面这行代码：
+
+`button1.Cilck += new EventHandler(button1_Click);`
+
+其中的`button1_CLick`是方法，看起来像下面这样：
+
+```C#
+void button1_Click(Object sender, EventArgs e) {
+    // 按钮单击后要做的事情...
+}
+```
+
+第一行代码的思路是向按钮控件登记 `button1_Click` 方法的地址，以便在按钮被单击时调用方法。许多程序员认为，仅仅为了指定 `button1_Click` 方法的地址，就构造一个`EventHandler` 委托对象，这显得有点儿不可思议。然而，构造 `EventHandler` 委托对象是 CLR 要求的，因为这个对象提供了一个包装器，可确保(被包装的)方法只能以类型安全的方式调用。这个包装器还支持调用实例方法和委托链。遗憾的是，很多程序员并不想仔细研究这些细节。程序员更喜欢像下面这样写代码：
+
+`button1.Click += button1_Click;`
+
+幸好，Microsoft C# 编译器确实为程序员提供了用于处理委托的一些简化语法。本节将讨论所有这些简化语法。本节将讨论所有这些简化语法。但开始之前我要声明一点，后文描述的基本上只是 C# 的 **语法糖**<sup>①</sup>，这些简化语法为程序员提供了一种更简单的方式生成 CLR 和其他编程语言处理委托时所必须的 IL 代码。这些简化语法是 C# 特有的，其他编译器可能还没有提供额外的委托简化语法。
+
+> ① 一般而言，越是高级的语言，提供的简化语法越多，以方便写程序，这就是所谓的 “语法糖”。————译注
+
+### 17.7.1 简化语法 1： 不需要构造委托对象
+
+如前所述，C# 允许指定回调方法的名称，不必构造委托对象包装器。例如：
+
+```C#
+internal sealed class AClass {
+    public static void CallbackWithoutNewingADelegateObject() {
+        ThreadPool.QueueUserWorkItem(SomeAsyncTask, 5);
+    }
+
+    private static void SomeAsyncTask(Object o) {
+        Console.WriteLine(o);
+    }
+}
+```
+
+`ThreadPool`类的静态`QueueUserWorkItem`方法期待一个`WaitCallback`委托对象引用，委托对象中包装的是对`SomeAsyncTask`方法的引用。由于 C#编译器能自己进行推断，所以可以省略构造`WaitCallback`委托对象的代码，使代码的可读性更佳，也更容易理解。当然，当代码编译时，C# 编译器还是会生成 IL 代码来新建 `WaitCallback` 委托对象———— 只是语法得到了简化而已。
+
+### 17.7.2 简化语法2：不需要定义回调方法(lambda 表达式)
+
+在前面的代码中，回调方法名称 `SomeAsyncTask` 传给 `ThreadPool` 的 `QueueUserWorkItem` 方法。C# 允许以内联(直接嵌入)的方式写回调方法的代码，不必在它自己的方法中写。例如，前面的代码可以这样重写：
+
+```C#
+internal sealed class AClass {
+    public static void CallbackWithoutNewingADelegateObject() {
+        ThreadPool.QueueUserWorkItem( obj => Console.WriteLine(obj), 5);
+    }
+}
+```
+
+``````````
