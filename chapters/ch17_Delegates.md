@@ -603,4 +603,236 @@ internal sealed class AClass {
 }
 ```
 
-``````````
+注意，传给 `QueueUserWorkItem` 方法的第一个实参是代码(我把它倾斜显示了)！更正式地说，这是一个 C# lambada 表达式，可通过 C# lambda 表达式操作符 => 来轻松识别。lambda 表达式可在编译器语句会看到一个委托的地方使用。编译器看到这个 lambda 表达式之后，会在类(本例是 `AClass`)中自定义一个新的私有方法。这个新方法称为**匿名函数**，因为方法名称由编译器自动创建，而且你一般不知道这个名称。<sup>①</sup>但可利用 ILDasm.exe 这样的工具检查编译器生成的代码。写完前面的代码并编译之后，我通过 ILDasm.exe 看到 C# 编译器将该方法命名为 `<CallbackWithoutNewingADelegateObject>b__0`，它获取一个 `Object`，返回`void`。
+
+> ① 作者在这里故意区分了匿名函数和匿名方法。一般情况下，两者可以互换着使用。如果非要区分，那么编译器生成的全都是“匿名函数”，这是最开始的叫法。从 C# 2.0 开始引入了“匿名方法”功能，它的作用就是简化生成匿名函数而需要写的代码。在新的 C#版本中(3.0 和以后)，更是建议用 lambda 表达式来进一步简化语法，不再推荐使用 C# 2.0 引入的“匿名方法”。但归根结底，所有这些语法糖都会为了更简单地生成匿名函数。————译注
+
+编译器选择的方法名以下`<`符号开头，这是因为在 C# 中，标识符是不能包含`<`符号的；这就确保了你不会碰巧定义一个编译器自动选择的名称。顺便说一句，虽然 C# 禁止标识符包含`<`符号，但 CLR 允许，这是为什么不会出错的原因。还要注意，虽然可将方法名作为字符串来传递，通过反射来访问方法，但 C#语言规范指出，编译器生成名称的方法是没有任何保证的。例如，每次编译代码，编译器都可能为方法生成一个不同的名称。
+
+注意C# 编译器向方法应用了 `System.Runtime.CompilerServices.CompilerGeneratedAttribute`特性，指出该方法由编译器生成，而非程序员写的。`=>`操作符右侧的代码被放入编译器生成的方法中。
+
+> 注意 写 lambda 表达式时没有办法向编译器生成的方法应用定制特性。此外，不能向方法应用任何方法修饰符(比如 `unsafe`)。但这一般不会有什么问题，因为编译器生成的匿名函数总是私有方法，而且方法要么是静态的，要么是非静态的，具体取决于方法是否访问了任何实例成员。所以，没必要向方法应用`public`，`protected`，`internal`，`virtual`，`sealed`，`override`或`abstract`之类的修饰符。
+
+最后，如果写前面的代码并编译，C# 编译器会将这些代码改写为下面这样(注释是我自己添加的)：
+
+```C#
+internal sealed class AClass {
+    // 创建该私有字段是为了缓存委托对象
+    // 优点：CallbackWithoutNewingADelegateObject 不会每次调用都新建一个对象
+    // 缺点：缓存的对象永远不会被垃圾回收
+    [CompilerGenerated]
+    private static WaitCallback <>9__CachedAnonymousMethodDelegate1;
+
+    public static void CallbackWithoutNewingADelegateObject() {
+        if (<>9__CachedAnonymousMethodDelegate1 == null) {
+            // 第一次调用时，创建委托对象，并缓存它
+            <>9__CachedAnonymousMethodDelegate1 = 
+                new WaitCallback(<CallbackWithoutNewingADelegateObject>b__0);
+        }
+        ThreadPool.QueueUserWorkItem(<>9__CachedAnonymousMethodDelegate1, 5);
+    }
+
+    [CompilerGenerated]
+    private static void <CallbackWithoutNewingADelegateObject>b__0(Object obj) {
+        Console.WriteLine(obj);
+    }
+}
+```
+
+lambda 表达式必须匹配 `WaitCallback` 委托：获取一个 `Object` 并返回 `void`。但在指定参数名称时，我简单地将`obj`放在`=>`操作符的左侧。在`=>`操作符右侧，`Console.WriteLine` 碰巧本来就返回 `void`。然而，如果在这里放一个返回值不为`void`的表达式，编译器生成的代码会直接忽略返回值，因为编译器生成的方法必须用 `void` 返回类型来满足 `WaitCallback` 委托。
+
+另外还要注意，匿名函数被标记为 `private`，禁止非类型内定义的代码(尽管反射能揭示出方法确实存在)。另外，匿名函数被标记为`static`，因为代码没有访问任何实例成员(也不能访问，因为 `CallbackWithoutNewingADelegateObject` 本身是静态方法)。不过，代码可引用类中定义的任何静态字段或静态方法。下面是一个例子：
+
+```C#
+internal sealed class AClass {
+    private static String sm_name;  // 一个静态字段
+
+    public static void CallbackWithoutNewingADelegateObject() {
+        ThreadPool.QueueUserWorkItem(
+            // 回调代码可引用静态成员
+            obj => Console.WriteLine(sm_name + ": " + obj), 5);
+    }
+}
+```
+
+如果 `CallbackWithoutNewingADelegateObject` 方法不是静态的，匿名函数的代码就可以包含对实例成员的引用。不包含实例成员引用，编译器仍会生成静态匿名函数，因为它的效率比实例方法高。之所以更高效，是因为不需要额外的`this`参数。但是，如果匿名函数的代码确实引用了实例成员，编译器就会生成非静态匿名函数：
+
+```C#
+internal sealed class AClass {
+    private String m_name;      // 一个实例字段
+
+    // 一个实例方法
+    public void CallbackWithoutNewingADelegateObject() {
+        ThreadPool.QueueUserWorkItem(
+            // 回调代码可以引用实例成员
+            obj => Console.WriteLine(m_name + ": " + obj), 5);
+        )
+    }
+}
+```
+
+`=>`操作符左侧供指定传给 lambda 表达式的参数的名称。下例总结了一些规则：
+
+```C#
+// 如果委托不获取任何参数，就使用 ()
+Func<String> f = () => "Jeff";
+
+// 如果委托获取 1 个或更多参数，编译器可推断类型
+Func<Int32, String> f2 = (Int32 n) => n.ToString();
+Func<Int32, Int32, String> f3 = (Int32 n1, Int32 n2) => (n1 + n2).ToString();
+
+// 如果委托获取 1 个或更多参数，编译器可推断类型
+Func<Int32, String> f4 = (n) => n.ToString();
+Func<Int32, Int32, String> f5 = (n1, n2) => (n1 + n2).ToString();
+
+// 如果委托获取 1 个参数，可省略(和)
+Func<Int32, String> f6 = n => n.ToString();
+
+// 如果委托有 ref/out 参数，必须显式指定 ref/out 和类型
+Bar b = (out Int32 n) => n = 5;
+```
+
+对于最后一个例子，假定 `Bar` 的定义如下：
+
+`delegate void Bar(out Int32 z);`
+
+`=>`操作符右侧供指定匿名函数主体。通常，主体包含要么简单、要么复杂的表达式，并最终返回非`void`值。刚才的代码为所有 `Func` 委托变量赋值的都会返回`String`的 lambda 表达式。匿名函数主体还经常只由一个语句构成。调用 `ThreadPool.QueueUserWorkItem` 时就是这种情况，我向它传递了调用 `Console.WriteLine`(返回 `void`)的一个 lambda 表达式。
+
+如果主体由两个或多个语句构成，必须用大括号将语句封闭。在用了大括号的情况下，如果委托期待返回值，还必须在主体中添加 `return` 语句，例如：
+
+`Func<Int32, Int32, String> f7 = (n1, n2) => { Int32 sum = n1 + n2; return sum.ToString(); };`
+
+> 重要提示 lambda 表达式的主要优势在于，它从你的源代码中移除了一个“间接层”(a level of indirection)，或者说避免了迂回。正常情况下，必须写一个单独的方法，命名该方法，再在需要委托的地方传递这个方法名。方法名提供了引用代码主体的一种方式，如果要在多个地方引用同一个代码主体，单独写一个方法并命名确实是理想的方案。但如果只需在代码中引用这个主体一次，那么 lambda 表达式允许直接内联那些代码，不必为它分配名称，从而提高了编程效率。
+
+> 注意 C# 2.0 问世时引入了一个称为匿名方法的功能。和 C# 3.0 引入的 lambda 表达式相似，匿名方法描述的也是创建匿名函数的语法。新规范(C#语言规范 7.14 节)建议开发人员使用新的 lambda 表达式语法，而不是使用旧的匿名方法语法，因为 lambda 表达式语法更简洁，代码更容易写、读和维护。当然，Microsoft C# 编译器仍然支持用这两种语法创建匿名函数，以兼容当年为 C# 2.0 写的代码。在本书中，我只解释并使用 lambda 表达式语法。
+
+### 17.7.3 简化语法 3：局部变量不需要手动包装到类中即可传给回调方法
+
+前面展示了回调代码如何引用类中定义的其他成员。但有时还希望回调代码引用存在于定义方法中的局部参数或变量。下面是一个有趣的例子：
+
+```C#
+internal sealed class AClass {
+    public static void UsingLocalVariablesInTheCallbackCode(Int32 numToDo) {
+        // 一些局部变量
+        Int32[] squares = new Int32[numToDo];
+        AutoRestEvent done = new AutoRestEvent(false);
+
+        // 在其他线程上执行一系列任务
+        for (Int32 n = 0; n < squares.Length; n++) {
+            ThreadPool.QueueUserWorkItem(
+                obj => {
+                    Int32 num = (Int32)obj;
+
+                    // 该任务通常更耗时
+                    squares[num] = num * num;
+
+                    // 如果是最后一个任务，就让主线程继续运行
+                    if (Interlocked.Decrement(ref numToDo) == 0)
+                        done.Set();                        
+                }, n);
+        }
+
+        // 等待其他所有线程结束运行
+        done.WaitOne();
+
+        // 显示结果
+        for (Int32 n = 0; n < squares.Length; n++) {
+            Console.WriteLine("Index {0}, Square={1}", n , squares[n]);
+        }
+    }
+}
+```
+
+这个例子生成地演示了 C# 如何简单地实现一个非常复杂的任务。方法定义了一个参数 `numToDo` 和两个局部变量 `squares` 和 `done`。而且 lambda 表达式的主体引用了这些变量。
+
+现在，想象 lambda 表达式主体中的代码在一个单独的方法中(确实如此，这是 CLR 要求的)。变量的值如何传给这个单独的方法？唯一的办法是定义一个新的辅助类，这个类要为打算传给回调代码的每个值都定义一个字段。此外，回调代码还必须定义成辅助类中的实例方法。然后， `UsingLocalVariablesInTheCallbackCode` 方法必须构造辅助类的实例，用方法定义的局部变量的值来初始化该实例中的字段。然后，构造绑定到辅助对象/实例方法的委托对象。
+
+> 注意 当 lambda 表达式造成编译器生成一个类，而且参数/局部变量被转变成该类的字段后，变量引用的对象的生存期被延长了。正常情况下，在方法找中最后一次使用/局部变量之后，这个参数/局部变量就会“离开作用域”，结束其生命期。但是，将变量转变成字段后，只要包含字段的那个对象不“死”，字段引用的对象也不会“死”。这在大多数应用程序中不是大问题，但有时要注意一下。
+
+这项工作非常单调乏味，而且容易出错。但理所当然地，它们全部由 C# 自动完成。写前面的代码时，C# 编译器实际是像下面这样重写了代码(注释是我添加的):
+
+```C#
+internal sealed class AClass {
+    public static void UsingLocalVariablesInTheCallbackCode(Int32 numToDo) {
+
+        // 一些局部变量
+        WaitCallback callback1 = null;
+
+        // 构造辅助类的实例
+        <>c__DisplayClass2 class1 = new <>c__DisplayClass2();
+
+        // 初始化辅助类的字段
+        class1.numToDo = numToDo;
+        class1.squares = new Int32[class1.numToDo];
+        class1.done = new AutoResetEvent(false);
+
+        // 在其他线程上执行一系列任务
+        for (Int32 n = 0; n < class1.squares.Length; n++) {
+            if (callback1 == null) {
+                // 新建的委托对象绑定到辅助对象及其匿名实例方法
+                callback1 = new WaitCallback(
+                    class1.<UsingLocalVariablesInTheCallbackCode>b__0);
+            }
+
+            ThreadPool.QueueUserWorkItem(callback, n);
+        }
+
+        // 等待其他所有线程结束运行
+        class1.done.WaitOne();
+
+        // 显示结果
+        for (Int32 n = 0; n < class1.squares.Length; n++) 
+            Console.WriteLine("Index {0}, Square={1}", n, class1.squares[n]);
+    }
+
+    // 为避免冲突，辅助类被指定了一个奇怪的名称，
+    // 而且被指定为私有的，禁止从 AClass 类外部访问
+    [CompilerGenerated]
+    private sealed class <>c__DisplayClass2 : Object {
+
+        // 回调代码要使用的每个局部变量都有一个对应的公共字段
+        public Int32[] squares;
+        public Int32 numToDo;
+        public AutoResetEvent done;
+
+        // 公共无参构造器
+        public <>c__DisplayClass2 { }
+
+        // 包含回调代码的公共实例方法
+        public void <UsingLocalVariablesInTheCallbackCode>b__0(Object obj) {
+            Int32 num = (Int32) obj;
+            squares[num] = num * num;
+            if (Interlocked.Decrement(ref numToDo) == 0)
+                done.Set();
+        }
+    }
+}
+```
+
+> 重要提示 毫无疑问，C# 的 lambda 表达式功能很容易被程序员滥用。我开始使用 lambda 表达式时，绝对是花了一些时间来熟悉它的。毕竟，你在一个方法中写的代码实际不在这个方法中。除了有违直觉，还使调试和单步执行变得比较有挑战性。但事实上，Visual Studio 调试器还是非常不错的。我对自己源代码中的 lambda 表达式进行单步测试时，它处理得相当好。
+
+> 我为自己设定了一个规则：如果需要在回到方法中包含 3 行以上的代码，就不使用 lambda 表达式。相反，我会手动写一个方法，并为其分配自己的名称。但如果使用得当，匿名方法确实能显著提高开发人员的效率和代码的可维护性。在以下代码中，使用 lambda 表达式感觉非常自然。没有它们，这样的代码会很难写、读和维护。
+
+```C#
+// 创建并初始化一个 String 数组
+String[] names = { "Jeff", "Kristin", "Aidan", "Grant" };
+
+// 只获取含有小写字母 'a' 的名字
+Char charToFind = 'a';
+names = Array.FindAll(names, name => name.IndexOf(charToFind) >= 0);
+
+// 将每个字符串的字符转换为大写
+names = Array.ConvertAll(names, name => name.ToUpper());
+
+// 显示结果
+Array.ForEach(names, Console.WriteLine);
+```
+
+## <a name="17_8">17.8 委托和反射</a>
+
+本章到目前为止，使用委托都要求开发人员事先知道回调方法的原型。例如，假如 `fb` 是引用了一个 `Feedback` 委托的变量(参见本章 17.1 节的示例程序)，那么为了调用这个委托，代码应该像下面这样写：
+
+`fb(item);      // item 被定义 Int32`
+
+可以看出，编码时必须知道回调方法需要多少个参数，以及参数的具体类型。还好，开发人员几乎总是知道这些信息，所以像前面那样写代码是没有问题的。
+
