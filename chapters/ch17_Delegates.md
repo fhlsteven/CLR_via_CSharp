@@ -836,3 +836,133 @@ Array.ForEach(names, Console.WriteLine);
 
 可以看出，编码时必须知道回调方法需要多少个参数，以及参数的具体类型。还好，开发人员几乎总是知道这些信息，所以像前面那样写代码是没有问题的。
 
+不过在个别情况下，这些信息在编译时并不知道。第 11 章“事件”讨论 `EventSet` 类型时曾展示了一个例子。这个例子用字典来维护一组不同的委托类型。在运行时，为了引发事件，要在字典中查找并调用一个委托。但编译时不可能准确地知道要调用哪个委托，哪些参数必须传给委托的回调方法。
+
+幸好 `System.Delegate.MethodInfo` 提供了一个 `CreateDelegate` 方法，允许在编译时不知道委托的所有必要信息的前提下创建委托。下面是 `MethodInfo` 为该方法定义的重载：
+
+```C#
+public abstract class MethodInfo : MethodBase {
+    // 构造包装了一个静态方法的委托
+    public virtual Delegate CreateDelegate(Type delegateType);
+
+    // 构造包装了一个实例方法的委托： target 引用 “this” 实参
+    public virtual Delegate CreateDelegate(Type delegateType, Object target);
+}
+```
+
+创建好委托后，用 `Delegate` 的 `DynamicInvoke` 方法调用它，如下所示：
+
+```C#
+public abstract class Delegate {
+    // 调用委托并传递参数
+    public Object DynamicInvoke(params Object[] args);
+}
+```
+
+使用反射 API(参见第 23 章 “程序集加载和反射”)，首先必须获取引用了回调方法的一个 `MethodInfo`对象。然后，调用`CreateDelegate`方法来构造由第一个参数`delegateType`所标识的`Delegate`派生类型的对象。如果委托包装了实例方法，还要向`CreateDelegate`传递一个`target`参数，指定作为`this`参数传给实例方法的对象。
+
+`System.Delegate`的`DynamicInvoke`方法允许调用委托对象的回调方法，传递一组在运行时确定的参数。调用 `DynamicInvoke`时，它会在内部保证传递的参数与回调方法期望的参数兼容。如果兼容，就调用回调方法：否则抛出`ArgumentException`异常。`DynamicInvoke`返回回调方法所返回的对象。
+
+以下代码演示了如何使用`CreateDelegate`方法和`DynamicInvoke`方法：
+
+```C#
+
+using System;
+using System.Reflection;
+using System.IO;
+using System.Linq;
+
+// 下面是一些不同的委托定义
+internal delegate Object TwoInt32s(Int32 n1, Int32 n2);
+internal delegate Object OneString(String s1);
+
+public static class DelegateReflection {
+    public static void Main(String[] args) {
+        if (args.Length < 2) {
+            String usage =
+                @"Usage:" +
+                "{0} delType methodName [Arg1] [Arg2]" +
+                "{0}    where delType must be TwoInt32s or OneString" +
+                "{0}    if delType is TwoInt32s, methodName must be Add or Subtracr" +
+                "{0}    if delType is OneString, methodName must be NumChars or Reverse" +
+                "{0}" +
+                "{0}Examples:" +
+                "{0}    {1} TwoInt32s Add 123 321" +
+                "{0}    {1} TwoInt32s Subtract 123 321" +
+                "{0}    {1} OneString NumChars \"Hello there\"" +
+                "{0}    {1} OneString Reverse \"Hello there\"";
+            Console.WriteLine(usage, Environment.NewLine);
+            return;
+        }
+
+        // 将 delType 实参转换为委托类型
+        Type delType = Type.GetType(args[0]);
+        if (delType == null) {
+            Console.WriteLine("Invalid delType argument: " + args[0]);
+            return;
+        }
+
+        Delegate d;
+        try {
+            // 将 Arg1 实参转换为方法
+            MethodInfo mi = typeof(DelegateReflection).GetTypeInfo().GetDeclaredMethod(args[1]);
+
+            // 创建包装了静态方法的委托对象
+            d = mi.CreateDelegate(delType);
+        }
+        catch (ArgumentException) {
+            Console.WriteLine("Invalid methodName argument: " + args[1]);
+            return;
+        }
+
+        // 创建一个数组，其中只包含要通过委托对象传给方法的参数
+        Object[] callbackArgs = new Object[args.Length - 2];
+
+        if (d.GetType() == typeof(TwoInt32s)) {
+            try {
+                // 将 String 类型的参数转换为 Int32 类型的参数
+                for (Int32 a = 0; a < args.Length; a++)
+                    callbackArgs[a - 2] = Int32.Parse(args[a]);
+            }
+            catch (FormatException) {
+                Console.WriteLine("Parameters must be integers.");
+                return;
+            }
+        }
+
+        if (d.GetType() == typeof(OneString)) {
+            // 只复制 String 参数
+            Array.Copy(args, 2, callbackArgs, 0, callbackArgs.Length);
+        }
+
+        try {
+            // 调用委托并显示结果
+            Object result = d.DynamicInvoke(callbackArgs);
+            Console.WriteLine("Result = " + result);
+        }
+        catch (TargetParameterCountException) {
+            Console.WriteLine("Incorrect number of parameters specified.");
+        }
+    }
+
+    // 这个回调方法获取 2 个 Int32 参数
+    private static Object Add(Int32 n1, Int32 n2) {
+        return n1 + n2;
+    }
+
+    // 这个回调方法获取 2 个 Int32 参数
+    private static Object Subtract(Int32 n1, Int32 n2) {
+        return n1 - n2;
+    }
+
+    // 这个回调方法获取 1 个 String 参数
+    private static Object NumChars(String s1) {
+        return s1.Length;
+    }
+
+    // 这个回调方法获取 1 个 String 参数
+    private static Object Reverse(String s1) {
+        return new String(s1.Reverse().ToArray());
+    }
+}
+```
