@@ -574,3 +574,4 @@ Program types can NOT write checks.
 
 ## <a name="18_6">18.6 检测定制特性时不创建从 Attribute 派生的对象</a>
 
+本节将讨论如何利用另一种技术检测应用于元数据记录项的特性。在某些安全性要求严格的场合，这个技术能保证不执行从 `Attribute` 的 `GetCustomAttribute` 或者 `GetCustomAttributes` 方法时，这些方法会在内部调用特性类的构造器，而且可能调用属性的 set 访问器
