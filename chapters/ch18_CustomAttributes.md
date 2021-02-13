@@ -574,4 +574,159 @@ Program types can NOT write checks.
 
 ## <a name="18_6">18.6 检测定制特性时不创建从 Attribute 派生的对象</a>
 
-本节将讨论如何利用另一种技术检测应用于元数据记录项的特性。在某些安全性要求严格的场合，这个技术能保证不执行从 `Attribute` 的 `GetCustomAttribute` 或者 `GetCustomAttributes` 方法时，这些方法会在内部调用特性类的构造器，而且可能调用属性的 set 访问器
+本节将讨论如何利用另一种技术检测应用于元数据记录项的特性。在某些安全性要求严格的场合，这个技术能保证不执行从 `Attribute` 的 `GetCustomAttribute` 或者 `GetCustomAttributes` 方法时，这些方法会在内部调用特性类的构造器，而且可能调用属性的 `set` 访问器。此外，首次访问类型会造成 CLR 调用类型的类型构造器(如果有的话)。在构造器、`set`访问器方法以及类型构造器中，可能包含每次查找特性都要执行的代码。这就相当于允许未知代码在 `AppDomain` 中运行，所以存在安全隐患。
+
+可用 `System.Reflection.CustomAttributeData` 类在查找特性的同时禁止执行特性类中的代码。该类定义了静态方法 `GetCustomAttributes` 来获取与目标关联的特性。方法有 4 个重载版本，分别获取一个 `Assembly`，`Module`，`ParameterInfo` 和 `MemberInfo`。 该类在 `System.Reflection` 命名空间(将在第 23 章“程序集加载和反射” 讨论)中定义。通过，先用 `Assembly` 的静态方法 `ReflectionOnlyLoad`(也在第 23 章讨论)加载程序集，再用`CustomAttributeData`类分析这个程序集的元数据中的特性。简单地说，`ReflectionOnlyLoad` 以特殊方式加载程序集，期间会禁止 CLR 执行程序集中的任何代码；其中包括类型构造器。
+
+`CustomAttributeData` 的 `GetCustomAttributes` 方法是一个工厂(factory)方法。也就是说，调用它会返回一个`IList<CustomAttributeData>` 类型的对象，其中包含了由 `CustomAttributeData`对象构成的集合。集合中的每个元素都是应用于指定目标的一个定制特性。可查询每个`CustomAttributeData` 对象的只读属性，判断特性对象如何构造和初始化。具体地说，`Constructor` 属性指出构造器方法将如何调用。`ConstructorArguments` 属性以一个 `IList<CustomAttributeTypedArgument>` 实例的形式返回将传给这个构造器的实参。而`NamedArguments`属性以一个 `IList<CustomAttributeNamedArgument>` 实例的形式，返回将设置的字段/属性。注意，之所以说“将”，是因为不会实际地调用构造器和 `set` 访问器方法。禁止执行特性类的任何方法增强了安全性。
+
+下面是之前例子的修改版本，它利用 `CustomAttributeData` 类来安全地获取应用于各个目标的特性：
+
+```C#
+using System;
+using System.Diagnostics;
+using System.Reflection;
+using System.Collections.Generic;
+using System.Linq;
+
+[assembly: CLSCompliant(true)]
+
+[Serializable]
+[DefaultMemberAttribute("Main")]
+[DebuggerDisplayAttribute("Richter", Name = "Jeff" , Target = typeof(Program))]
+public sealed class Program {
+    [Conditional("Debug")]
+    [Conditional("Release")]
+    public void DoSomething() { }
+
+    public Program() { 
+    }
+
+    [CLSCompliant(true)]
+    [STAThread]
+    public static void Main() {
+        // 显示应用于这个类型的特性类
+        ShowAttributes(typeof(Program));
+
+        // 获取与类型关联的方法集
+        var members = from m in typeof(Program).GetTypeInfo().DeclaredMembers.OfType<MethodBase>()
+                      where m.IsPublic
+                      select m;
+
+        foreach (MemberInfo member in members) {
+            // 显示应用于这个成员的特性集
+            ShowAttributes(member);
+        }
+    }
+
+    private static void ShowAttributes(MemberInfo attributeTarget)  {
+        IList<CustomAttributeData> attributes = CustomAttributeData.GetCustomAttributes(attributeTarget);
+
+        Console.WriteLine("Attributes applied to {0}: {1}", attributeTarget.Name, (attributes.Count ==0 ? "None" : String.Empty));
+
+        foreach (CustomAttributeData attribute in attributes) {
+            // 显示所应用的每个特性的类型
+            Type t = attribute.Constructor.DeclaringType;
+            Console.WriteLine(" {0}", t.ToString());
+            Console.WriteLine("    Constructor called={0}", attribute.Constructor);
+
+            IList<CustomAttributeTypedArgument> posArgs = attribute.ConstructorArguments;
+            Console.WriteLine("    Positonal arguments passed to constructor:" + ((posArgs.Count == 0) ? " None" : String.Empty));
+            foreach (CustomAttributeTypedArgument pa in posArgs) {
+                Console.WriteLine("    Type={0}, Value={1}", pa.ArgumentType, pa.Value);
+            }
+
+            IList<CustomAttributeNamedArgument> namedArgs = attribute.NamedArguments;
+            Console.WriteLine("    Named arguments set after construction:" + ((namedArgs.Count == 0) ? " None" : String.Empty));
+            foreach (CustomAttributeNamedArgument na in namedArgs) {
+                Console.WriteLine("    Name={0}, Type={1}, Value={2}", na.MemberInfo.Name, na.TypedValue.ArgumentType, na.TypedValue.Value);
+            }
+            Console.WriteLine();
+        }
+        Console.WriteLine();
+    }
+}
+```
+
+编译并运行上述应用程序，将获得以下输出：
+
+```cmd
+Attributes applied to Program: 
+ System.SerializableAttribute
+    Constructor called=Void .ctor()
+    Positonal arguments passed to constructor: None
+    Named arguments set after construction: None
+
+ System.Reflection.DefaultMemberAttribute
+    Constructor called=Void .ctor(System.String)
+    Positonal arguments passed to constructor:
+    Type=System.String, Value=Main
+    Named arguments set after construction: None
+
+ System.Diagnostics.DebuggerDisplayAttribute
+    Constructor called=Void .ctor(System.String)
+    Positonal arguments passed to constructor:
+    Type=System.String, Value=Richter
+    Named arguments set after construction:
+    Name=Name, Type=System.String, Value=Jeff
+    Name=Target, Type=System.Type, Value=Program
+
+
+Attributes applied to DoSomething: 
+ System.Diagnostics.ConditionalAttribute
+    Constructor called=Void .ctor(System.String)
+    Positonal arguments passed to constructor:
+    Type=System.String, Value=Debug
+    Named arguments set after construction: None
+
+ System.Diagnostics.ConditionalAttribute
+    Constructor called=Void .ctor(System.String)
+    Positonal arguments passed to constructor:
+    Type=System.String, Value=Release
+    Named arguments set after construction: None
+
+
+Attributes applied to Main: 
+ System.CLSCompliantAttribute
+    Constructor called=Void .ctor(Boolean)
+    Positonal arguments passed to constructor:
+    Type=System.Boolean, Value=True
+    Named arguments set after construction: None
+
+ System.STAThreadAttribute
+    Constructor called=Void .ctor()
+    Positonal arguments passed to constructor: None
+    Named arguments set after construction: None
+
+
+Attributes applied to .ctor: None
+```
+
+## <a name="18_7">18.7 条件特性类</a>
+
+定义、应用和反射特性能带来许多便利，所以开发人员越来越频繁地使用这些技术。特性简化了对代码的注释，还能实现丰富的功能。进来，开发人员越来越喜欢在设计和调试期间利用特性来辅助开发。例如，Microsoft Visual Studio 代码分析工具(FxCopCmd.exe)提供了一个 `System.Diagnostics.CodeAnalysis.SuppressMessageAttribute` ，可将它应用于类型和成员，从而阻止报告特定的静态分析工具规则冲突(rule violation)。该特性仅对代码分析工具有用；程序平常运行时不会关注它。没有使用代码分析工具时，将 `SuppressMessage` 特性留在元数据中会使元数据无谓地膨胀，这会使文件变得更大，增大进程的工作集，损害应用程序的性能。假如有一种简单的方式，使编译器只有在使用代码分析工具时才生成 `SupperessMessage` 特性，结果会好很多。幸好，利用条件特性类真的能做到这一点。
+
+应用了 `System.Diagnostics.ConditionalAttribute` 的特性类称为**条件特性类**。下面是一个例子：
+
+```C#
+// #define TEST
+#define VERIFY
+
+using System;
+using System.Diagnostics;
+
+[Conditional("TEST")]
+[Conditional("VERIFY")]
+public sealed class CondAttribute : Attribute {
+}
+
+[Cond]
+public sealed class Program {
+    public static void Main() {
+        Console.WriteLine("ConAttribute is {0}applied to Program type.",
+            Attribute.IsDefined(typeof(Program), typeof(CondAttribute)) ? "" : "not");
+    }
+}
+```
+
+编译器如果发现向目标元素应用了 `CondAttribute` 的实例，那么当含有目标元素的代码编译时，只有在定义 `TEST` 或 `VERIFY` 符号的前提下，编译器才会在元数据中生成特性信息。不过，特性类的定义元数据和实现仍存在于程序集中。
