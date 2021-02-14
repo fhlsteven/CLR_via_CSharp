@@ -148,4 +148,182 @@ private static void Operators() {
 
 下面总结了 C# 如何解析操作符。
 
-* 
+* **一元操作符(`+`，`++`，`-`，`--`，`!`，`~`)**
+  操作数是 `null`，结果就是 `null`。
+
+* **二元操作符(`+`，`-`，`*`，`/`，`%`，`&`，`|`，`^`，`<<`，`>>`))**
+  两个操作数任何一个是 `null`，结果就是 `null`。但有一个例外，它发生在将`&`和`|`操作符应用于 `Boolean?`操作数的时候。在这种情况下，两个操作符的行为和 SQL 的三值逻辑一样。对于这两个操作符，如果两个操作数都不是`null`，那么操作符和平常一样工作。如果连个操作数都是`null`，结果就是`null`。特殊行为仅在其中之一为`null`时发生。下表列出了针对操作数的`true`，`false` 和 `null`三个值的各种组合，两个操作符的求值情况。
+
+  |操作数 1 →  <br/> 操作数2 ↑ |true|false|null|
+  |:---:|:---:|:---:|:---:|
+  |true|& = true <br/>\| =ture | & = false <br/> \| = true| & = null <br/> \| = true|
+  |false|& = false <br/> \| = true| & = false <br/> \| = false| & = false <br/> \| = null|
+  |null| & = null <br/> \| = true|& = false <br/>\| = null| & = null <br/>\| = null|
+
+* **相等性操作符(`==`，`!=`)**
+  两个操作数都是 `null`，两者相等。一个操作数是 `null`，两者不相等。两个操作数都不是 `null`，就比较值来判断是否相等。
+
+* **关系操作符(`<`，`>`，`<=`，`>=`)**
+  两个操作数任何一个是 `null`，结果就是 `false`。两个操作数都不是 `null`，就比较值。
+
+注意，操作可空实例会生成大量代码。例如以下方法：
+
+```C#
+private static Int32? NullableCodeSize(Int32? a, Int32? b) {
+    return (a + b);
+}
+```
+
+编译这个方法会生成相当多的 IL 代码，而且操作可空类型的速度慢于非可空类型。编译器生成的 IL 代码等价于以下 C# 代码：
+
+```C#
+private static Nullable<Int32> NullableCodeSize(Nullable<Int32> a, Nullable<Int32> b) {
+    Nullable<Int32> nullable1 = a;
+    Nullable<Int32> nullable2 = a;
+    if (!(nullable1.HasValue & nullable2.HasValue)) {
+        return new Nullable<Int32>();
+    }
+    return new Nullable><Int32> (nullable1.GetvalueOrDefault() + nullable2.GetValueOrDefault());
+}
+```
+
+最后要说明的是，可定义自己的值类型来重载上述各种操作符符。8.4 节 “操作符重载方法”已对此进行了讨论。使用自己的值类型的可空实例，编译器能正确识别它并调用你重载的操作符(方法)。以下 `Point` 值类型重载了 `==` 和 `!=` 操作符：
+
+```C#
+using System;
+
+internal struct Point {
+    private Int32 m_x, m_y;
+    public Point(Int32 x, Int32 y) { m_x = x; m_y = y; }
+
+    public static Boolean operator == (Point p1, Point p2) {
+        return (p1.m_x == p2.m_x) && (p1.m_y == p2.m_y);
+    }
+
+    public static Boolean operator != (Point p1, Point p2) {
+        return !(p1 == p2);
+    }
+}
+```
+
+然后可以使用 `Point` 类型的可空实例，编译器能自动调用你重载的操作符(方法):
+
+```C#
+Are points equal? False
+Are points not equal? True
+```
+
+## <a name="19_2">19.2 C#的空接合操作符</a>
+
+C# 提供了一个“空接合操作符”(null-coalescing operator)，即`??`操作符，它要获取两个操作数。假如左边的操作数不为 `null`，就返回这个操作数的值。如果左边的操作数为 `null`，就返回右边的操作数的值。利用空接合操作符，可以方便地设置变量的默认值。
+
+空接合操作符的一个好处在于，它既能用于引用类型，也能用于可空值类型。以下代码演示了如何使用 `??` 操作符：
+
+```C#
+private static void NullCoalescingOperator() {
+    Int32? b = null;
+
+    // 下面这行等价于：
+    // x = (b.HasValue) ? b.Value : 123
+    Int32 x = b ?? 123;
+    Console.WriteLine(x);           // "123"
+
+    // 下面这行等价于：
+    // String temp = GetFilename();
+    // filename = (temp != null) ? temp : "Untitled";
+    String filename = GetFilename() ?? "Untitled";
+}
+```
+
+有人争辩说 `??` 操作符不过是 `?:`操作符的“语法糖”而已，所以C#编译器团队不应该将这个操作符添加到语言中。实际上，`??` 提供了重大的语法上的改进。第一个改进是`??`操作符能更好地支持表达式：
+
+`Func<String> f = () => SomeMthod() ?? "Untitled";`
+
+相比下一行代码，上述代码更容易阅读和理解。下面这行代码要求进行变量赋值，而且用一个语句还搞不定：
+
+```C#
+Func<String> f = () => { var temp = SomeMethod();
+    return temp != null ? temp : "Untitled"; };
+```
+
+第二个改进是 `??` 在复合情形中更好用。例如，下面这行代码：
+
+`String s = SomeMethod1() ?? SomeMethod2() ?? "Untitled";`
+
+它比下面这一堆代码更容易阅读和理解：
+
+```C#
+String s;
+var sm1 = SomeMethod1();
+if (sm1 != null ) s = sm1;
+else {
+    var sm2 = SomeMethod2();
+    if (sm2 != null ) s = sm2;
+    else s = "Untitled";
+}
+```
+
+## <a name="19_3">19.3 CLR 对可空值类型的特殊支持</a>
+
+CLR 内建对可空值类型的支持。这个特殊的支持是针对装箱、拆箱、调用 `GetType` 和调用接口方法提供的，它使可空类型能无缝地集成到 CLR 中，而且使它们具有更自然的行为，更符合大多数开发人员的预期。下面深入研究一下 CLR 对可空类型的特殊支持。
+
+### 19.3.1 可空值类型的装箱
+
+假定有一个逻辑设为 `null` 的 `Nullable<Int32>` 变量。将其传给期待一个 `Object` 的方法，就必须对其进行装箱，并将对已装箱`Nullable<Int32>` 的引用传给方法。但对表面上为 `null`的值进行装箱不符合直觉————即使`Nullable<Int32>`变量本身非 `null`，它只是在逻辑上包含了 `null`。为了解决这个问题，CLR 会在装箱可空变量时执行一些特殊代码，从表面上维持可空类型的“一等公民”地位。
+
+具体地说，当 CLR 对 `Nullable<T>` 实例进行装箱时，会检查它是否为 `null`。如果是，CLR 不装箱任何东西，直接返回 `null`。如果可空实例不为 `null`，CLR 从可空实例中取出值并进行装箱。也就是说，一个值为 5 的 `Nullable<Int32>` 会装箱成值为 5 的已装箱 `Int32`。以下代码演示了这一行为：
+
+```C#
+// 对 Nullable<T> 进行装箱，要么返回 null，要么返回一个已装箱的 T
+Int32？ n = null;
+Object o = n;       // o 为 null
+Console.WriteLine("o is null={0}", o == null);   // "True"
+
+n = 5;
+o = n;   // o 引用一个已装箱的 Int32
+Console.WriteLine("o's type={0}", o.GetType()); // "System.Int32"
+```
+
+### 19.3.2 可空值类型的拆箱
+
+CLR 允许将已装箱的值类型 `T` 拆箱为一个 `T` 或者 `Nullable<T>`。如果对已装箱类型的引用是 `null`，而且要把它拆箱为一个 `Nullable<T>`，那么 CLR 会将 `Nullable<T>`的值设为 `null`。以下代码演示了这个行为：
+
+```C#
+// 创建已装箱的 Int32
+Object o = 5;
+
+// 
+Int32? a = (Int32?) o;  // a = 5
+Int32 b = (Int32) o;    // b = 5
+
+// 创建初始化为 null 的一个引用
+o = null;
+
+// 把它“拆箱”为一个 Nullable<Int32> 和一个 Int32
+a = (Int32?) o;     // a = null
+b = (Int32) o;      // NullReferenceException
+```
+
+### 19.3.3 通过可空值类型调用 GetType
+
+在 `Nullable<T>` 对象上调用 `GetType`，CLR实际会“撒谎”说类型是 `T`，而不是 `Nullable<T>`。以下代码演示了这一行为：
+
+```C#
+Int32? x = 5;
+// 下面这行会显示 "System.Int32"，而非“System.Nullable<Int32>”
+Console.WriteLine(x.GetType());
+```
+
+### 19.3.4 通过可空值类型调用接口方法
+
+以下代码将 `Nullable<Int32>` 类型的变量 `n` 转型为接口类型 `IComparable<Int32>`。`Nullable<T>` 不像 `Int32` 那样实现了 `IComparable<Int32>` 接口，但 C# 编译器允许这样的代码通过编译，而且 CLR 的校验器也认为这样的代码可验证，从而允许使用更简洁的语法：
+
+```C#
+Int32? n = 5;
+Int32 result = ((IComparable) n).CompareTo(5);      // 能顺利编译和运行
+Console.WriteLine(result);                          // 0
+```
+
+假如 CLR 不提供这一特殊支持，要在可空值类型上调用接口方法，就必须写很繁琐的代码。首先要转型为已拆箱的值类型，然后才能转型为接口以出发调用：
+
+`Int32 result = ((IComparable) (Int32) n).CompareTo(5);  // 很繁琐`
