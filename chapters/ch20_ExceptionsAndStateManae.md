@@ -550,3 +550,160 @@ public static void TestException() {
 
 ![20_0_0](../resources/images/20_0_0.png)  
 
+## <a name="20_7">20.7 用可靠性换取开发效率</a>
+
+我从 1975 年开始写软件。首先是进行大量 BASIC 编程。随着我对硬件的兴趣日增，又转向汇编语言。随着时间的推移，我开始转向 C 语言，因为它允许我从更高的抽象层访问硬件，使编程变得更容易。我的资历是写操作系统代码和平台/库代码，所以我总是努力使自己的代码尽量小而快。应用程序写得再好，也不会强过它们赖以生存的操作系统和库吧?
+
+除了创建小而快的代码，我还总是关注错误恢复。分配内存时(使用 C++ 的 `new` 操作符或调用 `malloc`，`HeapAlloc`，`VirtualAlloc` 等)，我总是检查返回值，确保我请求的内存真的给了我。另外，如果内存请求失败，我总是提供一个备选的代码路径，确保剩余的程序状态不会受影响。而且让我的所有调用者都知道我失败了，使调用代码也能采取正确的补救措施。
+
+出于某些我不好解释的原因，为 .NET Framework 写代码时，我没有做到这种对细节的关注。“内存耗尽”总是可能发生的，但我几乎没看到过任何代码包含从 `OutOfMemoryException` 恢复的 `catch` 块。事实上，甚至有的开发人员告诉我 CLR 不让程序捕捉 `OutOfMemoryException`。我在此要郑重声明，绝对不是这样的；你可以捕捉这个异常。事实上，执行托管代码时，有太多的错误都可能发生，但我很少看到开发人员写代码尝试从这些潜在的错误中恢复。本节要指出其中的一些潜在的错误，并解释为什么可以合理地忽略它们。我还要指出忽略了这些错误之后，可能造成什么重大的问题，并推荐了有助于缓解这些问题的一些方式。
+
+面向对象编程极大提升了开发人员的开发效率。开发效率的提升有很大一部分来自可组合性(composability)，它使代码很容易编写、阅读和维护。例如下面这行代码：
+
+`Boolean f = "Jeff".Substring(1, 1).ToUpper().EndsWith("E");`
+
+但上述代码有一个很重要的前提：没有错误发生。而错误总是可能发生的。所以，我们需要一种方式处理错误。这正是异常处理构造<sup>①</sup>和机制的目的，我们不能像 Win32 和 COM 函数那样返回 `true/false` 或者一个 `HRESULT` 来指出成功/失败。
+
+> ① `try-catch-finally` 就是 C# 的异常处理 ”构造“。 ——译注
+
+除了代码的可组合性，开发效率的提升还来自编译器提供的各种好用的功能。例如，编译器能隐式地做下面这些事情。
+
+* 调用方法时插入可选参数。
+
+* 对值类型的实例进行装箱。
+
+* 构造/初始化参数数组。
+
+* 绑定到 `dynamic` 变量/表达式的成员。
+
+* 绑定到扩展方法。
+
+* 绑定/调用重载的操作符(方法)。
+
+* 构造委托对象。
+
+* 在调用泛型方法、声明局部变量和使用 lambda 表达式时推断类型。
+
+* 为 lambda 表达式和迭代器定义/构造闭包类<sup>①</sup>。
+
+> ① 闭包(closure)是由编译器生成的数据结构(一个 C# 类)，其中包含一个表达式以及对表达式进行求值所需的变量(C# 的公共字段)。变量允许在不改变表达式签名的前提下，将数据从表达式的一次调用传递到下一次调用。————译注
+
+* 定义/构造/初始化匿名类型及其实例。
+
+* 重写代码来支持 LINQ 查询表达式和表达式树。
+
+另外，CLR 本身也会提供大量辅助来进一步简化编程。例如，CLR 会隐式做下面这些事情。
+
+* 调用虚方法和接口方法。
+
+* 加载程序集并对方法进行 JIT 编译，可能抛出以下异常：`FileLoadException`，`BadImageFormatException`，`InvalidProgramException`，`FieldAccessException`，`MethodAccessException`，`MissingFieldException`，`MissingMethodException` 和 `VerificationException`。
+
+* 访问 `MarshalByRefObject` 派生类型的对象时穿越 AppDomain 边界(可能抛出 `AppDomainUnloadedException`)。
+
+* 穿越 AppDomain 边界时序列化和反序列化对象。
+
+* 调用 `Thread.Abort` 或 `AppDomain.Unload` 时造成线程抛出 `ThreadAbortException`。
+
+* 垃圾回收之后，在回收对象的内存之前调用 `Finalize` 方法。
+
+* 使用泛型类型时，在 Loader 堆中创建类型对象<sup>②</sup>。
+
+> ② 每个 AppDomain 都有一个自己的托管堆，这个托管堆内部又按照功能进行了不同的划分，其中最重要的就是 GC 堆和 Loader 堆，前者存储引用类型的实例，也就是会被垃圾回收机制”照顾“到的东西。而 Loader 堆负责存储类型的元数据，也就是所谓的“类型对象”。在每个“类型对象”的末尾，都含有一个“方法表”。详情参见 22.2 节和图 22-1。 ———— 译注
+
+* 调用类型的静态构造器<sup>③</sup>(可能抛出 `TypeInitializationException`)。
+
+> ③ 也称为类型构造器，详情参见 8.3 节 “类型构造器”。 ————译注
+
+* 抛出各种异常，包括 `OutOfMemoryException`，`DivideByZeroException`，`NullReferenceException`，`RuntimeWrappedException`，`TargetInvocationException`，`OverflowException`，`NotFiniteNumberException`，`ArrayTypeMismatchException`，`DataMisalignedException`，`IndexOutOfRangeException`，`InvalidCastException`，`RankException`，`SecurityException`等。
+
+另外，理所当然地，.NET Framework 配套提供了一个包罗万象的类库，其中有无数的类型，每个类型都封装了常用的、可重用的功能。可利用这些类型构建 Web 窗体应用程序、 Web 服务和富 GUI 应用程序，可以处理安全性、图像和语音识别等。所有这些代码都可能抛出代表某个地方出错的异常。另外，未来的版本可能引入从现有异常类型派生的新异常类型，而你的 `catch` 块能捕捉未来才会出现的异常类型。
+
+所有这一切————面向对象编程、编译器功能、CLR 功能以及庞大的类库 ——— 使 .NET Framework 成为颇具吸引力的软件开发平台<sup>①</sup>。但我的观点是，所有这些东西都会在代码中引入你没什么控制权的“错误点”(point of failure)。如果所有东西都正确无误地运行，那么一切都很好：可以方便地编写代码，写出来的代码也很容易阅读和维护。但一旦某样东西出了问题，就几乎不可能完全理解哪里出错和为什么出错。下面这个例子可以证明我的观点：
+
+```C#
+private static Object OneStatment(Stream stream, Char charToFind) {
+    return (charToFind + ": " + stream.GetType() + String.Empty + (strram.Position + 512M)).Where(c=>c == charToFind).ToArray();
+}
+```
+
+> ① 应该补充的是，Visual Studio 的编辑器、智能感知支持、代码段(code snippet)支持、模板、可扩展系统、调试系统以及其他多种工具也增大了平台对于开发人员的吸引力。但之所以把这些放在讨论主线以外，是因为它们对代码运行时的行为没有任影响。
+
+这个不太自然的方法只包含一个 C#语句，但该语句做了大量工作。下面是 C#编译器为这个方法生成的 IL 代码(一些行加粗并倾斜；由于一些隐式的操作，它们成了潜在的 “错误点”)：
+
+```C#
+.method private hidebysig static object OneStatement(
+ class [mscorlib]System.IO.Stream stream, char charToFind) cil managed {
+ .maxstack 4
+ .locals init (
+ [0] class Program/<>c__DisplayClass1 V_0,
+ [1] object[] V_1)
+ L_0000: newobj instance void Program/<>c__DisplayClass1::.ctor()
+ L_0005: stloc.0
+ L_0006: ldloc.0
+ L_0007: ldarg.1
+ L_0008: stfld char Program/<>c__DisplayClass1::charToFind
+ L_000d: ldc.i4.5
+ L_000e: newarr [mscorlib]System.Object
+ L_0013: stloc.1
+ L_0014: ldloc.1
+ L_0015: ldc.i4.0
+ L_0016: ldloc.0
+ L_0017: ldfld char Program/<>c__DisplayClass1::charToFind
+ L_001c: box [mscorlib]System.Char
+ L_0021: stelem.ref 
+ L_0022: ldloc.1
+ L_0023: ldc.i4.1
+ L_0024: ldstr ": "
+ L_0029: stelem.ref
+ L_002a: ldloc.1
+ L_002b: ldc.i4.2
+ L_002c: ldarg.0
+ L_002d: callvirt instance class [mscorlib]System.Type [mscorlib]System.Object::GetType()
+ L_0032: stelem.ref
+ L_0033: ldloc.1
+ L_0034: ldc.i4.3
+ L_0035: ldsfld string [mscorlib]System.String::Empty
+ L_003a: stelem.ref
+ L_003b: ldloc.1
+ L_003c: ldc.i4.4
+ L_003d: ldc.i4 0x200
+ L_0042: newobj instance void [mscorlib]System.Decimal::.ctor(int32)
+ L_0047: ldarg.0
+ L_0048: callvirt instance int64 [mscorlib]System.IO.Stream::get_Position()
+ L_004d: call valuetype [mscorlib]System.Decimal
+         [mscorlib]System.Decimal::op_Implicit(int64)
+ L_0052: call valuetype [mscorlib]System.Decimal [mscorlib]System.Decimal::op_Addition
+         (valuetype [mscorlib]System.Decimal, valuetype [mscorlib]System.Decimal)
+ L_0057: box [mscorlib]System.Decimal
+ L_005c: stelem.ref
+ L_005d: ldloc.1
+ L_005e: call string [mscorlib]System.String::Concat(object[])
+ L_0063: ldloc.0
+ L_0064: ldftn instance bool Program/<>c__DisplayClass1::<OneStatement>b__0(char)
+ L_006a: newobj instance
+         void [mscorlib]System.Func`2<char, bool>::.ctor(object, native int)
+ L_006f: call class [mscorlib]System.Collections.Generic.IEnumerable`1<!!0>
+         [System.Core]System.Linq.Enumerable::Where<char>(
+         class [mscorlib]System.Collections.Generic.IEnumerable`1<!!0>,
+         class [mscorlib]System.Func`2<!!0, bool>)
+ L_0074: call !!0[] [System.Core]System.Linq.Enumerable::ToArray<char>
+         (class [mscorlib]System.Collections.Generic.IEnumerable`1<!!0>)
+ L_0079: ret
+} 
+```
+
+由此可见，构造`<>c__DisplayClass1`类(编译器生成的类型)、`Object[]`数组和`Func`委托，以及对`char`和`Decimal`进行装箱时，可能抛出一个`OutOfMemoryException`。调用`Concat`，`Where` 和 `ToArray`时，也会在内部分配内存。构造 `Decimal` 实例时，可能造成它的类型构造器被调用，并抛出一个 `TypeInitializationException`<sup>①</sup>。还存在对 `Decimal` 的 `op_Implicit` 操作符和 `op_Addition` 操作符方法的隐式调用，这些方法可能抛出一个 `OverflowException`。
+
+> ① 顺便说一句，`System.Char`，`System.String`，`System.Type` 和 `System.IO.Stream` 都定义了类构造器，它们全部都有可能造成在这个应用程序的某个位置抛出一个 `TypeInitializationException`
+
+`Stream` 的 `Position` 属性比较有趣。首先，它是一个虚属性，所以我的 `OneStatement` 方法无法知道实际执行的代码，可能抛出任何异常。其次，`Stream` 从 `MarshalByRefObject` 派生，所以 `stream` 实参可能引用一个代理对象，后者又引用另一个 AppDomain 中的对象。而另一个 AppDomain 可能已经卸载，造成一个 `AppDomainUnloadedException`。
+
+当然，调用的所有方法都是我个人无法控制的，它们都由 Microsoft 创建。Microsoft 将来还可能更改它们的实现，抛出我写 `OneStatement` 方法时不可能预料到的新异常类型。所以，我怎么可能写这个 `OneStatement` 方法来获得完全的“健壮性”来防范所有可能的错误呢？顺便说一句，反过来也存在问题：`catch` 块可捕捉指定异常类型的派生类型，所以是在为一种不同的错误执行恢复代码。
+
+对所有可能的错误有了一个基本认识之后，就能理解为何不去追求完全健壮和可靠的代码了：因为不切实际(更极端的说法是根本不可能)。不去追求完全的健壮性和可靠性，另一个原因是错误不经常发生。由于错误(比如`OutOfMemoryException`)极其罕见，所以开发人员决定不去追求完全可靠的代码，牺牲一定的可靠性来换取程序员开发效率的提升。
+
+异常的好处在于，未处理的异常会造成应用程序终止。之所以是好事，是因为可在测试期间提早发现问题。利用由未处理异常提供的信息(错误消息和堆栈跟踪)，通常足以完成对代码的修正。当然，许多公司不希望应用程序在测试和部署之后还发生意外终止的情况，所以会插入代码来捕捉 `System.Exception`，也就是所有异常类型的基类。但如果捕捉 `System.Exception` 并允许应用程序继续运行，一个很大的问题是状态可能遭受破坏。
+
+本章早些时候展示了一个 `Account` 类，它定义了一个 `Transfer` 方法，用于将钱从一个账户转移到另一个。这个 `Transfer` 方法调用时，如果成功将钱从 `from` 账户扣除，但在将钱添加到 `to` 账户之前抛出异常，那么会发生什么？如果调用代码(调用这个方法的代码)捕捉 `System.Exception` 并继续进行，应用程序的状态的破坏：`from` 和 `to` 账户的钱都会错误地变少。由于涉及到金钱，所以这种对状态的破坏不能被视为简单 bug，而应被看成是一个安全性 bug。应用程序继续进行，会尝试对大量账户执行更多的转账操作，造成状态破坏大量蔓延。
+
+一些人会说，`Transfer` 方法本身应该捕捉 `System.Exception` 并将钱还给 `from` 账户。如果 `Transfer` 方法很简单，这个方案确实可行。但如果 `Transfer` 方法还要确实可行。但如果 `Transfer` 方法还要生成关于取钱的审计记录，或者其他线程要同时操作同一个账户，那么撤销(undo)操作本身就可能失败，造成抛出其他异常。现在，状态破坏将变得更糟而非更好。
