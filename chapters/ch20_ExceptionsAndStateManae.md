@@ -707,3 +707,90 @@ private static Object OneStatment(Stream stream, Char charToFind) {
 本章早些时候展示了一个 `Account` 类，它定义了一个 `Transfer` 方法，用于将钱从一个账户转移到另一个。这个 `Transfer` 方法调用时，如果成功将钱从 `from` 账户扣除，但在将钱添加到 `to` 账户之前抛出异常，那么会发生什么？如果调用代码(调用这个方法的代码)捕捉 `System.Exception` 并继续进行，应用程序的状态的破坏：`from` 和 `to` 账户的钱都会错误地变少。由于涉及到金钱，所以这种对状态的破坏不能被视为简单 bug，而应被看成是一个安全性 bug。应用程序继续进行，会尝试对大量账户执行更多的转账操作，造成状态破坏大量蔓延。
 
 一些人会说，`Transfer` 方法本身应该捕捉 `System.Exception` 并将钱还给 `from` 账户。如果 `Transfer` 方法很简单，这个方案确实可行。但如果 `Transfer` 方法还要确实可行。但如果 `Transfer` 方法还要生成关于取钱的审计记录，或者其他线程要同时操作同一个账户，那么撤销(undo)操作本身就可能失败，造成抛出其他异常。现在，状态破坏将变得更糟而非更好。
+
+> 注意 有人或许会说，知道哪里出错，比知道出了什么错更有用。例如，更有用的是知道从一个账户转账失败，而不是知道 `Transfer` 由于 `SecurityException` 或 `OutOfMemoryException` 而失败。事实上， Win32 错误模型就是这么设计的，方法是返回 `true/false` 来指明成功/失败，使你知道哪个方法失败。然后，如果程序关心失败的原因，可调用 Win32 函数 `GetLastError`。 `System.Exception` 确实有一个`Source`属性可以告诉你失败的方法。但这个属性是一个你必须进行解析的 `String`，而且假如两个方法在内部调用同一个方法，那么单凭 `Source` 属性是看不出哪个方法失败的。相反，必须解析从 `Exception` 的 `StackTrace` 属性返回的 `String` 来获取这个信息。这实在是太难了，我从未见过任何人真的写代码这样做。
+
+为了缓解对状态的破坏，可以做下面几件事情。
+
+* 执行 `catch` 或 `finally` 块中的代码时，CLR 不允许线程终止。所以，可以像下面这样使 `Transfer` 方法变得更健壮：
+
+```C#
+public static void Transfer(Account from, Account to, Decimal amount) {
+    try {  /* 这里什么都不做 */ }
+    finally {
+        from -= amount;
+        // 现在，这里不可能因为 Thread.Abort / AppDomain.Unload 而发生线程终止
+        to += amount;
+    }
+}
+```
+
+但绝对不建议将所有代码都放到 `finally` 块中！这个技术只适合修改极其敏感的状态。
+
+* 可以用 `System.Diagnostics.Contrancts.Contract` 类向方法应用代码协定。通过代码协定，在用实参和其他变量对状态进行修改之前，可以先对这些实参/变量进行验证。如果实参/变量遵守协定，状态被破坏的可能性将大幅降低(但不能完全消除)。如果不遵守协定，那么异常会在任何状态被修改之前抛出。本章稍后将讨论代码协定。
+
+* 可以使用约束执行区域(Constrained Execution Region，CER)，它能消除 CLR 的某些不确定性。例如，可让 CLR 在进入 `try` 块之前加载与这个 `try` 块关联的任何 `catch` 和 `finally` 块需要的程序集。此外，CLR 会编译 `catch` 和 `finally` 块中的所有代码，包括从这些块中调用的所有方法。这样在尝试执行 `catch` 块中的错误恢复代码或者 `finally` 块中的(资源)清理代码时，就可以消除众多潜在的异常(包括 `FileLoadException`，`BadImageFormatException`，`InvalidProgramException`，`FieldAccessException`，`MethodAccessException`，`MissingFieldException`，`MissingMethodException`)。它还降低了发生 `OutOfMemoryException` 和其他一些异常的机率。本章稍后会讨论 CER。
+
+* 取决于状态存在于何处，可利用事务(transaction)来确保状态要么都修改，要么都不修改。例如，如果数据在数据库中，事务能很好地工作。Windows 现在还支持事务式的注册表和文件操作(仅限 NTFS 卷)，所以也许能利用它。但是，.NET Framework 目前没有直接公开这个功能。必须 `P/Invoke`<sup>①</sup>本机代码才行。请参见 `System.Transactions.TransactionScope` 类了解细节。
+
+> 平台调用。 ——译注
+
+* 将自己的方法设计得更明确。例如，一般像下面这样使用 `Monitor`类来获取/释放线程同步锁：
+
+```C#
+public static class SomeType {
+    private static Object s_myLockObject = new Object();
+
+    public static void SomeMethod() {
+        Monitor.Enter(s_myLockObject);      // 如果抛出异常，是否获取了锁 ？
+                                            // 如果已经获取了锁，它就得不到释放！
+        try {
+            // 在这里执行线程安全的操作...
+        }
+        finally {
+            Monitor.Exit(s_myLockObject);
+        }
+    }
+    // ...
+}
+```
+
+由于存在前面展示的问题，所以这个重载的 `Monitor` 的 `Enter` 方法已经不再鼓励使用。建议下面这样重写以上代码：
+
+```C#
+public static class SomeType {
+    private static Object s_myLockObject = new Object();
+
+    public static void SomeMethod() {
+        Boolean lockTaken = false;      // 假定没有获取锁
+        try {
+            // 无论是否抛出异常，以下代码都能正常工作!
+            Monitor.Enter(s_myLockObject, ref lockTaken);
+
+            // 在这里执行线程安全的操作...
+        }
+        finally {
+            // 如果已获取锁，就释放它
+            if (lockTaken) Monitor.Exit(s_myLockObject);
+        }
+    }
+    // ...
+}
+```
+
+虽然以上代码使方法变得更明确，但在线程同步锁的情况下，现在的建议是根本不要随同异常处理使用它们。详情参见第 30 章“混合线程同步构造”。
+
+在你的代码中，如果确定状态已损坏到无法修复的程度，就应销毁所有损坏的状态，防止它造成更多的伤害。然后，重新启动应用程序，将状态初始化到良好状态，并寄希望于状态不再损坏。由于托管的状态泄露不到 AppDomain 的外部，所以为了销毁 AppDomain 中所有损坏的状态，可调用 `AppDomain` 的 `Unload` 方法来卸载整个 AppDomain，详情参见第 22 章 “CLR 寄宿和 AppDomain”。
+
+如果觉得状态过于糟糕，以至于整个进程都应该终止，那么应该调用 `Environment` 的静态 `FailFast`方法：
+
+```C#
+public static void FailFast(String message);
+public static void FailFast(String message, Exception exception);
+```
+
+这个方法在终止进程时，不会运行任何活动的 `try/finally` 块或者 `Finalize` 方法。之所以这样做，是因为在状态已损坏的前提下执行更多的代码，很容易使局面变得更坏。不过，`FailFast` 为从 `CriticalFinalizerObject` 派生的任何对象(参见第 21 章 “托管堆和垃圾回收”)提供了进行清理的机会，因为它们一般只是关闭本机资源；而即使 CLR 或者你的应用程序的状态发生损坏，Windows 状态也可能是好的。`FailFast`方法将消息字符串和可选的异常(通常是 `catch` 块中捕捉的异常)写入 Windows Application 事件日志，生成 Windows 错误报告，创建应用程序的内存转储(dump)，然后终止当前进程。
+
+> 重要提示 发生意料之外的异常时，Microsoft 的大多数 FCL 代码都不保证状态保持良好。如果你的代码捕捉从 FCL 代码那里“漏”过来的异常并继续使用 FCL 的对象，这些对象的行为有可能变得无法预测。令人难堪的是，现在越来越多的 FCL 对象在面对非预期的异常时不能更好地维护状态或者在状态无法恢复时调用`FailFast`。
+
+以上讨论主要是为了让你意识到 CLR 异常处理机制存在的一些问题。大多数应用程序都不能容忍状态受损而继续运行，因为这可能造成不正确的数据，设置可能造成安全漏洞。如果应用程序不方便终止(比如操作系统或数据库引擎)，托管代码就不是一个好的技术。尽管 Microsoft Exchange Server 有很大一部分是用托管代码写的，但它还是要用一个本机(native)数据库存储电子邮件。这个本机数据库称为 Extensible Storage Engine，它是随同 Windows 提供的，路径一般是 `C:\Windows\System32\EseNT.dll`。`````````````````
