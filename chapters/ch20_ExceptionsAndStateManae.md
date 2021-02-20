@@ -890,5 +890,155 @@ catch (Exception) {
 有时，调用方法时已预料到它可能抛出某些异常。由于能预料到这些异常，所以可以写一些代码，允许应用程序从异常中得体地恢复并继续运行。下面是一个伪代码的例子：
 
 ```C#
-
+public String CalculateSpreadsheetCell(Int32 row, Int32 column) {
+    String result;
+    try {
+        result = /* 计算电子表格单元格中的值 */
+    }
+    catch(DivideByZeroException) {  // 捕捉被零除错误
+        result = "Can't show value: Divide by zero";
+    }
+    catch (OverflowException) {     // 捕捉溢出错误 
+        result = "Can't show value: Too big";
+    }
+    return result;
+}
 ```
+
+上述伪代码计算电子表格的单元格中的内容，将代表值的字符串返回给调用者，使调用者能在应用程序的窗口中显示字符串。但单元格的内容可能是另外两个单元格相除的结果。如果作为分母的单元格包含 0， CLR 将抛出 `DivideByZeroException` 异常。在本例中，方法会捕捉这个具体的异常，返回并向用户显示一个特殊字符串。类似地，单元格的内容可能是另两个单元格相乘的结果。如果结果超出该单元格的取值范围，CLR 将抛出 `OverflowException` 异常。同样地，会返回并向用户显示一个特殊字符串。
+
+捕捉具体异常时，应充分掌握在什么时候会抛出异常，并知道从捕捉的异常类型派生出了哪些类型。不要捕捉并处理 `System.Exception`(除非你会重新抛出)，因为不可能搞清楚在 `try` 块中可能抛出的全部异常。例如，`try` 块还可能抛出`OutOfMemoryException` 和 `StackOverflowException` ，而这只是所有可能的异常中很普通的两个。
+
+### 20.8.4 发生不可恢复的异常时回滚部分完成的操作————维持状态
+
+通常，方法要调用其他几个方法来完成一个抽象操作，这些方法有的可能成功，有的可能失败。例如，将一组对象序列化成磁盘文件时，序列化好第 10 个对象后抛出了异常(可能因为磁盘已满，或者要序列化的下个对象没有应用`Serializable`定制特性)。在这种情况下，应该将这个异常“漏”给调用者处理，但磁盘文件的状态怎么办呢？文件包含一个部分序列化的对象图(object graph)<sup>①</sup>，所以它已经损坏。理想情况下，应用程序应回滚已部分完成的操作，将文件恢复为任何对象序列化之前的状态。以下代码演示了正确的实现方式：
+
+> ① object graph 是一个抽象的概念，代表对象系统在特定时间点的视图。另一个常用的术语 object diagram 则是指总体 object graph 的一个子集。 ———— 译注
+
+```C#
+public void SerializeObjectGraph(FileStream fs, IFormatter formatter, Object rootObj) {
+
+    // 保存文件的当前位置
+    Int64 beforeSerialization = fs.Position;
+
+    try {
+        // 尝试将对象图序列化到文件中
+        formatter.Serialize(fs, rootObj);
+    }
+    catch {   // 捕捉所有异常
+        // 任何事情出错，就将文件恢复到一个有效状态
+        fs.Position = beforeSerialization;
+
+        // 截断文件
+        fs.SetLength(fs.Position);
+
+        // 注意： 上述代码没有放到 finally 块中，因为只有在
+        // 序列化失败时才对流进行重置
+
+        // 重新抛出相同的异常，让调用者知道发生了什么
+        throw;
+    }
+}
+```
+
+为了正确回滚已部分完成的操作，代码应捕捉所有异常。是的，这里要捕捉所有异常，因为你不关心发生了什么错误，只关心如何将数据结构恢复为一致状态。捕捉并处理好异常后，不要把它“吞噬”(假装它没有发生)。相反，要让调用者知道发生了异常。为此，只需重新抛出相同的异常。事实上，C#和许多其他语言都简化了这项任务，只需像上述代码那样单独使用 C# 的 `throw` 关键字，不在 `throw` 后指定任何东西。
+
+注意，以上示例代码中的`catch` 块没有指定任何异常类型，因为要捕捉所有异常类型。此外，`catch` 块中的代码也不需要准确地知道抛出了什么类型的异常，只需知道有错误发生就可以了。幸好 C# 对这个模式进行了简化，我们不需要指定任何异常类型，而且 `throw` 语句可以重新抛出捕捉到的任何对象。
+
+### 20.8.5 隐藏实现细节来维系协定
+
+有时需要捕捉一个异常并重新抛出不同的异常。这样做唯一的原因是维系方法对的“协定”(conract)。另外，抛出的新异常类型应该是一个具体异常(不能是其他异常类型的基类)。假定 `PhoneBook` 类型定义了一个方法，它根据姓名来查找电话号码，如以下伪代码所示：
+
+```C#
+internal sealed class PhoneBook {
+    private String m_pathname;      // 地址薄文件的路径名
+
+    // 其他方法放在这里
+
+    public String GetPhoneNumber(String name) {
+        String phone;
+        FileStream fs;
+        try {
+            fs = new FileStream(m_pathname, FileMode.Open);
+            // 这里的代码从 fs 读取内容，直至找到匹配的 name
+            phone = /* 已找到的电话号码 */
+        }
+        catch (FileNotFoundException e) {
+            // 抛出一个不同的异常，将 name 包含到其中
+            // 并将原来的异常设为内部异常
+            throw new NameNotFindException(name, e);
+        }
+        catch (IOException e)  {
+            // 抛出一个不同的异常，将 name 包含到其中，
+            // 并将原来的异常设为内部异常
+            throw new NameNotFindException(name, e);
+        }
+        finally {
+            if (fs != null) fs.Close();
+        }
+        return phone;                
+    }
+}
+```
+
+地址薄数据从一个文件(而非网络连接或数据库)中获得。但 `PhoneBook` 类型的用户并不知道这一点，因为该实现细节将来是可能改变的。所以，文件由于任何原因未找到或者不能读取，调用者将看到一个 `FileNotFoundException` 或者 `IOException` 异常，但这两个异常都不是(调用者)预期的，因为“文件存在与否”以及“能否读取”不是方法的隐式协定的一部分，调用者根本猜不到<sup>①</sup>。所以，`GetPhoneNumber` 方法会捕捉这两种异常类型，并抛出一个新的`NameNotFoundException` 异常。
+
+> ① 猜不到 `PhoneBook` 类的 `GetPhoneNumber` 方法要从文件中读取数据。 ———— 译注
+
+使用这个技术时，只有充分掌握了抛出异常的原因，才应捕捉这些具体的异常。另外，还应知道哪些异常类型是从你捕捉的这个异常类型派生的。
+
+由于最终还是抛出了一个异常，所以调用者仍然顺利地知道了该方法不能完成任务，而 `NameNotFoundException` 类型为调用者提供了理解其中原因的一个抽象视图。将内部异常设为`FileNotFoundException` 或 `IOException` 是非常重要的一环，这样才能保证不丢失造成异常的正真原因。此外，知道造成异常的原因。此外，知道造成异常的原因，不仅对 `PhoneBook` 类型的开发人员有用，对使用 `PhoneBook` 类型的开发人员同样有用。
+
+> 重要提示 使用这个技术时，实际是在两个方面欺骗了调用者。首先，在实际发生的错误上欺骗了调用者。本例是文件未找到，而报告的是没有找到指定的姓名。其次，在错误发生的位置上欺骗了调用者。如果允许`FileNotFoundException` 异常在掉应该能栈中向上传递，它的`StackTrace` 属性显示错误在`FileStream` 的构造器发生。但由于现在是“吞噬”该异常并重新抛出新的`NameNotFoundException` 异常，所以堆栈跟踪会显示错误在 `catch` 块中发生，离异常实际发生的位置有好几行远。这会使调试变得困难。所以，这个技术务必慎用。
+
+假设 `PhoneBook` 类型的实现和前面稍有不同，它提供了公共属性 `PhoneBookPathname`，用户可通过它设置或获取存储了电话号码的那个文件的路径名。由于用户现在知道电话数据来自一个文件，所以应该修改 `GetPhoneNumber` 方法，使它不捕捉任何异常。相反，应该让抛出的所有异常都沿着方法的调用栈向上传递(而不是把它们“吞噬”了之后抛出一个新的)。注意，我改变的不是`GetPhoneNumber`方法的任何参数，而是`PhoneBook`类型之于用户的抽象。用户现在期待文件路径是`PhoneBook`的协定的一部分。
+
+有时，开发人员之所以捕捉一个异常并抛出一个新异常，目的是在异常中添加额外的数据或上下文。然而，如果这是你唯一的目的，那么只需捕捉希望的异常类型，在异常对象的 `Data`属性(一个键/值对的集合)中添加数据，然后重新抛出相同的异常对象：
+
+```C#
+private static void SomeMethod(String filename) {
+    try {
+        // 这里随便做什么...
+    }
+    catch (IOException e) {
+        // 将文件名添加到 IOException 对象中
+        e.Data.Add("Filename", filename);
+
+        throw;  // 重新抛出同一个异常对象，只是它现在包含额外的数据
+    }
+}
+```
+
+下面是这个技术的一个很好的应用：如果类型构造器抛出异常，而且该异常未在类型构造器方法中捕捉，CLR 就会在内部捕捉该异常，并改为抛出一个新的`TypeInitializationException`。这样做之所以有用，是因为 CLR 会在你的方法中生成代码来隐式调用类型构造器<sup>①</sup>。如果类型构造器抛出一个 `DivideByZeroException`，你的代码可能会尝试捕捉它并从中恢复，而你甚至不知道自己正在调用类型构造器。所以，CLR 将 `DivideByZeroException` 转换成一个 `TypeInitializationException`，使你清楚地知道异常是因为类型构造器失败而发生的；问题不出在你的代码。
+
+> ① 详情参见 8.3 节“类型构造器”。
+
+相反，下面是这个技术的一个不好的应用：通过反射调用方法时，CLR 内部捕捉方法抛出的任何异常，并把它转换成一个 `TargetInvocationException`。这是一个让人十分讨厌的设计，因为现在必须捕捉`TargetInvocationException`对象，并查看它的`InnerException`属性来辨别失败的正真的原因。事实上，使用反射时经常看到如下所示的代码：
+
+```C#
+private static void Reflection(Object o) {
+    try {
+        // 在这个对象上调用一个 DoSomething 方法
+        var mi = o.GetType().GetMethod("DoSomething");
+        mi.Invoke(o, null);   // DoSomething 方法可能抛出异常 
+    }
+    catch (System.Reflection.TargetInvocationException e) {
+        // CLR 将反射生成的异常转换成 TargetInvocationException
+        throw e.InnerException;     // 重新抛出最初抛出的
+    }
+}
+```
+
+好消息是：使用 C# 的 `dynamic` 基元类型(参见 5.5 节 “`dynamic` 基元类型”)来调用成员，编译器生成的代码就不会捕捉全部异常并抛出一个`TargetInvocationException`对象；最初抛出的异常对象会正常地在调用栈中向上传递。对于大多数开发人员，这是使用 C# 的 `dynamic` 基元类型来代替反射的一个很好的理由。
+
+## <a name="20_9">20.9 未处理的异常</a>
+
+异常抛出时，CLR 在调用栈中向上查找与抛出的异常对象的类型匹配的`catch`块。没有任何`catch`块匹配抛出的异常类型，就发生一个**未处理的异常**。CLR检测到进程中的任何线程有未处理的异常，都会终止进程。未处理异常表明应用程序遇到了未预料到的情况，并认为这是应用程序的真正 bug。随后，应将 bug 报告给发布该应用程序的公司。这个公司也许会修复 bug，并发布应用程序的新版本。
+
+类库开发人员压根儿用不着去想未处理的异常。只有应用程序的开发人员才需关心未处理的异常。而且应用程序应建立处理未处理异常的策略。Microsoft 建议应用程序开发人员接受 CLR 的默认策略。也就是说，应用程序发生未处理的异常时，Windows 会向事件日志写一条记录。为了查看该记录，可打开“事件查看器”应用程序，然后打开树结构中的“Windows日志”->“应用程序”节点，如图 20-1 所示。
+
+![20_1](../resources/images/20_1.png)  
+
+
+
+``````````````````
