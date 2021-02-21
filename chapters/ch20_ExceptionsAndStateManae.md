@@ -1039,6 +1039,171 @@ private static void Reflection(Object o) {
 
 ![20_1](../resources/images/20_1.png)  
 
+图 20-1 Windows 事件日志显示应用程序因为未处理的异常而终止
 
+然而，还可以通过“Windows 操作中心”来获取更有趣的细节。为了启动操作中心，请单击系统托盘中的小旗，选择“打开操作中心”。然后，请展开“维护”，单击“查看可靠性历史记录”链接。随后，会在底部的窗格看到应用程序由于未处理的异常而终止，如图 20-2 所示。
 
-``````````````````
+![20_2](../resources/images/20_2.png)  
+
+图 20-2 “可靠性监视程序” 显示引用程序由于未处理的异常而终止
+
+要查看已终止的应用程序的更多细节，请在“可靠性监视程序”中双击终止的应用程序。图 20-3 显示了这些细节，各个“问题签名”的含义在表 20-2 中进行了总结。托管应用程序生成的所有未处理的异常都放在 CLR20r3 这个存储段(bucket)中。
+
+![20_3](../resources/images/20_3.png)  
+
+图 20-3 “可靠性监视程序”显示了与出错应用程序有关的更多细节
+
+表 20-2 问题签名
+
+|问题签名|说明<sup>*</sup>|
+|01|EXE 文件名(限32个字符)|
+|02|EXE 文件的程序集版本号|
+|03|EXE 文件的时间戳|
+|04|EXE 文件的完整程序集名称(限 64 个字符)|
+|05|出错的程序集的版本|
+|06|出错的程序集的时间戳|
+|07|出错的程序集的类型和方法。这个值是一个 MethodDef 元数据标记(剥离力 0x06 高位字符)，代表抛出异常的方法。有了这个值之后，就可以通过 ILDasm.exe 来确定的有问题的类型和方法|
+|08|有问题的方法的 IL 指令。这个值是抛出异常的那个方法的 IL 指令中的一个偏移量。有了这个值之后，就可以通过 ILDasm.exe 来确定有问题的指令。|
+|09|抛出的异常类型(限 32 个字符)|
+
+> \* 如果一个字符串超过允许的限制，会执行一些巧妙的截断处理，比如会将“Exception”从异常类型名称中截去，或者将“.dll”从文件名中截去。如果结果字符串仍然太长，CLR 会对字符串进行哈希处理或者进行 base-64 编码来创建一个新值
+
+记录好出错的应用程序有关的信息后，Windows 显示一个消息框，允许用户将与出错的应用程序有关的信息发送给 Microsoft 的服务器。<sup>①</sup>这称为“Windows 错误报告”(Windows Error Reporting)，详情请访问 Windows Quality 网站(*http://WinQual.Microsoft.com*)。
+
+> ① 要想禁止显示这个消息框，可以通过 P/Invoke 来调用 Win32 函数 `SetErrorMode`，向函数传递 `SEM_NOGPFAULTERRORBOX`。
+
+作为公司，可以向 Microsoft 注册查看与它们自己的应用程序和组件有关的信息。注册是免费的，但要求程序集用 VeriSign ID(也称为 Software Publisher Digital ID for Authenticode)进行签名。
+
+当然也可以开发自己的系统，将未处理异常的信息传回给你自己，以便修正代码中的bug。应用程序初始化时，可告诉 CLR 当应用程序中的任何线程发生一个未处理的异常时，都调用一个方法。
+
+遗憾的是，Microsoft 的每种应用程序模型都有自己的与未处理异常打交道的方式。需要在文档中查阅一下成员的信息。
+
+* 对于任何应用程序，查阅 `System.AppDomain` 的 `UnhandledException` 事件。Windows Store 应用和 Microsoft Silverlight 应用程序访问不了该事件。
+
+* 对于 Windows Store 应用，查阅 `Windows.UI.Xaml.Applocation` 的`UnhandledException`事件。
+
+* 对于 Windows 窗体应用程序，查阅 `System.Windows.Forms.NativeWindow` 的 `OnThreadException` 虚方法、`System.Windows.Forms.Application`的`OnThreadException`虚方法以及`System.Windows.Forms.Application` 的 `ThreadException` 事件。
+
+* 对于 `Windows Presentation Foundation(WPF)`应用程序，查阅 `System.Windows.Application` 的 `DispatcherUnhandledException` 事件和 `System.Windows.Threading.Dispatcher` 的 `UnhandledException` 和 `UnhandledExceptionFilter`事件。
+
+* 对于 `Silverlight`，查询 `System.Windows.Application` 的 `UnhandledException` 事件。
+
+* 对于 ASP.NET Web 窗体应用程序，查阅 `System.Web.UI.TemplateControl` 的 `Error` 事件。`TemplateControl` 是`System.Web.UI.Page` 类和 `System.Web.UI.UserControl` 类的基类。另外，还要查阅 `System.Web.HttpApplication` 的 `Error` 事件。
+
+* 对于 Windows Communication Foundation 应用程序，查阅 `System.ServiceModel.Dispatcher.ChannelDispatcher` 的 `ErrorHandlers` 属性。
+
+结束本节的讨论之前，最后讲一下分布式应用程序(例如 Web 站点或 Web 服务)中发生的未处理异常。理想情况下，服务器应用程序发生未处理异常，应该先把它记录到日志中，再向客户端发送通知，表明所请求的操作无法完成，最后终止服务器应用程序。遗憾的是，我们并非生活在理想世界中。因此，也许不可能向客户端发送失败通知。对于某些“有状态”的服务器(比如 Microsoft SQL Server)，终止服务器并重新启动服务器的新实例是不切实际的。
+
+对于服务器应用程序，与未处理异常有关的信息不应返回客户端，因为客户端对这种信息基本上是束手无策的，尤其是假如客户端由不同的公司实现。另外，服务器应尽量少暴露自己的相关信息，减少自己被“黑”的机滤。
+
+>注意 CLR 认为本机代码(native code)抛出的一些异常时损坏状态异常(corrupted state exceptions, CSE)异常，因为它们一般由 CLR 自身的 bug 造成，或者由托管开发人员无法控制的本机代码的 bug 造成。CLR 默认不让托管代码捕捉这些异常，`finally` 块也不会执行。以下本机 Win32 异常被认为是 CSE：
+
+```C#
+EXCEPTION_ACCESS_VIOLATION EXCEPTION_STACK_OVERFLOW
+EXCEPTION_ILLEGAL_INSTRUCTION EXCEPTION_IN_PAGE_ERROR
+EXCEPTION_INVALID_DISPOSITION EXCEPTION_NONCONTINUABLE_EXCEPTION
+EXCEPTION_PRIV_INSTRUCTION STATUS_UNWIND_CONSOLIDATE.
+```
+
+> 但是，单独的托管方法可以覆盖默认设置来捕捉这些异常，这需要向方法应用`System.Runtime.ExceptionServices.HandleProcessCorruptedStateExceptionsAttribute`。方法还要应用 `System.Security.SecurityCriticalAttribute`。要覆盖整个进程的默认设置，可在应用程序的 XML 配置文件中将 `legacyCorruptedStateExceptionPolicy` 元素设为 `true`。CLR 将上述大多数异常都转换成一个 `System.Runtime.InteropServices.SEHException` 对象，但有两个异常例外：`EXCEPTION_ACCESS_VIOLATION` 被转换成 `System.AccessViolationException`对象，`EXCEPTION_STACK_OVERFLOW` 被转换成 `System.StackOverflowException`对象。
+
+> 注意 调用方法前，可调用 `RuntimeHelper` 类的 `EnsureSufficientExecutionStack` 检查栈空间是否够用。该方法检查调用线程是否有足够的栈空间来执行一般性的方法(定义得比较随便的方法)。栈空间不够，方法会抛出一个`InsufficientExecutionStackException`，你可以捕捉这个异常。`EnsureSufficientExecutionStack` 方法不接受任何实参，返回值是 `void`。 递归方法特别要用好这个方法。
+
+## <a name="20_10">20.10 对异常进行调试</a>
+
+Visual Studio 调试器为异常提供了特殊支持。在当前已打开一个解决方案的前提下，请从“调试”菜单选择“异常”，随后会看到如图 20-4 所示的对话框。
+
+![20_4](../resources/images/20_4.png)   
+
+图 20-4 “异常设置”对话框显示了不同种类的异常 
+
+这个对话框显示了 Visual Studio 能识别的不同种类的异常。展开 Common Language Runtime Exceptions，会看到 Visual Studio 调试器能识别的命名空间集，如图 20-5 所示。
+
+![20_5](../resources/images/20_5.png)  
+
+图 20-5 按命名空间划分的各种 CLR 异常
+
+展开一个命名空间，会看到在该命名空间中定义的所有 `System.Exception` 派生类型。例如，图 20-6 展示的是 `System` 命名空间中的CLR 异常。
+
+![20_6](../resources/images/20_6.png)  
+
+图 20-6 “异常”对话框，显示`System` 命名空间中定义的 CLR 异常
+
+对于任何异常类型，如果勾选了“引发”选项框，调试器就会在抛出该异常时中断。注意在中断时，CLR 还没有尝试去查找任何匹配的 `catch` 块。要对捕捉和处理一个异常的代码进行调试，这个功能相当有用。另外，如果怀疑一个组件或库“吞噬”了异常或者重新抛出了异常，但不确定在什么位置设置断点来捕捉它，这个功能也很有用。
+
+如果异常类型的“引发”框没有勾选，调试器只有在该异常类型未得到处理时才中断。开发人员一般都保持“引发”选项框的未勾选状态，因为的到处理的异常表明应用程序已预见到了异常，并会对它进行处理；应用程序能继续正常运行。
+
+如果定义了自己的异常类型，可单击“添加”把它们添加到这个对话框中。这会打开如图 20-7 所示的对话框。
+
+![20_7](../resources/images/20_7.png)  
+
+图 20-7 让 Visual Studio 识别你自己的异常类型：“新异常”对话框
+
+在这个对话框中，首先将异常类型设为 `Common Language Runtime Exceptions`，然后输入异常类型的完全限定名称。注意，输入的不一定是从`System.Exception` 派生的类型。非 CLS 相容的类型也是完全支持的。没有办法区分两个或多个同名但在不同程序集中的类型。幸亏这种情况很少发生。
+
+如果你的程序集定义了几个异常类型，那么一次只能添加一个。希望在未来的版本中，这个对话框允许单击“浏览”按钮查找程序集，并自动将其中所有从`Exception` 派生的类型导入 Visual Studio 调试器。然后，每个类型都可以根据程序集来区分。这样就可以解决同名、不同程序集的两个类型不能共存的问题。
+
+## <a name="20_11">20.11 异常处理的性能问题</a>
+
+开发人员社区经常就异常处理的性能问题展开活跃讨论。有人说异常处理的性能是如此之坏，以至于他们根本就不打算使用。但是，我认为在面向对象平台中，异常处理不是一个可有可无的东西，而是必须的！另外，假若不用它，有什么是可以替代的呢？是让方法返回 `true/false` 来表示成功/失败，还是使用某种错误代码 `enum` 类型？真的这么做，两个世界<sup>①</sup>最坏的情况都会发生：CLR 和类库抛出异常而你的代码返回错误代码。现在你两者都要应付。
+
+> ① 托管世界和非托管世界。 ————译注
+
+异常处理和较常规的异常报告方式(`HRESULT` 和 特殊返回码等)相比，很难看出两者在性能上的差异。如果写代码检查每个方法调用的返回值并将返回值“漏”给调用者，应用程序性能将受到严重影响。就算不考虑性能，由于要写代码检查每个方法的返回值，也必须进行大量额外的编程，而且出错几率也会大增。异常处理的优选方案。
+
+但异常处理也是有代价的：非托管 C++ 编译器必须生成代码来跟踪哪些对象被成功构造。编译器还必须生成代码，以便在一个异常被捕捉到的时候，调用每个已成功构造的对象的析构器。由编译器担负这个责任是很好的，但会在应用程序中生成大量薄记(bookkeeping)代码，对代码的大小和执行时间造成负面影响。
+
+另一方面，托管编译器就要轻松得多，因为托管对象在托管堆中分配，而托乱堆受垃圾回收器的监视。如对象成功构造，而且抛出了异常，垃圾回收器最终会释放对象的内存。编译器无需生成任何薄记代码来跟踪成功构造的对象，也无需保证析构器的调用。与非托管C++相比，这意味着编译器生成的代码更少，运行时要执行的代码更少，应用程序的性能更好。
+
+多年来，我在不同的编程语言、不同的操作系统和不同的 CPU 架构中进行过异常处理。每种情况下的异常处理都以不同方式实现，而且在性能方面各有优缺点。一些实现将异常处理构造直接编译到一个方法中。一些实现将与异常处理相关的信息存储到一个与方法关联的数据表中————只有抛出异常时才去访问这个表。一些编译器不能内联含有异常处理程序<sup>①</sup>的方法，另一些编译器在方法含有异常处理程序的时候无法用寄存器来容纳变量。
+
+> ① 本书按照约定俗成的译法，将 exception handler 翻译成“异常处理程序”，但在这里请把它理解成“用于异常处理的构造”。————译注
+
+总之，不好判断异常处理到底会使应用程序增大多少额外的开销。在托管世界里更不好说，因为程序集的代码子在支持 .NET Framework 的任何平台上都能运行。所以，当程序集在 x86 处理器上运行时，JIT 编译器生成的用于管理异常处理的代码也会显著有别于程序集在 x64 或 ARM 处理器上运行时生成的代码。另外，与其他 CLR 实现(比如 Microsoft 的 .NET Compact Framework 或者开源 Mono 项目)关联的 JIT 编译器也有可能生成不同的代码。
+
+实际上，我用 Microsoft 内部使用的几个 JIT 编译器对自己的代码进行过一些测试，它们在性能上的差异大得令人吃惊。所以，必须在各种目标平台上测试代码，并相应进行调整。再次声明，我不在意异常处理所造成的额外性能开销，因为它带来的收益远大于对性能的影响。
+
+如果希望了解异常处理对代码性能的影响，可使用 Windows 自带的 “性能监视器”。图 20-8 展示了随同 .NET Framework 安装的与异常有关的计数器。
+
+![20_8](../resources/images/20_8.png)  
+
+图 20-8  性能监视器显示了 .NET CLR Exceptions 计数器
+
+个别时候会遇到一个频繁调用但频频失败的方法。这时抛出异常所造成的性能损失可能令人无法接受。例如，Microsoft 从一些客户那里了解到，在调用 `Int32` 的 `Parse` 方法时，最终用户经常输入无法解析的数据。由于频繁调用 `Parse` 方法，抛出和捕捉异常所造成的性能损失对应用程序的总体性能造成了很大影响。
+
+为了解决客户反映的问题，并与本章描述的设计规范保持一致，Microsoft 为 `Int32` 类添加了新方法 `TryParse`，它有两个重载版本：
+
+```C#
+public static Boolean TryParse(String s, out Int32 result);
+public static Boolean TryParse(String s, NumberStyles style, IFormatProvider provider, out Int32 result);
+```
+
+注意，这些方法都返回一个 `Boolean`，指明传给方法的 `String` 是否包含了解解析成 `Int32` 的字符。它们同时返回一个名为`result`的输出参数。如果方法返回 `true`，`result` 将包含字符串解析成 32 为整数的结果。返回 `false`，`result`将包含 `0`，这时自然不应再执行任何代码去检查`result`。
+
+有一点必须澄清：`TryXxx` 方法的 `Boolean` 返回值如果为 `false`，那么代表的只是一种错误。方法仍要为其他错误抛出异常。例如，如果为`style`参数传递的实参无效，`Int32` 的 `TryParse` 方法会抛出一个 `ArgumentException` 异常。另外，调用 `TryParse` 方法时仍有可能抛出一个 `OutMemoryException` 异常。
+
+另外要澄清的是，面向对象编程提高了程序员的编程效率。为此，它采取的一个措施是不在类型的成员中暴露错误代码。换言之，构造器、方法、属性等采用了“调用它们不会失败”这一思路。而且，如果正确定义，成员的大多数使用都不会失败。而且由于不抛出异常，所以也没有性能上的损失。
+
+定义类型的成员时，应确保在一般使用情形中不会失败。只有用户以后因为抛出异常面对性能不满意时，才应考虑添加一些 `TryXXX` 方法。换言之，首先应建立一个最佳的对象模型。然后，只有在用户抱怨的时候，才在类型中添加一些 `TryXXX` 方法，帮助遭遇性能问题的用户改善性能。如果用户没有遇到性能问题，那么应继续使用方法的非 `TryXXX` 版本，因为那是更佳的对象模型。
+
+## <a name="20_12">20.12 约束执行区域(CER)</a>
+
+许多应用程序都不需要健壮到能从任何错误中恢复的地步。许多客户端应用程序都是这样设计的，比如 Notepad.exe(记事本) 和 Calc.exe(计算器)。另外，我们中的许多人都经历过 Microsoft Office 应用程序(比如 WinWord.exe，Excel.exe 和 Outlook.exe)因为未处理的异常而终止的情况。此外，许多服务器端应用程序(比如 Web 服务器)都是无状态的，会在因为未处理的异常而失败时自动重启。当然，某些服务器(比如 SQL Server)本来就是为状态管理而设计的。这种程序假如因为未处理的异常而发生数据丢失，后果将是灾难性的。
+
+在 CLR 中，我们有包含了状态的 AppDomain(将在第 22 章讨论)。AppDomain 卸载时，它的所有状态都会卸载。所以，如果 AppDomain 中的一个线程遭遇未处理的异常，可以在不终止整个进程的情况下卸载 AppDomain(会销毁它的所有状态)<sup>①</sup>。
+
+根据定义，CER 是必须对错误有适应力的代码块。由于 AppDomain 可能被卸载，造成它的状态被销毁，所以一般用 CER 处理由多个 AppDomain 或进程共享的状态。如果要在抛出了非预期的异常时维护状态，CER 就非常有用。有时候这些异常称**异步异常**。例如，调用方法时，CLR 必须加载一个程序集，在 AppDomain 的 Loader 堆中创建类型对象，调用类型的静态构造器，并将 IL 代码 JIT 编译成本机代码。所有这些操作都可能失败，CLR 通过抛出异常来报告失败。
+
+如果任何这些操作在一个 `catch` 或 `finally` 块中失败，你的错误恢复或资源清理代码就不会完整地执行。下例演示了可能出现的问题：
+
+```C#
+private static void Demo1() {
+    try {
+        Console.WriteLine("In try");
+    }
+    finally {
+        // 隐式调用 Type1 的静态构造器
+        Type1.M();
+    }
+}
+```
