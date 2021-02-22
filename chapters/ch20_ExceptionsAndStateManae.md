@@ -1192,6 +1192,8 @@ public static Boolean TryParse(String s, NumberStyles style, IFormatProvider pro
 
 在 CLR 中，我们有包含了状态的 AppDomain(将在第 22 章讨论)。AppDomain 卸载时，它的所有状态都会卸载。所以，如果 AppDomain 中的一个线程遭遇未处理的异常，可以在不终止整个进程的情况下卸载 AppDomain(会销毁它的所有状态)<sup>①</sup>。
 
+> ① 如果线程的整个生命期都在一个 AppDomain 的内部(比如 ASP.NET 和托管 SQL Server 存储过程)，这个说法是完全成立的。但如果线程在其生存期内跨越了 AppDomain 边界，可能就不得不终止整个进程了。
+
 根据定义，CER 是必须对错误有适应力的代码块。由于 AppDomain 可能被卸载，造成它的状态被销毁，所以一般用 CER 处理由多个 AppDomain 或进程共享的状态。如果要在抛出了非预期的异常时维护状态，CER 就非常有用。有时候这些异常称**异步异常**。例如，调用方法时，CLR 必须加载一个程序集，在 AppDomain 的 Loader 堆中创建类型对象，调用类型的静态构造器，并将 IL 代码 JIT 编译成本机代码。所有这些操作都可能失败，CLR 通过抛出异常来报告失败。
 
 如果任何这些操作在一个 `catch` 或 `finally` 块中失败，你的错误恢复或资源清理代码就不会完整地执行。下例演示了可能出现的问题：
@@ -1206,4 +1208,179 @@ private static void Demo1() {
         Type1.M();
     }
 }
+
+private sealed class Type1 {
+    static Type1() {
+        // 如果这里抛出异常，M 就得不到调用
+        Console.WriteLine("Type1's static ctor called");
+    }
+
+    public static void M() { }
+}
 ```
+
+运行上述代码得到以下输出：
+
+```cmd
+In try
+Type1's static ctor called
+```
+
+我们想要达到的目的是，除非保证(或大致保证)<sup>①</sup>关联的 `catch` 和 `finally` 块中的代码得到执行，否则上述`try`块中的代码根本不要开始执行。为了达到这个目的，可以像下面这样修改代码：
+
+> ① “保证” 和 “大致保证” 分别对应后文所说的 `WillNotCorruptState` 和 `MayCorruptInstance` 两个枚举成员。 ———— 译注
+
+```C#
+public static void Demo2() {
+    // 强迫 finally 块中的代码提前准备好
+    RuntimeHelpers.PrepareConstrainedRegions();    // System.Runtime.CompilerServices 命名空间
+    try {
+        Console.WriteLine("In try");
+    }
+    finally {
+        // 隐式调用 Type2 的静态构造器
+        Type2.M();
+    }
+}
+
+public class Type2 {
+    static Type2() {
+        Console.WriteLine("Type2's static ctor called");
+    }
+
+    // 应用在 System.Runtime.ConstrainedExecution 命名空间中定义的这个特性
+    [ReliabilityContract(Consistency.WillNotCorruptState, Cer.Success]
+    public static void M() { }
+}
+```
+
+运行这个版本得到以下输入：
+
+
+```cmd
+Type2's static ctor called
+In try
+```
+
+`PrepareConstrainedRegions` 是一个很特别的方法。JIT 编译器如果发现在一个 `try` 块之前调用了这个方法，就会提前编译与`try` 关联的`catch`和`finally`块中的代码。JIT 编译器会加载任何程序集，创建任何类型对象，调用任何静态构造器，并对任何方法进行 JIT 编译。如果其中任何操作做成异常，这个异常会在线程进入 `try` 块**之前**发生。
+
+JIT 编译器提前准备方法时，还会遍历整个调用图，提前准备被调用的方法，前提是这些方法应用了 `ReliabilityContractAttribute`，而且向这个特性实例的构造器传递的是`Consistency.WillNotCorruptState` 或者 `Consistency.MayCorruptInstance` 枚举成员。这是由于假如方法会损坏 AppDomain 或进程的状态，CLR 便无法对状态一致性做出任何保证。在通过一个 `PrepareConstrainedRegions` 调用来保护的一个 `catch` 或`finally` 块中，请确保只调用根据刚才的描述设置了 `ReliabilityContractAttribute` 的方法。
+
+`ReliabilityContractAttribute`是像下面这样定义的：
+
+```C#
+public sealed class ReliabilityContractAttribute : Attribute {
+    public ReliabilityContractAttribute(Consistency consistencyGuarantee, Cer cer);
+    public Cer Cer { get; }
+    public Consistency ConsistencyGuarantee { get; }
+}
+```
+
+该特性允许开发者向方法<sup>①</sup>的潜在调用者申明方法的可靠性协定(reliability contract)。`Cer` 和 `Consistency` 都是枚举类型，它们的定义如下：
+
+> ① 也可将这个特性应用于接口、构造器、结构、类或者程序集，从而影响其中的成员。
+
+```C#
+enum Consistency {
+    MayCorruptProcess, MayCorruptAppDomain, MayCorruptInstance, WillNotCorruptState
+}
+
+enum Cer { None, MayFail, Success }
+```
+
+如果你写的方法保证不损坏任何状态，就用 `Consistency.WillNotCorruptState`，否则就用其他三个值之一来申明方法可能损坏哪一种状态。如果方法保证不会失败，就用 `Cer.Success`，否则用 `Cer.MayFail`。没有应用 `ReliabilityContractAttribute` 的任何方法等价于像下面这样标记：
+
+`[ReliabilityContract(Consistency.MayCorruptProcess, Cer.None]`
+
+`Cer.None` 这个值表明方法不进行 CER 保证。换言之，方法没有 CER 的概念。因此，这个方法可能失败，而且可能会、也可能不会报告失败。记住，大多数这些设置都为方法提供了一种方式来申明它向潜在的调用者提供的东西，使调用者知道什么可以期待。CLR 和 JIT 编译器不使用这种信息。
+
+如果想写一个可靠的方法，务必保持它的短小精悍，同时约束它做的事情。要保证它不分配任何对象(例如不装箱)。另外，不调用任何虚方法或接口方法，不使用任何委托，也不使用反射，因为 JIT 编译器不知道实际会调用哪个方法。然而，可以调用 `RuntimeHelper`类定义方法之一，从而手动准备这些方法：
+
+```C#
+public static void PrepareMethod(RuntimeMethodHandle method);
+public static void PrepareMethod(RuntimeMethodHandle method, RuntimeTypeHandle[] instantiation);
+public static void PrepareDelegate(Delegate d);
+public static void PrepareContractedDelegate(Delegate d);
+```
+
+注意，编译器和 CLR 并不验证你写的方法真的符合通过 `ReliabilityContractAttribute` 来作出的保证。所以，如果犯了错误，状态仍有可能损坏。
+
+> 注意 即使所有方法都提前准备好，方法调用仍有可能造成 `StackOverflowException`。在 CLR 没有寄宿的前提下，`StackOverflowException`会造成 CLR 在内部调用 `Environment.FailFast` 来立即终止进程。在已经寄宿的前提下，`PrepareConstrainedRegions` 方法检查是否剩下约 48 KB的栈空间。栈空间不足，就在进入`try` 块前抛出 `StackOverflowException`。
+
+还应该关注一下 `RuntimeHelper` 的 `ExecuteCodeWithGuaranteedCleanup` 方法，它的资源保证得到清理的前提下才执行代码：
+
+```C#
+public static void ExecuteCodeWithGuaranteedCleanup(TryCode code, CleanupCode backoutCode, Object userData);
+```
+
+调用这个方法时，要将 `try` 块和 `finally` 块的主体作为回调方法传递，它们的原型分别匹配以下两个委托：
+
+```C#
+public delegate void TryCode(Object userData);
+public delegate void CleanupCode(Object userData, Boolean exceptionThrown);
+```
+
+最后，另一种保证代码得以执行的方式是使用 `CriticalFinalizerObject` 类，该类将在第 21 章"托管堆和垃圾回收"详细解释。
+
+## <a name="20_13">20.13 代码协定</a>
+
+**代码协定**(code contract)提供了直线在代码中声明代码设计决策的一种方式。这些协定采取以下形式。
+
+* **前条件**  
+  一般用于对实参进行验证
+
+* **后条件**  
+  方法因为一次普通的返回或者抛出异常而终止时，对状态进行验证。
+
+* **对象不变性(Object Invariant)**  
+  在对象的整个生命期内，确保对象的字段的良好状态。
+
+代码协定有利于代码的使用、理解、进化、测试、文档和早期错误检测<sup>①</sup>。可将前条件、后条件和对象不变性想象为方法签名的一部分。所以，代码新版本的协定可以变得更宽松。但不能变得更严格，否则会破坏向后兼容性。
+
+> ① 为了帮助进行自动化测试，请参见由 Microsoft Research 创建的 Pex 工具，网址是 *http://research.microsoft.com/en-us/projects/pex/*。
+
+代码协定的核心是静态类 `System.Diagnostics.Contracts.Contract` :
+
+```C#
+public static class Contract {
+    // 后条件方法：[Conditional("CONTRACTS_FULL")]
+	public static void Requires(Boolean condition);
+    public static void EndContractBlock();
+
+    // 前条件：Always
+    public static void Requires<TException>(Boolean condition) where TException : Exception;
+
+    // 后条件方法：[Conditional("CONTRACTS_FULL")]
+    public static void Ensures(Boolean condition);
+    public static void EnsuresOnThrow<TException>(Boolean condition) where TException : Exception;
+
+    // 特殊后条件方法：Always
+    public static T Result<T>();
+    public static T OldValue<T>(T value);
+    public static T ValueAtReturn<T>(out T value);
+
+    // 对象不变性方法： [Conditional("CONTRACTS_FULL")]
+    public static void Invariant(Boolean condition);
+
+    // 限定符(Quantifier)方法：Always
+    public static Boolean Exists<T>(IEnumerable<T> collection, Predicate<T> predicate);
+    public static Boolean Exists(Int32 fromInclusive, Int32 toExclusive, Predicate<Int32> predicate);
+    public static Boolean ForAll<T>(IEnumerable<T> collection, Predicate<T> predicate);
+    public static Boolean ForAll(Int32 fromInclusive, Int32 toExclusive, Predicate<Int32> predicate);
+    // 辅助(Helper)方法：[Conditional("CONTRACTS_FULL")] 或 [Conditional("DEBUG")]
+    public static void Assert(Boolean condition);
+    public static void Assume(Boolean condition);
+
+    // 基础结构(Infrastructure)事件：你的代码一般不使用这个事件
+    public static event EventHandler<ContractFailedEventArgs> ContractFailed;
+}
+```
+
+如前所示，许多静态方法都应用了`[Conditional("CONTRACTS_FULL")]`特性。有的辅助方法还应用了`[Conditional("DEBUG")]`，意味着除非定义了恰当的符号，否则编译器会忽略调用这些方法的任何代码。标记“Always”的任何方法意味着编译器总是生成调用方法的代码。另外，`Requires`，`Requires<TException>`，`Ensures`，`EnsuresOnThrow`，`Invariant`，`Assert` 和 `Assume` 方法有一个额外的重载版本(这里没有列出)，它获取一个 `String` 实参，用于显式指定违反协定时显示的字符串消息。
+
+协定默认只作为文档使用，因为生成项目时没有定义 `CONTRACTS_FULL` 符号。为了发掘协定的附加价值，必须下载额外的工具和一个 Visual Studio 属性窗格，网址是 `http://msdn.microsoft.com/en-us/devlabs/dd491992.aspx`。Visual Studio之所以不包含所有代码协定工具，是因为该技术和增强的速度比 Visual Studio 本身快得多。下载和安装好额外的工具之后，会看到项目有一个新的属性窗格，如图 20-9 所示。
+
+
+图 20-9 一个 Visual Studio 项目的 Code Contracts 窗格  
+
+启用代码协定功能
