@@ -1380,7 +1380,80 @@ public static class Contract {
 
 协定默认只作为文档使用，因为生成项目时没有定义 `CONTRACTS_FULL` 符号。为了发掘协定的附加价值，必须下载额外的工具和一个 Visual Studio 属性窗格，网址是 `http://msdn.microsoft.com/en-us/devlabs/dd491992.aspx`。Visual Studio之所以不包含所有代码协定工具，是因为该技术和增强的速度比 Visual Studio 本身快得多。下载和安装好额外的工具之后，会看到项目有一个新的属性窗格，如图 20-9 所示。
 
-
+![20_9](../resources/images/20_9.png)  
 图 20-9 一个 Visual Studio 项目的 Code Contracts 窗格  
 
-启用代码协定功能
+启用代码协定功能要勾选 Perform Runtime Contract Checking，并从旁边的组合框中选择 Full。这样就会在生成项目时定义 `CONTRACTS_FULL` 符号，并在项目生成之后调用恰当的工具(稍后详述)。然后，运行时违反协定会引发`Contract`的`ContractFailed`事件。一般情况下，开发人员不向这个事件登记任何方法。但如果登记了方法，你登记的任何方法都会接收到一个 `ContractFailedEventArgs` 对象，它看起来像下面这样：
+
+```C#
+public sealed class ContractFailedEventArgs : EventArgs {
+    public ContractFailedEventArgs(ContractFailureKind failureKind, String message, String condition, Exception originalException);
+
+    public ContractFailureKind FailureKind { get; }
+    public String Message                  { get; }
+    public String Condition                { get; }
+    public Exception OriginalException     { get; }
+
+    public Boolean Handle { get; }  // 任何事件处理方法调用了 SetHandled，就为 true
+    public void SetHandled();       // 调用该方法来忽略违反协定的情况；将 Handled 设为 true
+
+    public Boolean Unwind { get; }  // 任何事件处理方法调用了 SetUnwind 或抛出异常，就为 true
+    public void SetUnwind();        // 调用该方法强制抛出 ContractException; 将 Unwind 设为 true
+}
+```
+
+可向该事件注册多个事件处理方法。每个方法都可以按照它选择的任何方式处理违反协定的情况。例如，方法可以记录协定违反，可以忽略协定违反(通过调用`SetHandled`)，也可以终止进程。任何方法如果调用了 `SetHandled`，违反协定的情况就会被认为已得到处理，而且在所有处理方法返回之后，允许应用程序代码继续运行————除非任何处理方法调用了 `SetUnwind`。如果一个处理方法调用了 `SetUnwind`， 在所有处理方法结束运行后，会抛出一个`System.Diagnostics.Contracts.ContractException`。注意，这是 MSCorLib.dll 的内部类型，所以你不能写一个 `catch` 块来显式捕捉它。还要注意，如果任何处理方法抛出未处理的异常，那么剩余的处理方法会被调用，然后抛出一个 `ContractException`。
+
+如果没有事件处理方法，或者没有任何事件处理方法调用了 `SetHandled`，`SetUnwind` 或者抛出未处理的异常，那么违反协定会采用默认方式进行处理。如果 CLR 已寄宿，会向宿主通知协定失败。如果 CLR 正在非交互式窗口站上运行应用程序(服务应用程序就属于这种情况)，会调用 `Environment.FailFast` 来立即终止进程。如果编译时勾选了 Assert On Contract 序。如果没有勾选这个选项，就抛出一个 `ContractException`。
+
+下面是一个使用了代码协定的示例类：
+
+```C#
+public sealed class Item { /* ... */ }
+
+public sealed class ShoppingCart {
+    private List<Item> m_cart = new List<Item>();
+    private Decimal m_totalCost = 0;
+
+    public ShoppingCart(){
+    }
+
+    public void AddItem(Item item) {
+        AddItemHelper(m_cart, item, ref m_totalCost);
+    }
+
+    private static void AddItemHelper(List<Item> m_cart, Item newItem, ref Decimal totalCost) {
+
+        // 前条件：
+        Contract.Requires(newItem != null);
+        Contract.Requires(Contract.ForAll(m_cart, s => s != newItem));
+
+        // 后条件：
+        Contract.Ensures(Contract.Exists(m_cart, s => s == newItem));
+        Contract.Ensures(totalCost >= Contract.OldValue(totalCost));
+        Contract.EnsuresOnThrow<IOException>(totalCost == Contract.OldValue(totalCost));
+
+        // 做一些事情(可能抛出 IOException)...
+        m_cart.Add(newItem);
+        totalCost += 1.00M;
+    }
+
+    // 对象不变性
+    [ContractInvariantMethod]
+    private void ObjectInvariant() {
+        Contract.Invariant(m_totalCost >= 0);
+    }
+}
+```
+
+`AddItemHelper`方法定义了一系列代码协定。其中，前条件指出`newItem`不能为`null`，而且要添加到购物车的商品不能已经在购物车中。后条件指出新商品必须在购物车中，而且总价格至少要与将商品添加到购物车之前一样多。还有一个后条件指出如果 `AddItemHelper` 因为某个原因抛出`IOException`，那么`totalCost` 不会发生变化，和方法开始执行时一样。`ObjectInvariant`方法只有一个私有方法；一旦调用，它会确保对象的`m_totalCost`字段永远不包含负值。
+
+> 重要提示 前条件、后条件或不变性测试中引用的任何成员都一定不能有副作用(改变对象的状态)。这是必须的，因为测试条件不应改变对象本身的状态。除此之外，前条件测试中引用的所有成员的可访问性都至少要和定义前条件的方法一样。这是必须的，因为方法的调用者应该能在调用方法之前验证它们符合所有前条件。另一方面，后条件或不变性测试中引用的成员可具有任何可访问性，只要代码能编译就行。可访问性之所以不重要，是因为后条件和不变性测试不影响调用者正确调用方法的能力。
+
+> 重要提示 涉及继承时，派生类型不能重写并更改基类型中定义的虚成员的前条件。类似地，实现了接口成员的类型不能更改接口成员定义的前条件。如果一个成员没有定义显式的协定，那么成员将获得一个隐式协定，逻辑上这样表示：
+
+`Contract.Requires(true);`
+
+> 由于协定不能在新版本中变得更严格(否则会破坏兼容性)，所以在引入新的虚/抽象/接口成员时，应仔细考虑好前条件。对于后条件和对象不变性，协定可以随意添加和删除，因为虚/抽象/接口成员中表示的条件和重写成员中表示的条件会“逻辑 AND”到一起。
+
+现在，我们已掌握了如何声明协定。接着研究一下它们在运行时是如何工作的。要在方法的顶部声明所有前条件和后条件协定，这样才容易发现。当然，前条件协定是在方法调用时验证的。但是，我们希望后条件协定在方法返回时才验证。为了获得所需的行为，C#编译器生成的程序集必须用 Code Contract Rewriter 工具进行处理，该工具的路径一般是 `C:\Program Files(x86)\Microsoft\Contracts\Bin`，它生成程序集的一个修改版本。为自己的项目勾选 Perform Runtime Contract Checking 之后，`
