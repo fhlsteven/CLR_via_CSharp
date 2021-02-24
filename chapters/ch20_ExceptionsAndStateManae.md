@@ -1456,4 +1456,48 @@ public sealed class ShoppingCart {
 
 > 由于协定不能在新版本中变得更严格(否则会破坏兼容性)，所以在引入新的虚/抽象/接口成员时，应仔细考虑好前条件。对于后条件和对象不变性，协定可以随意添加和删除，因为虚/抽象/接口成员中表示的条件和重写成员中表示的条件会“逻辑 AND”到一起。
 
-现在，我们已掌握了如何声明协定。接着研究一下它们在运行时是如何工作的。要在方法的顶部声明所有前条件和后条件协定，这样才容易发现。当然，前条件协定是在方法调用时验证的。但是，我们希望后条件协定在方法返回时才验证。为了获得所需的行为，C#编译器生成的程序集必须用 Code Contract Rewriter 工具进行处理，该工具的路径一般是 `C:\Program Files(x86)\Microsoft\Contracts\Bin`，它生成程序集的一个修改版本。为自己的项目勾选 Perform Runtime Contract Checking 之后，`
+现在，我们已掌握了如何声明协定。接着研究一下它们在运行时是如何工作的。要在方法的顶部声明所有前条件和后条件协定，这样才容易发现。当然，前条件协定是在方法调用时验证的。但是，我们希望后条件协定在方法返回时才验证。为了获得所需的行为，C#编译器生成的程序集必须用 Code Contract Rewriter 工具进行处理，该工具的路径一般是 `C:\Program Files(x86)\Microsoft\Contracts\Bin`，它生成程序集的一个修改版本。为自己的项目勾选 Perform Runtime Contract Checking 之后，Visual Studio 会在生成项目时自动调用这个工具。工具分析所有方法中的 IL，并重写这些 IL，使任何后条件协定都在每个方法的末尾执行。如果方法内部有多个返回点， CCRewrite.exe 工具会修改方法的 IL， 使所有返回点都在方法返回前执行后条件代码。
+
+CCRewrite.exe 工具会在类型中查找标记了 `[ContractInvariantMethod]`特性的任何方法。这个方法可以取任何名字，但根据约定，一般将方法命名为`ObjectInvariant`，并将方法标记为 `private`(就像前面我所做的那样)。方法不接受任何实参，返回类型是 `void`。CCRewrite.exe 一旦看到标记了这个特性的 `ObjectInvariant` 方法(或者你取的其他名字)，就会在每个公共实例方法的末尾插入调用 `ObjectInvariant` 方法的 IL 代码。这样一来，方法每次返回，都会检查对象的状态，确保方法没有违反协定。注意，CCRewrite.exe 不会修改 `Finalize` 方法或者`IDisposable`的`Dispose`方法来调用 `ObjectInvariant` 方法。因为既然已决定要摧毁(destroy)或处置(dispose)，对象的状态自然是可以改变的。还要注意，一个类型可以定义多个应用了`[ContractInvariantMethod]`特性的方法。使用分部类型时，这样做就很有用。 CCRewrite.exe 修改 IL，在每个公共方法末尾调用所有这些方法(顺序不定)。
+
+`Assert` 和 `Assume` 方法比较特殊。首先，不应把它们视为方法签名的一部分，也不必把它们放在方法的起始处。在运行时，这两个方法执行完全一样的操作：验证传给它们的条件是否为`true`；不为 `true`就抛出异常。但还可使用另一个名为 Code Contract Checker(CCCheck.exe)的工具。该工具能分析 C# 编译器生成的 IL，静态验证方法中没有代码违反协定。该工具会尝试证明传给`Assert`的任何条件都为 `true`，但假设传给 `Assume` 的任何条件都已经为 `true`，而且工具会将表达式添加到它的已知为 `true` 的事实列表中。一般要先用 `Assert`，然后在 CCCheck.exe 不能静态证明表达式为 `true` 的前提下将 `Assert` 更改为 `Assume`。
+
+来看一个例子。假定有以下类型定义：
+
+```C#
+internal sealed class SomeType {
+    private static String s_name = "Jeffrey";
+
+    public static void ShowFirstLetter() {
+        Console.WriteLine(s_name[0]);           // 警告： requires unproven： index < this.Length
+    }
+}
+```
+
+在项目属性页面中勾选 Perform Static Contract Checking 再生成上述代码， CCCheck.exe 工具会生成如注释所示的警告。该警告指出查询 `s_name` 的第一个字母可能失败并抛出异常，因为无法证明 `s_name` 总是引用至少包含一个字符的字符串。
+
+所以，我们要做的是为 `ShowFirstLetter` 方法添加一个断言：
+
+```C#
+public static void ShowFirstLetter() {
+    Contract.Assert(s_name.Length >= 1);    // warning: assert unproven
+    Console.WriteLine(s_name[0]);
+}
+```
+
+遗憾的是，当 CCCheck.exe 工具分析上述代码时，仍然无法验证 `s_name` 总是引用包含至少一个字母的字符串。所以，工具会生成类似的警告。有时，会由于工具的限制造成无法验证断言；工具未来的版本也许能执行更全面的分析。
+
+为了避开工具的短处，或者声明工具永远证明不了的一件事情成立，可将 `Assert` 更改为 `Assume`。如果知道没有其他代码会修改 `s_name`，就可以这样修改 `ShowFirstLetter`:
+
+```C#
+public static void ShowFirstLetter() {
+    Contract.Assume(s_name.Length >= 1);            // 这样就没有警告了！
+    Console.WriteLine(s_name[0]);
+}
+```
+
+针对代码的这个新版本，CCCheck.exe 工具会相信我们的“假设”，断定 `s_name` 总是引用至少含有一个字母的字符串。这个版本的 `ShowFirstLetter` 方法会顺利通过代码协定静态检查器(CCCheck.exe)的检查，不显示任何警告。
+
+再来讨论一下 Code Contract Reference Assembly Generator 工具(CCRefGen.exe)。像前面描述的那样使用 CCRewrite.exe 工具来启用协定检查，确实有助于更快地发现 bug。但是，协定检查期间生成的所有代码会使程序集变得更大，并有损它的运行时性能。为了对这一点进行改进，可以使用 CCRefGen.exe 工具来创建独立的、包含协定的一个引用程序集。在 Contract Reference Assembly 组合框中选中选择 Build， Visual Studio 会自动帮你调用这个工具。协定程序集的名字一般是 AssemblyName.Contracts.dll(例如 MSCorLib.Contracts.dll)，而且这些程序集只包含对协定进行的描述的元数据和IL ———— 别的什么都没有。协定引用程序集的特点是向程序集的定义元数据表应用了 `System.Diagnostics.Contracts.ContractReferenceAssembly.Attribute`。CCRewrite.exe 和 CCCheck.exe 工具在执行操作和分析的时候，可将协定引用程序集作为输入。
+
+最后一个工具是 Code Contract Document Generator(CCDocGen.exe)，使用 C#编译器的`/doc:file` 开关生成 XML 文档后，可利用该工具在文档中添加协定信息。经 CCDocGen.exe 增强的 XML 文档可由 Microsoft 的 Sandcastle 工具进行处理，以生成 MSDN 风格的、含有协定信息的文档。

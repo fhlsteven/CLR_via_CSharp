@@ -46,7 +46,7 @@ CLR Via C# 第四版
 第四部分 核心机制  
 
 [第 20 章 异常和状态管理](./chapters/ch20_ExceptionsAndStateManae.md)  
-[第 21 章 托管堆和垃圾回收]  
+[第 21 章 托管堆和垃圾回收](./chapters/ch21_ManagedHeapGarbage.md)   
 [第 22 章 CLR 寄宿和 AppDomain]  
 [第 23 章 程序集加载和反射]  
 [第 24 章 运行时序列化]  
