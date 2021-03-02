@@ -511,5 +511,143 @@ CLR 用一个特殊的、高优先级的专用线程调用 `Finalize` 方法来�
 创建封装了本机资源的托管类型时，应该先从 `System.Runtime.InteropServices.SafeHandle` 这个特殊基类派生出一个类。该类的形式如下(我在方法中添加了注释，指明它们做的事情)：
 
 ```C#
+public abstract class SafeHandle : CriticalFinalizerObject, IDisposable {
+    // 这是本机资源的句柄
+    protected IntPtr handle;
 
+    protected SafeHandle(IntPtr invalidHandleValue, Boolean ownsHandle) {
+        this.handle = invalidHandleValue;
+        // 如果 ownsHandle 为 true，那么这个从 SafeHandle 派生的对象被回收时，
+        // 本机资源会被关闭
+    }
+
+    protected void SetHandle(IntPtr handle) {
+        this.handle = handle;
+    }
+
+    // 可调用 Dispose 显式释放资源
+    // 这是 IDisposable 接口的 Dispose 方法
+    public void Dispose() { Dispose(true); }
+
+    // 默认的 Dispose 实现(如下所示)正是我们希望的。强烈建议不要重写这个方法
+    protected virtual void Dispose(Boolean disposing) {
+        // 这个默认实现会忽略 disposing 参数:
+        // 如果资源已经释放，那么返回;
+        // 如果 ownsHandle 为 false, 那么返回;
+        // 设置一个标志来指明该资源已经释放;
+        // 调用虚方法 ReleaseHandle;
+        // 调用 GC.SuppressFinalize(this)方法来阻止调用 Finalize 方法;
+        // 如果 ReleaseHandle 返回 true，那么返回;
+        // 如果走到这一步，就激活 releaseHandleFailed 托管调试助手(MDA)。
+    }
+
+    // 默认的 Finalize 实现(如下所示)正是我们希望的。强烈建议不要重写这个方法
+    ~SafeHandle() { Dispose(false); }
+
+    // 派生类要重写这个方法以实现释放资源的代码
+    protected abstract Boolean ReleaseHandle();
+
+    public void SetHandleAsInvalid()
+    {
+        // 设置标志来指出这个资源已经释放
+        // 调用 GC.SuppressFinalize(this) 方法来阻止调用 Finalize 方法
+    }
+
+    public Boolean IsClosed
+    {
+        get
+        {
+            // 返回指出资源是否释放的一个标志
+        }
+    }
+
+    public abstract Boolean IsInvalid
+    {
+        // 派生类要重写这个属性
+        // 如果句柄的值不代表资源(通常意味着句柄为 0 或 -1)，实现应返回 true
+        get;
+    }
+
+    // 以下三个方法涉及安全性和引用计数，本节最后会讨论它们
+    public void   DangerousAddRef(ref Boolean success) { ... }
+    public IntPtr DangerousGetHandle() { ... }
+    public void   DangerousRelease() { ... }
+}
 ```
+
+`SafeHandle` 类有两点需要注意。其一，它派生自 `CriticalFinalizerObject`；后者在 `System.Runtime.ConstrainedExecution` 命名空间定义。CLR 以特殊方式对待这个类及其派生类。具体地说，CLR 赋予这个类以下三个很酷的功能。
+
+* 首次构造任何 `CriticalFinalizerObject` 派生类型的对象时，CLR 立即对继承层次结构中的多有 `Finalize` 方法进行 JIT 编译。构造对象时就编译这些方法，可确保当对象被确定为垃圾之后，本机资源肯定会得以释放。不对 `Finalize` 方法进行提前编译，那么也许能分配并使用本机资源，但无法保证释放。内存紧张时，CLR 可能找不到足够的内存来编译 `Finalize` 方法，这会阻止 `Finalize` 方法的执行，造成本机资源泄露。另外，如果`Finalize` 方法中的代码引用了另一个程序集中的类型，但 CLR 定位该程序集失败，那么资源将得不到释放。
+
+* CLR 是在调用了非 `CriticalFinalizerObject` 派生类型的 `Finalize` 方法之后，才调用 `CriticalFinalizerObject` 派生类型的`Finalize` 方法。这样，托管资源类就可以在它们的 `Finalize` 方法中成功地访问 `CriticalFinalizerObject` 派生类型的对象。例如，`FileStream` 类的 `Finalize` 方法可以放心地将数据从内存缓冲区 flush<sup>①</sup>到磁盘，它知道此时磁盘文件还没有关闭。
+
+> ① flush 在文档中翻译成“刷新”，本书保留原文未译。其实 flush 在技术文档中的意思和日常生活中一样，即“冲洗(到别处)”。例如，我们会说“冲厕所”，不会说“刷新厕所”。———— 译注
+
+* 如果 `AppDomain` 被一个宿主应用程序(例如 **Microsoft SQL Server** 或者 **Microsoft ASP.NET**)强行中断，**CLR** 将调用 `CriticalFinalizerObject`派生类型的 `Finalize` 方法。宿主应用程序不再信任它内部运行的托管代码时，也利用这个功能确保本机资源得以释放。
+
+其二，`SafeHandle` 是抽象类，必须有另一个类从该类派生并重写受保护的构造器、抽象方法 `ReleaseHandle` 以及抽象属性 `IsInvalid` 的 `get` 访问器方法。
+
+大多数本机资源都用句柄(32 位系统是 32 位值，64 位系统是 64 位值)进行操作。所以 `SafeHandle` 类定义了受保护 `IntPtr` 字段 `handle`。在 Windows 中，大多数值为 0 或 -1 的句柄都是无效的。`Microsoft.Win32.SafeHandles` 命名空间包含 `SafeHandleZeroOrMinusOneIsInvalid` 辅助类，如下所示：
+
+```C#
+public abstract class SafeHandleZeroOrMinusOneIsInvalid : SafeHandle {
+    protected SafeHandleZeroOrMinusOneIsInvalid(Boolean ownsHandle) : base(IntPtr.Zero, ownsHandle) { }
+
+    public override bool IsInvalid {
+        get {
+            if (base.handle == IntPtr.Zero) return true;
+            if (base.handle == (IntPtr)(-1)) return true;
+            return false;
+        }
+    }
+}
+```
+
+`SafeHandleZeroOrMinusOneIsInvalid` 也是抽象类，所以必须有另一个类从该类派生并重写它的受保护构造器<sup>①</sup>和抽象方法`ReleaseHandle`。**.NET Framework**只提供了很少几个从`SafeHandleZeroOrMinusOneIsInvalid`派生的公共类，其中包括`SafeFileHandle`，`SafeRegistryHandle`，`SafeWaitHandle` 和 `SafeMemoryMappedViewHandle`。以下是`SafeFileHandle`类：
+
+> ① 构造器不能虚或抽象，自然也不能“重写”。作者的意思是说，派生类会定义一个 .ctor来调用受保护，再重写其他抽象成员。————译注
+
+```C#
+public sealed class SafeFileHandle : SafeHandleZeroOrMinusOneIsInvalid {
+    public SafeFileHandle(IntPtr preexistingHandle, Boolean ownsHandle):base(ownsHandle) {
+        base.SetHandle(preexistingHandle);
+    }
+
+    protected override bool ReleaseHandle() {
+         // 告诉 Windows 我们希望本机资源关闭
+        return Win32Native.ColseHandle(base.handle);
+    }
+}
+```
+
+`SafeWaitHandle`类的实现方式与上述`SafeFileHandle`类相似。之所以要用不同的类来提供相似的实现，唯一的原因就是为了保证类型安全；编译器不允许将一个文件句柄作为实参传给希望获取一个等待句柄的方法，反之亦然。`SafeRegistryHandle` 类的 `ReleaseHandle` 方法调用的是 Win32 `RegCloseKey` 函数。
+
+如果 .NET Framework 提供额外的类来包装各种本机资源，那么肯定会大受欢迎。例如，它似乎还应该提供下面这些类：`SafeProcessHandle`，`SafeThreadHandle`，`SafeTokenHandle`，`SafeTokenHandle`，`SafeLibraryHandle`(其 `ReleaseHandle` 方法调用 Win32 `FreeLibrary` 函数)以及 `SafeLocalAllocHandle`(其 `ReleaseHandle`方法调用 Win32 `LocalFree` 函数)。
+
+其实，所有这些类(还有许多没有列出)已经和 FCL 一道发布了，只是没有公开。它们全都在定义它们的程序集内部使用。Microsoft 之所以不公开，是因为不想完整地测试它们，也不想花时间编写它们的文档。但如果想在自己的工作中使用这些类，建议用一个工具(比如 ILDasm.exe 或某个 IL 反编译工具)提取这些类的代码，并将代码集成到自己项目的源代码中。所有这些类的实现其实很简单，自己从头写也花不了多少时间。
+
+`SafeHandle` 派生类非常有用，因为它们保证本机资源在垃圾回收时得以释放。除了前面讨论过的功能，`SafeHandle`类还有两个功能值得注意。首先，与本机代码互操作时，`SafeHandle` 派生类将获得 CLR 的特殊对待。例如以下代码：
+
+```C#
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+internal static class SomeType {
+    [DllImport("Kernel32",CharSet = CharSet.Unicode, EntryPoint = "CreateEvent")]
+    // 这个原型不健壮
+    private static extern IntPtr CreateEventBad(IntPtr pSecurityAttributes, 
+        Boolean manualReset, Boolean initialState, String name);
+
+    // 这个原型是健壮的
+    [DllImport("Kernel32", CharSet = CharSet.Unicode, EntryPoint = "CreateEvent")]
+    private static extern SafeWaitHandle CreateEventGood(IntPtr pSecurityAttributes, 
+        Boolean manualReset, Boolean initialState, String name);
+
+    public static void SomeMethod() {
+        IntPtr handle = CreateEventBad(IntPtr.Zero, false, false, null);
+        SafeWaitHandle swh = CreateEventGood(IntPtr.Zero, false, false, null);
+    }
+}
+```
+
