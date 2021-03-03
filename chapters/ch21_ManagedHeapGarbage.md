@@ -651,3 +651,47 @@ internal static class SomeType {
 }
 ```
 
+在上述代码中，`CreateEventBad` 方法的原型是返回一个 `IntPtr`，这会将句柄返回给托管代码。但以这种方式与本机代码交互是不健壮的。但以这种方式与本机代码交互是不健壮的。调用 `CreateEventBad`(该方法创建本机事件资源)之后，在句柄赋给 `handle` 变量之前，可能抛出一个 `ThreadAbortException`。虽然这很少发生，但一旦发生，托管代码将造成本机资源的泄露。这时只有终止整个进程才能关闭事件。
+
+`SafeHandle` 类修正了这个潜在的资源泄露问题。注意，`CreateEventGood` 方法的原型是返回一个 `SafeWaitHandle`(而非 `IntPtr`)。调用`CreateEventGood` 方法时，CLR 会调用 Win32 `CreateEvent` 函数。`CreateEvent` 函数返回至托管代码时，CLR 知道 `SafeWaitHandle` 是从 `SafeHandle` 派生的，所以会自动在托管堆构造 `SafeWaitHandle` 的实例，向其传递从 `CreateEvent` 返回的句柄值。新 `SafeWaitHandle` 对象的构造以及句柄的赋值现在是在本机代码中发生的，不可能被一个 `ThreadAbortException` 打断。托管代码现在不可能泄露这个本机资源。 `SafeWaitHandle` 对象最终会被垃圾回收，其 `Finalize` 方法会被调用，确保资源得以释放。
+
+`SafeHandle` 派生类最后一个值得注意的功能是防止有人利用潜在的安全漏洞。问题起因是一个线程可能试图使用一个本机资源，而另一个线程试图释放该资源。这可能造成句柄循环使用漏洞。`SafeHandle` 类防范这个安全隐患的办法是使用引用计数。`SafeHandle` 类内部定义了私有字段来维护一个计数器。一旦某个 `SafeHandle` 派生对象被设为有效句柄，计数器就被设为 1。每次将 `SafeHandle` 派生对象作为实参传给一个本机方法(非托管方法)，CLR 就会自动递增计数器。类似地，当本机方法返回到托管代码时，CLR 就会自动递增计数器。类似地，当本机方法返回到托管代码时，CLR 自动递减计数器。例如，Win32 `SetEvent` 函数的原型如下：
+
+```C#
+[DllImport("Kenel32", ExactSpelling = true)]
+private static extern Boolean SetEvent(SafeWaitHandle swh);
+```
+
+现在，调用这个方法并传递一个 `SafeWaitHandle` 对象引用，CLR 会在调用前递增计数器，调用后递减计数器。当然，对计数器的操作是以线程安全的方式进行的。那么安全性如何得以保障？当另一个线程试图释放 `SafeHandle` 对象包装的本机资源时，CLR 知道它实际上不能释放资源，因为该资源正在由一个本机(非托管)函数使用。本机函数返回后，计数器递减为 0， 资源才会得以释放。
+
+如果编写或调用代码将句柄作为一个 `IntPtr` 来操作，可以从 `SafeHandle` 对象中访问它，但就显式操作引用计数器。这是通过`SafeHandle`的`DangerousAddRef` 和 `DangerousRelease` 方法来完成的。另外，可通过 `DangerousGetHandle`方法访问原始句柄。
+
+`System.Runtime.InteropServices` 命名空间还定义了一个 `CriticalHandle` 类。该类除了不提供引用计数器功能，其他方面与 `SafeHandle` 类相同。`CriticalHandle` 类及其派生类通过牺牲安全性来换取更好的性能(因为不用操作计数器)。和 `SafeHandle` 相似， `CriticalHandle` 类也有自己的几个派生类型，其中包括 `CriticalHandleMinusOneIsInvalid` 和 `CriricalHandleZeroOrMinusOneIsInvalid`。由于 Microsoft 倾向于建立更安全而不是更快的系统，所以类库中没有提供从这两个类派生的类型。自己写程序时，建议只有在必须追求性能的时候才使用派生自 `CriticalHandle` 的类型。如果降低安全性不会有什么严重的后果，就选择从 `CriticalHandle` 派生的一个类型。
+
+### 21.3.1 使用包装了本机资源的类型
+
+你现在知道了如何定义包装了本机资源的 `SafeHandle` 派生类，接着说说如何使用它。以常用的 `System.IO.FileStream` 类为例，可利用它打开一个文件，从文件中读取字节，向文件写入字节，然后关闭文件。`FileStream` 对象在构造时会调用 Win32 `CreateFile` 函数，函数返回的句柄保存到`SafeFileHandle` 对象中，然后通过 `FileStream` 对象的一个私有字段来维护对该对象的引用。`FileStream` 类还提供了几个额外的属性(例如 `Length`，`Position`，`CanRead`)和方法(例如 `Read`，`Write`，`Flush`)。
+
+假定要写代码来创建一个临时文件，向其中写入一些字节，然后删除文件。开始可能会像下面这样写代码：
+
+```C#
+using System;
+using System.IO;
+
+public static class Program {
+    public static void Main() {
+        // 创建要写入临时文件的字节
+        Byte[] bytesToWrite = new Byte[] { 1, 2, 3, 4, 5 };
+
+        // 创建临时文件
+        FileStream fs = new FileStream("Temp.dat", FileMode.Create);
+
+        // 将字节写入临时文件
+        fs.Write(bytesToWrite, 0, bytesToWrite.Length);
+
+        // 删除临时文件
+        File.Delete("Temp.dat");                // 抛出 IOException 异常
+    }
+}
+```
+
