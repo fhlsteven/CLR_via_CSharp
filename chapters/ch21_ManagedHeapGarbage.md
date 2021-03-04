@@ -695,3 +695,55 @@ public static class Program {
 }
 ```
 
+遗憾的是，生成并运行上述代码，它也许能工作，但大多数时候都不能。问题在于 `File` 的静态 `Delete` 方法要求 Windows 删除一个仍然打开的文件。所以 `Delete` 方法会抛出 `System.IO.IOException` 异常，并显示以下字符串消息：**文件"Temp.dat"正由另一进程使用，因此该进程无法访问此文件。**
+
+但某些情况下，文件可能“误打误撞”地被删除！如果另一线程不知怎么造成了一次垃圾回收，而且这次垃圾回收刚好在调用 `Write` 之后、调用 `Delete` 之前发生，那么 `FileStream` 的 `SafeFileHandle` 字段的 `Finalize` 方法就会被调用，这会关闭文件，随后 `Delete` 操作也就可以正常运行。但发生这种情况的概率很小，上述代码无法运行的可能性在 99% 以上。
+
+类如果想允许使用者控制类所包装的本机资源的生存期，就必须实现如下所示的 `IDisposable` 接口。
+
+
+```C#
+public interface IDisposable {
+    void Dispose();
+}
+```
+
+> 重要提示 如果类定义的一个字段的类型实现了 dispose 模式<sup>①</sup>，那么类本身也应实现 dispose 模式，那么类本身也应实现 dispose 模式。`Dispose`方法应 dispose <sup>②</sup>字段引用的对象。这就允许类的使用者在类上调用 `Dispose` 来释放对象自身使用的资源。
+
+> ① 实现了 `IDisposable` 接口，就实现了 dispose 模式。————译注  
+> ② 文档将 disposal 和 dispose 翻译成 “释放”。这里解释一下为什么不赞成这个翻译。在英语中，这个词的意思是“摆脱“或”除去“(get rid of)一个东西，尤其是在这个东西很那除去的情况下。之所以认为”释放“不恰当，除了和 release 一词冲突，还因为 dispose 强调了”清理“和”处置“，而且在完成(对象中包装的)资源的清理之后，对象占用的内存还暂时不会释放。所以，”dispose 一个对象“真正的意思是：清理或处置对象中包装的资源(比如它的字段引用的对象)，然后等着在一次垃圾回收之后回收该对象占用的托管堆内存(此时才释放)。为避免误解，本书保留了 dispose 和 disposal 的原文。————译注
+
+幸好，`FileStream` 类实现了 `IDisposable` 接口。在实现中、会在 `FileStream` 对象的私有 `SafeFileHandle` 字段上调用 `Dispose`。现在就能修改代码来显式关闭文件，而不是等着未来某个时候 GC 的发生。下面是修改后的源代码。
+
+```C#
+using System;
+using System.IO;
+
+public static class Program {
+    public static void Main() {
+        // 创建要写入临时文件的字节
+        Byte[] bytesToWrite = new Byte[] { 1, 2, 3, 4, 5 };
+
+        // 创建临时文件
+        FileStream fs = new FileStream("Temp.dat", FileMode.Create);
+
+        // 将字节写入临时文件
+        fs.Write(bytesToWrite, 0, bytesToWrite.Length);
+
+        // 写入结束后显式关闭文件
+        fs.Dispose();
+
+        // 删除临时文件
+        File.Delete("Temp.dat");                // 总能正常工作
+    }
+}
+```
+
+现在，当调用 `File` 的 `Delete` 方法时，Windows 发现该文件没有打开，所以能成功删除它。
+
+注意，并非一定要调用 `Dispose` 才能保证本机资源得以清理。本机资源的清理最终总会发生，调用 `Dispose` 只是控制这个清理动作的发生时间。另外，调用 `Dispose` 不会将托管对象从托管堆删除。只有在垃圾回收之后，托管堆中的内存才会得以回收。这意味着即使 dispose 了托管对象过去用过的任何本机资源，也能在托管对象上调用方法。
+
+以下代码在文件关闭后调用 `Write` 方法，试图写入更多的字节。这显然不可能。代码执行时，第二个 `Write` 调用会抛出 `System.ObjectDisposedException` 异常并显示以下字符串消息：**无法访问已关闭的文件**。
+
+``````
+
