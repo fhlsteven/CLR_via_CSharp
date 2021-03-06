@@ -745,5 +745,70 @@ public static class Program {
 
 以下代码在文件关闭后调用 `Write` 方法，试图写入更多的字节。这显然不可能。代码执行时，第二个 `Write` 调用会抛出 `System.ObjectDisposedException` 异常并显示以下字符串消息：**无法访问已关闭的文件**。
 
-``````
+```C#
+using System;
+using System.IO;
+
+public static class Program {
+    public static void Main() {
+        // 创建要写入临时文件的字节
+        Byte[] bytesToWrite = new Byte[] { 1, 2, 3, 4, 5 };
+
+        // 创建临时文件
+        FileStream fs = new FileStream("Temp.dat", FileMode.Create);
+
+        // 将字节写入临时文件
+        fs.Write(bytesToWrite, 0, bytesToWrite.Length);
+
+        // 写入结束后显式关闭文件
+        fs.Dispose();
+
+        // 关闭文件后继续写入
+        fs.Write(bytesToWrite, 0, bytesToWrite.Length);   // 抛出 ObjectDisposedException
+
+        // 删除临时文件
+        File.Delete("Temp.dat");                // 总能正常工作
+    }
+}
+```
+
+这不会造成对内存的破坏，因为 `FileStream` 对象的内存依然“键在”。只是在对象被显式 dispose 之后，它的方法不能再成功执行而已。
+
+> 重要提示 定义实现 `IDisposable` 接口的类型时，在它的所有方法和属性中，一定要在对象被显式清理之后抛出一个 `System.ObjectDisposedException`。而 `Dispose` 方法永远不要抛出 `ObjectDisposedException`；被多次调用就直接返回。
+
+> 重要提示 我一般不赞成在代码中显式调用 `Dispose`。理由是 CLR 的垃圾回收器已经写得非常好，应该放心地把工作交给它。垃圾回收器知道一个对象何时不再由应用程序代码访问，而且只有到那时才会回收对象。<sup>①</sup>而当应用程序代码调用 `Dispose` 时，实际是在信誓旦旦地说它知道应用程序在什么时候不需要一个对象。但许多应用程序都不可能准确知道一个对象在什么时候不需要。  
+> 例如，假定在方法 A 的代码中构造了一个新对象，然后将对该对象的引用传给方法 B。方法 B 可能将对该对象的引用保存到某个内部字段变量(一个根)中。但方法 A 并不知道这个情况，它当然可以调用 `Dispose`。但在此之后，其他代码可能试图访问该对象，造成抛出一个 `ObjectDisposedException`。建议只有在确定必须清理资源(例如删除打开的文件)时才调用 `Dispose`。  
+> 有可能多个线程同时调用一个对象的 `Dispose`。但 `Dispose` 的设计规范指出 `Dispose` 不一定要线程安全。原因是代码只有在确定没有别的线程使用对象时才应调用 `Dispose`。
+
+>> ① 垃圾回收系统有许多好处：无内存泄露、无内存损坏、无地址空间碎片化以及缩小的工作集。现在还增加了一个好处：同步。你没有看错，GC 确实能作为线程同步机制。问题是，怎么知道所有线程都不再使用一个对象？答案是，GC 会终结对象。创建自己的应用程序时，利用 GC 的所有功能并不是一件坏事。
+ 
+前面的例子展示了怎样显式调用类型的 `Dispose` 方法。如果决定显式调用 `Dispose`，强烈建议将调用放到一个异常处理 `finally` 块中。这样可保证清理代码得以执行。因此，前面代码示例可修改成下面这种更好的形式：
+
+```C#
+using System;
+using System.IO;
+
+public static class Program {
+    public static void Main() {
+        // 创建要写入临时文件的字节
+        Byte[] bytesToWrite = new Byte[] { 1, 2, 3, 4, 5 };
+
+        // 创建临时文件
+        FileStream fs = new FileStream("Temp.dat", FileMode.Create);
+        try {
+            // 将字节写入临时文件
+            fs.Write(bytesToWrite, 0, bytesToWrite.Length);
+        }
+        finally {
+            // 写入字节后显式关闭文件
+            if (fs != null) fs.Dispose();
+        }
+
+        // 删除临时文件
+        File.Delete("Temp.dat");                // 总能正常工作
+    }
+}
+```
+
+添加异常处理代码是正确的，而且应该坚持这样做。幸好，C# 语言提供了一个 `using` 语句，它允许用简化的语法来获得和上述代码相同的结果。下面演示了如何使用 C# 的 `using` 语句重写上述代码：
 
