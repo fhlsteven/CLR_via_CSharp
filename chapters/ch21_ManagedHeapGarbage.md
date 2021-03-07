@@ -812,3 +812,267 @@ public static class Program {
 
 添加异常处理代码是正确的，而且应该坚持这样做。幸好，C# 语言提供了一个 `using` 语句，它允许用简化的语法来获得和上述代码相同的结果。下面演示了如何使用 C# 的 `using` 语句重写上述代码：
 
+```C#
+using System;
+using System.IO;
+
+public static class Program {
+    public static void Main() {
+        // 创建要写入临时文件的字节
+        Byte[] bytesToWrite = new Byte[] { 1, 2, 3, 4, 5 };
+
+        // 创建临时文件
+        using (FileStream fs = new FileStream("Temp.dat", FileMode.Create)) {
+            // 将字节写入临时文件
+            fs.Write(bytesToWrite, 0, bytesToWrite.Length);
+        }        
+
+        // 删除临时文件
+        File.Delete("Temp.dat");                // 总能正常工作
+    }
+}
+```
+
+`using` 语句初始化一个对象，并将它的引用保存到一个变量中。然后再 `using` 语句的大括号内访问该变量。编译这段代码时，编译器自动生成 `try` 块和 `finally` 块。在 `finally` 块中，编译器生成代码将变量转型为一个 `IDisposable` 并调用 `Dispose` 方法。但是很显然，`using`语句只能用于那些实现了 `IDisposable` 接口的类型。
+
+> 注意 C# 的 `using` 语句支持初始化多个变量，只要这些变量的类型相同。另外，`using` 语句还允许只使用一个已初始化的变量。欲知详情，请参见文档中的“`using`语句”主题。
+
+### 21.3.2 一个有趣的依赖性问题
+
+`System.IO.FileStream` 类型允许用户打开文件进行读写。为提高性能，该类型的实现利用了一个内存缓冲区。只有缓冲区满时，类型才将缓冲区中的数据刷入文件。`FileStream`类型只支持字节的写入。写入字符和字符串可以使用一个 `System.IO.StreamWriter`，如下所示：
+
+```C#
+FileStream fs = new FileStream("DataFile.dat", FileMode.Create);
+StreamWriter sw = new StreamWriter(fs);
+sw.Write("Hi there");
+
+// 不要忘记写下面这个 Dispose 调用
+sw.Dispose();
+// 注意：调用 StreamWriter.Dispose 会关闭 FileStream
+// FileStream 对象无需显式关闭
+```
+
+注意，`StreamWriter` 的构造器接受一个 `Stream` 对象引用作为参数，可以向它传递一个 `FileStream` 对象引用作为实参。在内部，`StreamWriter` 对象会保存 `Stream` 对象引用。向一个 `StreamWriter` 对象写入时，它会将数据缓存在自己的内存缓冲区中。缓冲区满时，`StreamWriter` 对象将数据写入 `Stream` 对象。
+
+通过 `StreamWriter` 对象写入数据完毕后应调用 `Dispose`。(由于 `StreamWriter` 类型实现了 `IDisposable` 接口，所以也可使用 C#的 `using` 语句。)这导致 `StreamWriter` 对象将数据 flush 到 `Stream` 对象。<sup>①</sup>
+
+>> ① 可调用 `StreamWriter` 的获取一个 `Boolean leaveOpen` 参数的构造器来覆盖该行为。 ———— 译注
+
+> 注意 不需要在 `FileStream` 对象上显式调用 `Dispose`，因为 `StreamWriter` 会帮你调用。但如果非要显式调用 `Dispose`，`FileStream` 会发现对象已经清理过了，所以方法什么都不做而直接返回。
+
+没有代码显式调用 `Dispose` 会发生什么？在某个时刻。垃圾回收器会正确检测到对象是垃圾，并对其进行终结。但垃圾回收器不保证对象的终结顺序。所以，如果 `FileStream` 对象先终结，就会关闭文件。然后，当 `StreamWriter` 对象终结时，会试图向已关闭的文件写入数据，造成抛出异常。相反，如果是 `StreamWriter` 对象先终结，数据就会安全写入文件。
+
+Microsoft 是如何解决这个问题的呢?让垃圾回收器以特定顺序终结对象是不可能的，因为不同的对象可能包含相互之间的引用，垃圾回收器无法正确猜出这些对象的终结顺序。Microsoft 的解决方案是：`StreamWriter` 类型不支持终结，所以永远不会将它的缓冲区中的数据 flush 到底层 `FileStream` 对象。这意味着如果忘记在 `StreamWriter` 对象上显式调用 `Dispose`，数据肯定会丢失。Microsoft 希望开发人员注意到这个数据一直丢失的问题，并插入对 `Dispose` 的调用来修正代码。
+
+> 注意 .NET Framework 支持托管调试助手(Managed Debugging Assistant，MDA)功能。启用一个 MDA 后，.NET Framework 就会查找特定种类的常见编程错误，并激活对应的 MDA。在调试器中，激活一个 MDA 感觉就像是抛出一个异常。有一个 MDA 可以检测 `StreamWriter` 对象没有显式 dispose 就作为垃圾被回收的情况。为了在 Visual Studio 中启用这个 MDA，请打开你的项目，选择“调试“|”异常”。在“异常”对话框中，展开“Managed Debugging Assistants” 节点并滚动到底部，找到名为 `StreamWriterBufferedDataLost` 的 MDA，勾选“引发”即可让 Visual Studio 调试器在 `StreamWriter` 对象的数据丢失时停止。
+
+### 21.3.3 GC为本机资源提供的其他功能
+
+本机资源有时会消耗大量内存，但用于包装它的托管对象只占用很少的内存。一个典型的例子就是位图。一个位图可能占用几兆字节的本机内存，托管对象却极小，只包含一个 `HBITMAP`(一个 4 或 8 字节的值)。从 CLR 的角度看，一个进程可以在执行一次垃圾回收之前分配数百个位图(它们用的托管内存太少了)。但如果进程操作许多位图，进程的内存消耗将以一个恐怖的速度增长。为了修正这个问题，`GC` 类提供了以下两个静态方法：
+
+```C#
+public static void AddMemoryPressure(Int64 bytesAllocated);
+public static void RemoveMemoryPressure(Int64 bytesAllocated);
+```
+
+如果一个类要包装可能很大的本机资源，就应该使用这些方法提示垃圾收回收器实际需要消耗多少内存。垃圾回收器内部会监视内存压力，压力变大时，就强制执行垃圾回收。
+
+有的本机资源的数量是固定的。例如，Windows 以前就限制只能创建 5 个设备上下文。应用程序能打开的文件数量也必须有限制。同样地，从 CLR 的角度看，一个进程可以在执行垃圾回收之前分配数百个对象(每个对象都使用极少的内存)。但是，如果这些本机资源的数量有限，那么一旦试图使用超过允许数量的资源，通常会导致抛出异常。为了解决这个问题，命名空间 `System.Runtime.InteropServices` 提供了 `HandleCollector` 类：
+
+```C#
+public sealed class HandleCollector {
+    public HandleCollector(String name, Int32 initialThreshold);
+    public HandleCollector(String name, Int32 initialThreshold, Int32 maximumThreshold);
+    public void Add();
+    public void Remove();
+
+    public Int32 Count { get; }
+    public Int32 InitialThreshold { get; }
+    public Int32 MaximumThreshold { get; }
+    public String Name { get; }
+}
+```
+
+如果一个类要包装数量有限制的本机资源，就应该使用该类的实例来提示垃圾回收器实际要使用资源的多少个实例。该类的对象会在内部监视这个计数，计数太大就强制垃圾回收。
+
+> 注意 在内部，`GC.AddMemoryPressure` 和 `HandleCollector.Add` 方法会调用 `GC.Collect` ，在第 0 代超过预算前强制进行 GC。一般都强烈反对强制开始一次垃圾回收，因为它会对应用程序性能造成负面影响。但是，类之所以调用这些方法，是为了保证应用程序性能造成负面影响。但是，类之所以调用这些方法，是为了保证应用程序能用上有限的本机资源。本地资源用光了，应用程序就会失败。对于大多数应用程序，性能遭受一些损失总胜于完全无法运行。
+
+以下代码演示了内存压力方法及 `HandleCollector` 类的使用和效果：
+
+```C#
+using System;
+using System.Runtime.InteropServices;
+
+public static class Program {
+    public static void Main() {
+        MemoryPressureDemo(0);                  // 0 导致不频繁的 GC
+        MemoryPressureDemo(10 * 1024 * 1024);   // 10MB 导致频繁的 GC
+
+        HandleCollectorDemo();
+    }
+
+    public static void MemoryPressureDemo(Int32 size) {
+        Console.WriteLine();
+        Console.WriteLine("MemoryPressureDemo, size={0}" , size);
+
+        // 创建一组对象，并指定它们的逻辑大小
+        for (Int32 count = 0; count < 15; count++) {
+            new BigNativeResource(size);
+        }
+
+        // 出于演示目的，强制一切都被清理
+        GC.Collect();
+    }
+
+    private sealed class BigNativeResource {
+        private Int32 m_size;
+
+        public BigNativeResource(Int32 size) {
+            m_size = size;
+            // 使垃圾回收器认为对象在物理上比较大
+            if (m_size > 0) GC.RemoveMemoryPressure(m_size);
+            Console.WriteLine("BigNativeResource create.");
+        }
+
+        ~BigNativeResource() {
+            // 使垃圾回收器认为对象释放了更多的内存
+            if (m_size > 0) GC.RemoveMemoryPressure(m_size);
+            Console.WriteLine("BigNativeResource destroy.");
+        }
+    }
+
+    private static void HandleCollectorDemo() {
+        Console.WriteLine();
+        Console.WriteLine("HandleCollectorDemo");
+        for (Int32 count = 0; count < 10; count++) {
+            new LimitedResource();
+        }
+
+        // 出于演示目的，强制一切都被清理
+        GC.Collect();
+    }
+
+    private sealed class LimitedResource {
+        // 创建一个 HandleCollector，告诉它当两个或者更多这样的对象
+        // 存在于堆中时，就执行回收
+        private static readonly HandleCollector s_hc = new HandleCollector("LimitedResource", 2);
+
+        public LimitedResource() {
+            // 告诉 HandleCollector 堆中增加了一个 LimitedResource 对象
+            s_hc.Add();
+            Console.WriteLine("LimitedResource create. Count={0}", s_hc.Count);
+        }
+
+        ~LimitedResource() {
+            // 告诉 HandleCollector 堆中移除了一个 LimitedResource 对象
+            s_hc.Remove();
+            Console.WriteLine("LimitedResource destroy. Count={0}", s_hc.Count);
+        }
+    }
+}
+```
+
+编译并运行上述代码，会得到和下面相似的输出。
+
+```cmd
+MemoryPressureDemo, size=0
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+
+MemoryPressureDemo, size=10485760
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource create.
+BigNativeResource destroy.
+
+HandleCollectorDemo
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+BigNativeResource destroy.
+LimitedResource create. Count=1
+LimitedResource create. Count=2
+LimitedResource create. Count=3
+LimitedResource destroy. Count=3
+LimitedResource destroy. Count=2
+LimitedResource destroy. Count=1
+BigNativeResource destroy.
+LimitedResource create. Count=1
+LimitedResource create. Count=2
+LimitedResource destroy. Count=2
+LimitedResource create. Count=2
+LimitedResource create. Count=3
+LimitedResource destroy. Count=3
+LimitedResource destroy. Count=2
+LimitedResource destroy. Count=1
+LimitedResource create. Count=1
+LimitedResource create. Count=2
+LimitedResource create. Count=3
+LimitedResource destroy. Count=2
+LimitedResource destroy. Count=1
+LimitedResource destroy. Count=0
+```
+
+### 21.3.4 终结的内部工作原理
+
+终结表面上很简单：创建对象，当它被回收时，它的 `Finalize` 方法得以调用。但一旦深下去，就会发现终结的门道很多。
+
+应用程序创建新对象时，`new`操作符会从堆中分配内存。如果对象的类型定义了 `Finalize` 方法，那么在该类型的实例构造器被调用之前，会将指向该对象的指针放到一个**终结列表**(finalization list)中。终结列表是由垃圾回收器控制的一个内部数据结构。列表中的每一项都指向一个对象————回收该对象的内存前应调用它的 `Finalize` 方法。
+
+图 12-13 展示了包含几个对象的堆。有的对象从应用程序的根可达，有的不可达。对象 C，E，F，I 和 J 被创建时，系统检测到这些对象的类型定义了 `Finalize` 方法，所以将指向这些对象的指针添加到终结列表中。
+
+![21_13](../resources/images/21_13.png) 
+
+图 21-13 托管堆的络结列表包含了指向对象的指针 
+
+> 注意 虽然 `System.Object` 定义了 `Finalize` 方法，但 CLR 知道忽略它。也就是说，构造类型的实例时，如果该类型的 `Finalize` 方法是从 `System.Object` 继承的，就不认为这个对象是 ”可终结“ 的。类型必须重写 `Object` 的 `Finalize` 方法，这个类型及其派生类型的对象才被认为是”可终结“的。
+
