@@ -1076,3 +1076,144 @@ LimitedResource destroy. Count=0
 
 > 注意 虽然 `System.Object` 定义了 `Finalize` 方法，但 CLR 知道忽略它。也就是说，构造类型的实例时，如果该类型的 `Finalize` 方法是从 `System.Object` 继承的，就不认为这个对象是 ”可终结“ 的。类型必须重写 `Object` 的 `Finalize` 方法，这个类型及其派生类型的对象才被认为是”可终结“的。
 
+垃圾回收开始时，对象 B，E，G，H，I 和 J 被判定为垃圾。垃圾回收器扫描终结列表以查找这些对象的引用。找到一个引用后，该引用会从终结列表中移除，并附加到 freachable 队列。freachable**队列**(发音是“F-reachable”)也是垃圾回收器的一种内部数据结构。队列中的每个引用都代表其 `Finalize` 方法已准备好调用的一个对象。图 21-14 展示了回收完毕后的托管堆。
+
+![21_14](../resources/images/21_14.png)  
+图 21-14 在托管堆中，一些指针从终结列表移至 freachable 队列 
+
+从图 21-14 可以看出，对象 B，G 和 H 占用的内存已被回收，因为它们没有 `Finalize` 方法。但对象 E，I 和 J 占用的内存暂时不能回收，因为它们的 `Finalize` 方法还没有调用。
+
+一个特殊的高优先级 CLR 线程专门调用 `Finalize` 方法。专用线程可避免潜在的线程同步问题。(使用应用程序的普通优先级线程就可能发生这个问题。)freachable队列为空时(这很常见)，该线程将睡眠。但一旦队列中有记录项出现，线程就会被唤醒，将每一项都从 freachable 队列中移除，同时调用每个对象的 `Finalize` 方法。由于该线程的特殊工作方式，`Finalize` 中的代码不应该对执行代码做出任何假设。例如，不要在 `Finalize` 方法中访问线程的本地存储。
+
+CLR 未来可能使用多个终结器线程。所以，代码不应假设 `Finalize` 方法会被连续调用。在只有一个终结器线程的情况下，可能有多个 CPU 分配可终结的对象，但只有一个线程执行 `Finalize` 方法，这造成该线程可能跟不上分配的速度，从而产生性能和伸缩性方面的问题。
+
+终结列表和 freachable 队列之间的交互很有意思。首先，让我告诉你 freachable 队列这个名称的由来。“f” 明显代表 “终结”(finalization)；freachable 队列中的每个记录项都是对托管堆中应用调用其 `Finalize` 方法的一个对象的引用。“reachable”意味着对象是可达的。换言之，可将 freachable 队列看成是像静态字段那样的一个根。所以，freachable 队列中的引用使它指向的对象保持可达，不是垃圾。
+
+简单地说，当一个对象不可达时，垃圾回收器就把它视为垃圾。但是，当垃圾回收器将对象的引用从终结列表移至 freachable 队列时，对象不再被认为是垃圾，不能回收它的内存。对象被视为垃圾又变得不是垃圾，我们说对象被**复活**了。
+
+标记 freachable 对象时，将递归标记对象中的引用类型的字段所引用的对象；所有这些对象也必须复活以便在回收过程中存活。之后，垃圾回收器才结束对垃圾的标识。在这个过程中，一些原本认为是垃圾的对象复活了。然后，垃圾回收器压缩(移动)可回收的内存，将复活的对象提升到较老的一代(这不理想)。现在，特殊的终结线程清空 freachable 队列，执行每个对象的 `Finalize` 方法。
+
+下次对老一代进行垃圾回收时，会发现已终结的对象成为真正的垃圾，因为没有应用程序的根指向它们，freachable 队列也不再指向它们。所以，这些对象的内存会直接回收。整个过程中，注意，可终结对象需要执行两次垃圾回收才能释放它们占用的内存。在实际应用中，由于对象可能被提升至另一代，所以可能要求不止进行两次垃圾回收。图 21-15 展示了第二次垃圾回收后托管堆的情况。
+
+![21_15](../resources/images/21_15.png)  
+图 21-15 第二次垃圾回收后托管堆的情况  
+
+### 21.3.5 手动监视和控制对象的生存期
+
+CLR 为每个 AppDomain 都提供了一个 **GC 句柄表**(GC Handle table)，允许应用程序监视或手动控制对象的生存期。这个表在 AppDomain 创建之初是空白的。表中每个记录项都包含以下两种信息：对托管堆中的一个对象的引用，以及指出如何监视或控制对象的标志(flag)。应用程序使用如下所示的 `System.Runtime.InteropServices.GCHandle` 类型在表中添加或删除记录项。
+
+```C#
+// 该类型在 System.Runtime.InteropServices 命名空间中定义
+public struct GCHandle {
+    // 静态方法，用于在表中创建一个记录项
+    public static GCHandle Alloc(object value);
+    public static GCHandle ALloc(object value, GCHandleType type);
+
+    // 静态方法，用于将一个 GCHandle 转换成一个 IntPtr 
+    public static explicit operator IntPtr(GCHandle value);
+    public static IntPtr ToIntPtr(GCHandle value);
+
+    // 静态方法，用于将一个 IntPtr 转换为一个 GCHandle
+    public static explicit operator GCHandle(IntPtr value);
+    public static GCHandle FromIntPtr(IntPtr value);
+
+    // 静态方法，用于比较两个 GCHandle
+    public static Boolean operator == (GCHandle a, GCHandle b);
+    public static Boolean operator != (GCHandle a, GCHandle b);
+
+    // 实例方法，用于释放表中的记录项 (索引设为 0)
+    public void Free();
+
+    // 实例属性，用于 get/set 记录项的对象引用
+    public object Target { get; set; }
+
+    // 实例属性，如果索引不为 0，就返回 true
+    public Boolean IsAllocated { get; }
+
+    // 对于已固定(pinned)的记录项，这个方法返回对象的地址
+    public IntPtr AddrOfPinnedObject();
+
+    public override Int32 GetHashCode();
+    public override Boolean Equals(object o);
+}
+```
+
+简单地说，为了控制或监视对象的生存期，可调用 `GCHandle` 的静态 `Alloc` 方法并传递想控制/监视的对象的引用。还可传递一个 `GCHandleType`，这可传递一个 `GCHandleType`，这是一个标志，指定了你想如何控制/监视对象。`GCHandleType` 是枚举类型，它的定义如下所示：
+
+```C#
+public enum GCHancleType {
+    Weak = 0,                       // 用于监视对象的存在
+    WeakTrackResurrection = 1,      // 用于监视对象的存在
+    Normal = 2,                     // 用于控制对象的生存期
+    Pinned = 3                      // 用于控制对象的生存期
+}
+```
+
+下面解释每个标志的具体含义。
+
+* `Weak`  
+  该标志允许监视对象的生存期。具体地说，可检测垃圾回收器在什么时候判定该对象在应用程序代码中不可达。注意，此时对象的 `Finalize` 方法可能执行，也可能没有执行，对象可能在内存中。
+
+* `WeakTrackResurrection`  
+  该标志允许监视对象的生存期。具体地说，可检测垃圾回收器在什么时候判定该对象在应用程序的代码中不可达。注意，此时对象的 `Finalize` 方法(如果有的话)已经执行，对象的内存已经回收。
+
+* `Normal`  
+  该标志允许控制对象的生存期。具体地说，是告诉垃圾回收器：即使应用程序中没有变量(根)引用该对象，该对象也必须留在内存中。垃圾回收发生时，该对象的内存可以压缩(移动)。不向 `Alloc` 方法传递任何 `GCHandleType` 标志，就默认使用 `GCHandleType.Normal`。
+
+* `Pinned`  
+  该标志允许控制对象的生存期。具体地说，是告诉垃圾回收器：即使应用程序中没有变量(根)引用该对象，该对象也必须留在内存中。垃圾回收发生时，该对象的内存不能压缩(移动)。需要将内存地址交给本机代码时，这个功能很好用。本机代码知道 GC 不会移动对象，所以能放心地向托管堆的这个内存写入。
+
+`GCHandle` 的静态 `Alloc` 方法在调用时会扫描 `AppDomain` 的 GC 句柄表，查找一个可用的记录项来存储传给 `Alloc` 的对象引用，并将标志设为你为 `GCHandleType` 实参传递的值。然后，`Alloc` 方法返回一个 `GCHandle` 实例。 `GCHandle` 是轻量级的值类型，其中包含一个实例字段(一个 `IntPtr` 字段)，它引用了句柄表中的记录项索引。要释放 GC 句柄表中的这个记录项时，可以获取 `GCHandle` 实例，并在这个实例上调用 `Free` 方法。`Free` 方法将 `IntPtr` 字段设为 0，使实例变得无效。
+
+下面展示了垃圾回收器如何使用 GC 句柄表。当垃圾回收发生时，垃圾回收器的行为如下。
+
+1. 垃圾回收器标记所有可达的对象(本章开始的时候已进行了描述)。然后，垃圾回收器扫描 GC 句柄表；所有 `Normal` 或 `Pinned` 对象都被看成是根，同时标记这些对象(包括这些对象通过它们的字段引用的对象)。
+
+2. 垃圾回收器扫描 GC 句柄表，查找所有 `Weak` 记录项。如果一个 `Weak` 记录项引用了未标记的对象，该引用标识的就是不可达对象(垃圾)，该记录项的引用值更改为 `null`。
+
+3. 垃圾回收器扫描终结列表。在列表中，对未标记对象的引用标识的是不可达对象，这些引用从终结列表移至 freachable 队列。这时对象会被标记，因为对象又变成可达了。
+
+4. 垃圾回收器扫描 GC 句柄表，查找所有 `WeakTrackResurrection` 记录项。如果一个 `WeakTrackResurrection` 记录项引用了未标记的对象(它现在是由 freachable 队列中的记录项引用的)，该引用标识的就是不可达对象(垃圾)，该记录项的引用值更改为 `null`。
+
+5. 垃圾回收器堆内存进行压缩，填补不可达对象留下的内存“空调”，这其实就是一个内存碎片整理的过程。`Pinned` 对象不会压缩(移动)，垃圾回收器会移动它周围的其他对象。
+
+理解了机制之后，接着看看在什么情况下使用。最容易理解的标志就是 `Normal` 和 `Pinned`，所以让我们从它们入手。这两个标志通常在和本机代码互操作时使用。
+
+需要将托管对象的指针交给本机代码时使用 `Normal` 标记，因为本机代码将来要回调托管代码并传递指针。但不能就这么将托管对象的指针交给本机代码，因为如果垃圾回收发生，对象可能在内存中移动，指针便无效了。解决方案是调用 `GCHandle` 的 `Alloc` 方法，传递对象引用和 `Normal` 标志。将返回的 `GCHandle` 实例转型为 `IntPtr`，再将这个 `IntPtr` 传给本机代码。本机代码回调托管代码时，托管代码传递的 `IntPtr` 转型为 `GCHandle`，查询 `Target` 属性获得托管对象的引用(当前地址)。本机代码不再需要这个引用之后，你可以调用 `GCHandle` 的 `Free` 方法，使未来的垃圾回收能够释放对象(假定不存在引用该对象的其他根)。
+
+注意在这种情况下，本机代码并没有真正使用托管对象本身；它只是通过一种方式引用了对象。但某些时候，本机代码需要真正地使用托管对象。这时托管对象必须固定(pinned)，从而阻止垃圾回收器压缩(移动)对象。常见的例子是将托管 `String` 对象传给某个 Win32 函数。这时 `String` 对象必须固定。不能将对托管对象的引用传给本机代码，然后任由垃圾回收器在内存中移动对象。`String` 对象被移走了，本机代码就会向已经不包含 `String` 对象的字符内容的内存进行读写————导致应用程序的行为无法预测。
+
+使用 CLR 的 P/Invoke 机制调用方法时，CLR 会自动帮你固定实参，并在本机方法返回时自动解除固定。所以，大多数时候都不必使用 `GCHandle` 类型来显式固定任何托管对象。只有在将托管对象的指针传给本机代码，然后本机函数返回，但本机代码将来仍需使用该对象时，才需要显式使用 `GCHandle` 类型。最常见的例子就是执行异步 I/O 操作。
+
+假定分配了一个字节数组，并准备在其中填充来自一个套接字的数据。这时应该调用 `GCHandle` 的 `Alloc` 方法，传递对数组对象的引用以及`Pinned` 标志。然后，在返回的`GCHandle` 实例上调用 `AddrOfPinnedObject` 方法。这会返回一个 `IntPtr`，它是已固定对象在托管堆中的实际地址。然后，就该地址传给本机函数，该函数立即返回至托管代码。数据从套接字传来时，该字节数组缓冲区在内存中不会移动；阻止移动是 `Pinned`标志的功劳。异步 I/O 操作完毕后调用 `GCHandle` 的 `Free` 方法，以后垃圾回收时就可以移动缓冲区了。托管代码应包含一个缓冲区引用，这使你能访问数据。正是由于这个引用的存在，所以才会阻止垃圾回收从内存中彻底释放该缓冲区。
+
+值得注意的是，C# 提供了一个 `fixed` 语句，它能在一个代码块中固定对象。以下代码演示了该语句是如何使用的:
+
+```C#
+unsafe public static void Go() {
+    // 分配一系列立即变成垃圾的对象
+    for (Int32 x = 0; x < 10000; x++) new Object();
+
+    IntPtr originalMemoryAddress;
+    Byte[] bytes = new Byte[1000];  // 在垃圾对象后分配这个数组
+
+    // 获取 Byte[] 在内存中的地址
+    fixed (Byte* pbytes = bytes) { originalMemoryAddress = (IntPtr)pbytes; }
+
+    // 强迫进行一次垃圾回收；垃圾对象会被回收，Byte[] 可能被压缩
+    GC.Collect();
+
+    // 获取 Byte[] 当前在内存中的地址，把它同第一个地址比较
+    fixed (Byte* pbytes = bytes) {
+        Console.WriteLine("The Byte[] did[0] move during the GC", 
+            (originalMemoryAddress == (IntPtr) pbytes) ? "not" : null);
+    }
+}
+```
+
+使用 C# 的 `fixed` 语句比分配一个固定 GC 句柄高效得多。这里发生的事情是，C# 编译器在 `pbytes` 局部变量上生成一个特殊的”已固定“标志。垃圾回收期间，GC 检查这个根的内容，如果根不为 `null`，就知道在压缩阶段不要移动变量引用的对象。C# 编译器生成 IL 将 `pbytes` 局部变量初始化为 `fixed` 块起始处的对象的地址。在 `fixed` 块的尾部，编译器还会生成 IL 指令将 `pbytes` 局部变量设回 `null`，使变量不引用任何对象。这样一来，下一次垃圾回收发生时，对象就可以移动了。
+
+现在讨论一下另两个标志，即 `Weak` 和 `WeakTrackResurrection`。它们既可用于和本机代码的互操作，也可在只有托管代码的时候使用。`Weak`标志使你知道在什么时候一个对象被判定为垃圾，但这时对象的内存不一定被回收。`WeakTrackResurrection` 标志使你知道在什么时候对象的内存已被回收。两个标志中 `Weak` 更常用。事实上，我还没有见过任何人在真正的应用程序中用过 `WeakTrackResurrection` 标志。
+
+假定 `Object-A` 定时在 `Object-B` 上调用一个方法。但由于 `Object-A` 有一个对 `Object-B` 的引用，所以阻止了 `Object-B` 被垃圾回收。在极少数情况下，这可能并不是你希望的；相反，你可能希望只要`Object-B`仍然存活于托管堆中，`Object-A` 就调用 `Object-B` 的方法。为此，`Object-A`要调用 `GCHandle` 的 `Alloc` 方法，向方法传递对 `Object-B` 的引用和 `Weak` 标志。`Object-A`现在只需保存返回的 `GCHandle` 实例，而不是保存对 `Object-B` 的引用。
+
