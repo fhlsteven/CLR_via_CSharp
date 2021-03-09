@@ -1217,3 +1217,79 @@ unsafe public static void Go() {
 
 假定 `Object-A` 定时在 `Object-B` 上调用一个方法。但由于 `Object-A` 有一个对 `Object-B` 的引用，所以阻止了 `Object-B` 被垃圾回收。在极少数情况下，这可能并不是你希望的；相反，你可能希望只要`Object-B`仍然存活于托管堆中，`Object-A` 就调用 `Object-B` 的方法。为此，`Object-A`要调用 `GCHandle` 的 `Alloc` 方法，向方法传递对 `Object-B` 的引用和 `Weak` 标志。`Object-A`现在只需保存返回的 `GCHandle` 实例，而不是保存对 `Object-B` 的引用。
 
+在这种情况下，如果没有其他根引用 `Object-B`(保持其存活状态)，`Object-B` 就可以被垃圾回收。`Object-A` 每次想调用 `Object-B`的方法时，都必须查询 `GCHandle` 的只读属性 `Target`。如果该属性返回非 `null` 的值，就表明 `Object-B` 依然存活。然后，`Object-A` 的代码会将返回的引用转型为 `Object-B` 的类型，并调用方法。如果 `Target` 属性返回 `null`，表明 `Object-B` 已被回收，`Object-A` 不再尝试调用方法。在这个时候，`Object-A` 的代码也许还要调用 `GCHandle` 的 `Free` 方法来释放 `GCHandle` 实例。
+
+由于使用 `GCHandle` 类型有些繁琐，而且要求提升的安全性才能在内存中保持或固定对象，所以 `System` 命名空间提供了一个 `WeakReference<T>` 类来帮助你。
+
+```C#
+public sealed class WeakReference<T> : ISerializable where T : class {
+    public WeakReference(T target);
+    public WeakReference(T target, Boolean trackResurrection);
+    public void SetTarget(T target);
+    public Boolean TryGetTarget(out T target);
+}
+```
+
+这个类其实是包装了一个 `GCHandle` 实例的面向对象包装器(wrapper)：逻辑上说，它的构造器调用 `GCHandle` 的 `Alloc` 方法，`TryGetTarget` 方法查询 `GCHandle` 的 `Target` 属性，`SetTarget` 方法设置 `GCHandle` 的 `Target` 属性，而 `Finalize` 方法(这里未显示，因为是受保护方法) 则调用 `GCHandle` 的 `Free` 方法。此外，代码无需特殊权限即可使用 `WeakReference<T>` 类，因为该类只支持弱引用；不支持`GCHandleType` 设为 `Normal` 或 `Pinned` 的 `GCHandle` 实例的行为。`WeakReference<T>` 类的缺点在于它的实例必须在堆上分配。所以，`WeakReference` 类比 `GCHandle` 实例更“重”。
+
+开发人员经常需要将一些数据和另一个实体关联。例如，数据可以和一个线程或 AppDomain 关联。另外，可用 `System.Runtime.CompilerServices.ConditionalWeakTable<TKey, TValue>` 类将数据和单独的对象关联，如下所示：
+
+```C#
+public sealed class ConditionalWeakTable<TKey, TValue> where TKey :class where TValue :class {
+    public ConditionalWeakTable();
+    public void Add(TKey key, TValue value);
+    public TValue GetValue(TKey key, CreateValueCallback<TKey, TValue> createValueCallback);
+    public Boolean TryGetValue(TKey key, out TValue value);
+    public TValue GetOrCreateValue(TKey key);
+    public Boolean Remove(TKey key);
+
+    public delegate TValue CreateValueCallback(TKey key);       // 嵌套的委托定义
+}
+```
+
+> 重要提示 开发人员刚开始学习弱引用时，会马上想到它们在缓存情形中的用处。例如，他们会想到构造包含大量数据的一组对象，并创建对这些对象的弱引用。程序需要数据时检查这些弱引用。程序需要数据时就检查这些弱引用，看看包含这些数据的对象是否依然“健在”。对象还在，程序就直接使用对象；这样程序就会有较好的性能。但如果发生垃圾回收，包含数据的对象就会被销毁。而一旦需要重新创建数据，程序的性能就会受到影响。  
+
+> 这个技术的问题在于：垃圾回收不是在内存满或接近满时才发生的。相反，只要第 0 代满了，垃圾回收就会发生。多以，对象在内存中被抛弃的频率比预想的高得多，应用程序的性能将大打折扣。  
+
+> 弱引用在缓存情形中确实能得到高效应用。但构建良好的缓存算法来找到内存消耗与速度之间的平衡点十分复杂。简单地说，你希望缓存保持对自己的所有对象的强引用，内存吃紧就开始将强引用转换为弱引用。目前，CLR 没有提供一个能告诉应用程序内存吃紧的机制。但已经有人通过定时调用 Win32 `GlobalMemoryStatusEx` 函数并检查返回的 `MEMORYSTATUSEX` 结构的 `dwMemoryLoad` 成员成功做到了这一点。如果该成员报告大于 80 的值，内存空间就处于吃紧状态。然后可以开始将强引用转换为弱引用————可依据的算法包括：最近最少使用算法(Least-Recently Used algorithm, LRU)、最频繁使用算法(Most-Frequently Used algorithm， MFU)以及某个时基算法(time-base algorithm)等。
+
+任意数据要和一个或多个对象关联，首先要创建该类的实例。然后调用 `Add` 方法，为 `key` 参数传递对象引用，为 `value` 参数传递想和对象关联的数据。试图多次添加对同一个对象的引用，`Add` 方法会抛出 `ArgumentException`；要更改和对象关联的值，必须先删除 `key`，再用新值把它添加回来。注意这个类是线程安全的，多个线程能同时使用它(虽然这也意味着类的性能并不出众)；应测试好这个类的性能，验证它在是否适合你的实际环境。
+
+当然，表对象在内部存储了对作为 `key` 传递的对象的弱引用(一个 `WeakReference` 对象)；这样可保证不会因为表的存在而造成对象“被迫”存活。但是，`ConditionalWeakTable` 类最特别的地方在于，它保证了只要 `key` 所标识的对象在内存中，值就肯定在内存中。这使其超越了一个普通的`WeakReference`，因为如果是普通的 `WeakReference`，那么即使 `key` 对象保持存活，值就肯定在内存中。这使其超越了一个普通的 `WeakReference`，因为如果是普通的 `WeakReference`， 那么即使 `key` 对象保持存活，值也可能被垃圾回收。`ConditionalWeakTable` 类可用于实现 XAML 的依赖属性(dependency property)机制。动态语言也可在内部利用它将数据和对象动态关联。
+
+以下代码演示了 `ConditionalWeakTable` 类的使用。它允许在任何对象上调用 `GCWatch` 扩展方法并传递一些 `String` 标签(在程序中作为通知消息显示)。然后，在特定对象被垃圾回收时，它通过控制台窗口发生通知：
+
+```C#
+internal static class ConditionalWeakTableDemo {
+    public static void Main() {
+        Object o = new Object().GCWatch("My Object created at " + DateTime.Now);
+        GC.Collect();           // 此时看不到 GC 通知
+        GC.KeepAlive(o);        // 确定 o 引用的对象现在还活着
+        o = null;               // o 引用的对象现在可以死了
+
+        GC.Collect();           // 此时才会看到 GC 通知
+        Console.ReadLine();
+    }
+}
+
+internal static class GCWatcher {
+    // 注意：由于字符串留用(interning) 和 MarshalByRefObject 代理对象，所以
+    // 使用 String 要当心
+    public readonly static ConditionalWeakTable<Object, NotifyWhenGCd<String>> s_cwt =
+        new ConditionalWeakTable<object, NotifyWhenGCd<string>>();
+
+    private sealed class NotifyWhenGCd<T> {
+        private readonly T m_value;
+
+        internal NotifyWhenGCd(T value) { m_value = value; }
+        public override string ToString() { return m_value.ToString(); }
+        ~NotifyWhenGCd() { Console.WriteLine("GC'd: " + m_value); }
+    }
+
+    public static T GCWatch<T>(this T @object, String tag) where T : class {
+        s_cwt.Add(@object, new NotifyWhenGCd<String>(tag));
+        return @object;
+
+    }
+}
+```
