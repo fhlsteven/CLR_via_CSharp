@@ -104,5 +104,189 @@ CLR COM 服务器初始化时会创建一个 AppDomain。AppDomain 是一组程�
 
 一个 AppDomain 中的代码可以和另一个 AppDomain 中的类型和对象通信，但只能通过良好定义的机制进行。以下 Ch22-1-AppDomains 示例程序演示了如何创建新 AppDomain，在其中加载程序集并构造该程序集定义的类型的实例。代码演示了一下三种类型在构造时的不同行为：“按引用封送”(Marshal-by-Reference)类型，“按值封送”(Marshal-by-Value)类型，以及完全不能封送的类型。代码还演示了创建它们的 AppDomain 卸载时这些对象的不同行为。Ch22-1-AppDomains 示例程序的代码实际很少，只是我添加了大量注释。在代码清单之后，我将逐一分析这些代码，解释 CLR 所做的事情。
 
+```C#
+private static void Marshalling() {
+    // 获取 AppDomain 引用 (“调用线程”当前正在该 AppDomain 中执行)
+    AppDomain adCallingThreadDomain = Thread.GetDomain();
 
-  
+    // 每个 AppDomain 都分配了友好字符串名称(以便调试)
+    // 获取这个 AppDomain 的友好字符串名称并显示它
+    String callingDomainName = adCallingThreadDomain.FriendlyName;
+    Console.WriteLine("Default AppDomain's friendly name={0}", callingDomainName);
+
+    // 获取并显示我们的 AppDomain 中包含了“Main”方法的程序集
+    String exeAssembly = Assembly.GetEntryAssembly().FullName;
+    Console.WriteLine("Main assembly={0}", exeAssembly);
+
+    // 定义局部变量来引用一个 AppDomain
+    AppDomain ad2 = null;
+
+    // *** DEMO 1：使用 Marshal-by-Reference 进行跨 AppDomain 通信 ***
+    Console.WriteLine("{0}Demo #1", Environment.NewLine);
+
+    // 新建一个 AppDomain (从当前 AppDomain 继承安全性和配置)
+    ad2 = AppDomain.CreateDomain("AD #2", null, null);
+    MarshalByRefType mbrt = null;
+
+    // 将我们的程序集加载到新 AppDomain 中，构造一个对象，把它
+    // 封送回我们的 AppDomain (实际得到对一个代理的引用)
+    mbrt = (MarshalByRefType)ad2.CreateInstanceAndUnwrap(exeAssembly, "MarshalByRefType");
+
+    Console.WriteLine("Type={0}", mbrt.GetType());      // CLR 在类型上撒谎了
+
+    // 证明得到的是对一个代理对象的引用
+    Console.WriteLine("Is proxy={0}", RemotingServices.IsTransparentProxy(mbrt));
+
+    // 看起来像是在 MarshalByRefType 上调用一个方法，实例不然、
+    // 我们是在代理类型上调用一个方法，代理使线程切换到拥有对象的
+    // 那个 AppDomain，并在真实的对象上调用这个方法
+    mbrt.SomeMethod();
+
+    // 卸载新的 AppDomain
+    AppDomain.Unload(ad2);
+
+    // mbrt 引用一个有效的代理独享；代理对象引用一个无效的 AppDomain
+
+    try {
+        // 在代理类型上调用一个方法。AppDomain 无效，造成抛出异常
+        mbrt.SomeMethod();
+        Console.WriteLine("Successful call.");
+    }
+    catch (AppDomainUnloadedException) {
+        Console.WriteLine("Failed call.");
+    }
+
+    // *** DEMO 2: 使用 Marshal-by-Value 进行跨 AppDomain 通信 ***
+    Console.WriteLine("{0}Deom #2", Environment.NewLine);
+
+    // 新建一个 AppDomain(从当前 AppDomain 继承安全性和配置)
+    ad2 = AppDomain.CreateDomain("AD #2", null, null);
+
+    // 将我们的程序集加载到新 AppDomain 中，构造一个对象，把它
+    // 封送回我们的 AppDomain (实际得到对一个代理的引用)
+    mbrt = (MarshalByRefType)ad2.CreateInstanceAndUnwrap(exeAssembly, "MarshalByRefType");
+
+    // 对象的方法返回所返回对象的副本；
+    // 对象按值(而非按引用)封送
+    MarshalByRefType mbvt = mbrt.MethodWithReturn();
+
+    // 证明得到的不是对一个代理对象的引用
+    Console.WriteLine("Is proxy={0}", RemotingServices.IsTransparentProxy(mbvt));
+
+    // 看起来是在 MarshalByRefType 上调用一个方法，实际也是如此
+    Console.WriteLine("Returned object created " + mbvt.ToString());
+
+    // 卸载新的 AppDomain
+    AppDomain.Unload(ad2);
+    // mbvt 引用有效的对象；卸载 AppDomain 没有影响
+
+    try {
+        // 我们是在对象上调用一个方法；不会抛出异常
+        Console.WriteLine("Returned object created " + mbvt.ToString());
+        Console.WriteLine("Successful call.");
+    }
+    catch (AppDomainUnloadedException) {
+        Console.WriteLine("Failed call.");
+    }
+
+    // DEMO 3：使用不可封送的类型进行跨 AppDomain 通信 ***
+    Console.WriteLine("{0}Demo #3", Environment.NewLine);
+
+    // 新建一个 AppDomain (从当前 AppDomain 继承安全性和配置)
+    ad2 = AppDomain.CreateDomain("AD #2", null, null);
+    // 将我们的程序集加载到新 AppDomain 中，构造一个对象，把它
+    // 封送回我们的 AppDomain (实际得到对一个代理的引用)
+    mbrt = (MarshalByRefType)ad2.CreateInstanceAndUnwrap(exeAssembly, "MarshalByRefType");
+
+    // 对象的方法返回一个不可封送的对象；抛出异常
+    NonMarshalableType nmt = mbrt.MethodArgAndReturn(callingDomainName);
+    // 这里永远执行不到...
+}
+
+
+// 该类的实例可跨越 AppDomain 的边界“按引用封送”
+public sealed class MarshalByRefType : MarshalByRefObject {
+    public MarshalByRefType() {
+        Console.WriteLine("{0} ctor running in {1}", this.GetType().ToString(), Thread.GetDomain().FriendlyName);
+    }
+
+    public void SomeMethod() {
+        Console.WriteLine("Exexuting in " + Thread.GetDomain().FriendlyName);
+    }
+
+    public MarshalByValType MethodWithReturn() {
+        Console.WriteLine("Executing in" + Thread.GetDomain().FriendlyName);
+        MarshalByValType t = new MarshalByValType();
+        return t;
+    }
+
+    public NonMarshalableType MethodArgAndReturn(String callingDomainName) {
+        // 注意： callingDomainName 是可序列化的
+        Console.WriteLine("Calling from '{0}' to '{1}'.", callingDomainName, Thread.GetDomain().FriendlyName);
+        NonMarshalableType t = new NonMarshalableType();
+        return t;
+    }
+}
+
+// 该类的实例可跨越 AppDomain 的边界“按值封送”
+[Serializable]
+public sealed class MarshalByValType : Object {
+    private DateTime m_creationTime = DateTime.Now;  // 注意：DateTime 是可序列化的
+
+    public MarshalByValType() {
+        Console.WriteLine("{0} ctor running in {1}, Created on {2:D}", this.GetType().ToString(), Thread.GetDomain().FriendlyName, m_creationTime);
+    }
+
+    public override String ToString() {
+        return m_creationTime.ToLongDateString();
+    }
+}
+
+// 该类的实例不能跨 AppDomain 边界进行封送
+// [Serializable]
+public sealed class NonMarshalableType : Object {
+    public NonMarshalableType() {
+        Console.WriteLine("Executing in " + Thread.GetDomain().FriendlyName);
+    }
+}
+```
+
+生成并运行 Ch22-1-AppDomains 应用程序，获得以下输出结果：<sup>①</sup>
+
+> ① 在本书配套代码中，找到 C22-1 AppDomains 项目，在 Main() 方法中解除对 Marshalling() 方法调用的注释。————译注
+
+```cmd
+Default AppDomain's friendly name=Ch22-1-AppDomains.exe
+Main assembly=Ch22-1-AppDomains, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null
+
+Demo #1
+MarshalByRefType ctor running in AD #2
+Type=MarshalByRefType
+Is proxy=True
+Executing in AD #2
+Failed call.
+
+Demo #2
+MarshalByRefType ctor running in AD #2
+Executing in AD #2
+MarshalByValType ctor running in AD #2, Created on 2021年3月11日
+Is proxy=False
+Returned object created 2021年3月11日
+Returned object created 2021年3月11日
+Successful call.
+
+Demo #3
+MarshalByRefType ctor running in AD #2
+Calling from 'Ch22-1-AppDomains.exe' to 'AD #2'.
+Executing in AD #2
+
+Unhandled Exception: System.Runtime.Serialization.SerializationException:
+Type ‘NonMarshalableType’ in assembly ‘Ch22-1-AppDomains, Version=0.0.0.0,
+Culture=neutral, PublicKeyToken=null’ is not marked as serializable.
+at MarshalByRefType.MethodArgAndReturn(String callingDomainName)
+at Program.Marshalling()
+at Program.Main() 
+```
+
+现在来讨论以上代码以及 CLR 所做的事情。
+
