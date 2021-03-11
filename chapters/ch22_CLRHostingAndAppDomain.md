@@ -290,3 +290,30 @@ at Program.Main()
 
 现在来讨论以上代码以及 CLR 所做的事情。
 
+`Marshalling` 方法首先获得一个 `AppDomain` 对象引用，当前调用线程正在该 AppDomain 中执行。在 Windows 中，线程总是在一个进程的上下文中创建，而且线程的这个生存期都在该进程的生存期中。但线程和 AppDomain 没有一对一关系。AppDomain 是一项 CLR 功能；Windows 对 AppDomain 一无所知。由于一个 Windows 进程可包含多个 AppDomain，所以线程能执行一个 AppDomain 中的代码，再执行另一个 AppDomain 中的代码。从 CLR 的角度看，线程一次只能执行一个 AppDomain 中的代码。线程可调用 `System.Threading.Thread` 的静态方法 `GetDomain` 向 CLR 询问它正在哪个 AppDomain 中执行。线程还可查询 `System.AppDomain` 的静态只读属性 `CurrentDomain` 获得相同的信息。
+
+AppDomain 创建后可被赋予一个**友好名称**。它是用于标识 AppDomain 的一个 `String`。友好名称主要是为了方便调试。由于 CLR 要在我们的任何执行前创建默认 AppDomain，所以使用可执行文件的文件名作为默认的 AppDomain 友好名称。`Marshalling` 方法使用 `System.AppDomain` 的只读 `FriendlyName` 属性来查询默认 AppDomain 的友好名称。
+
+接着，`Marshalling` 方法查询默认 AppDomain 中加载的程序集的强命名标识，这个程序集定义了入口方法 `Main`(其中调用了 `Marshalling`)。程序集定义了几个类型：`Program`，`MarshalByRefType`，`MarshalByValType` 和 `NonMarshalableType`。现在已准备好研究上面的三个演示(Demo)，它们本质上很相似。
+
+#### 演示 1：使用“按引用封送”进行跨 AppDomain 通信 
+
+演示 1 调用 `System.AppDomain` 的静态 `CreateDomain` 方法指示 CLR 在同一个 Windows 进程中创建一个新 AppDomain。`AppDomain` 类型提供了 `CreateDomain` 方法的多个重载版本。建议仔细研究一下它们，并在新建 AppDomain 时选择最合适的一个。本例使用的 `CreateDomain` 接受以下三个参数。
+
+* 代表新 AppDomain 的友好名称的一个 `String`。本例传递的是“AD #2”。
+
+* 一个 `System.Security.Policy.Evidence`，是 CLR 用于计算 AppDomain 权限集的证据。本例为该参数传递 `null`，造成新 AppDomain 从创建它的 AppDomain 继承权限集。通常，如果希望围绕 AppDomain 中的代码创建安全边界，可构造一个 `System.Security.PermissionSet`对象，在其中添加希望的权限对象(实现了 `IPermission` 接口的类型的实例)，将得到的 `PermissionSet` 对象引用传给接受一个 `PermissionSet` 的 `CreateDomain` 方法重载。
+
+* 一个 `System.AppDomainSetup`，代表 CLR 为新 AppDomain 使用的配置设置。同样，本例为该参数传递 `null`，使新 AppDomain 从创建它的 AppDomain 继承配置设置。如果希望对新 AppDomain 进行特殊设置，可构造一个 `AppDomainSetup` 对象，将它的各种属性(例如配置文件的名称)设为你希望的值，然后将得到的 `AppDomainSetup` 对象引用传给 `CreateDomain` 方法。
+
+`CreateDomain`方法内部会在进程中新建一个 AppDomain，该 AppDomain 将被赋予指定的友好名称、安全性和配置设置。新 AppDomain 有自己的 Loader 堆，这个堆目前是空的，因为还没有程序集加载到新 AppDomain 中。创建 AppDomain 时，CLR 不在这个 AppDomain 中创建任何线程；AppDomain 中也不会运行代码，除非显式地让一个线程调用 AppDomain 中的代码。
+
+现在，要在新 AppDomain 中创建类型的实例，首先要将程序集加载到新 AppDomain 中，然后构造程序集中定义的类型的实例。这就是 AppDomain 的公共实例方法 `CreateInstanceAndUnwrap` 所做的事情。调用这个方法时我传递了两个 `String` 实参；第一个标识了想在新 AppDomain(`ad2`变量引用的那个 AppDomain)中加载的程序集；第二个标识了想构建其实例的那个类型的名称("`MarshalByRefType`")。在内部，`CreateInstanceAndUnwrap` 方法导致调用线程从当前 AppDomain 切换新 AppDomain 。现在，线程(当前正在调用`CreateInstanceAndUnwrap`)将制定程序集加载到新 AppDomain 中，并扫描程序集的类型定义元数据表，查找指定类型("MarshalByRefType")。找到类型后，线程调用 `MarshalByRefType` 的无参构造器。现在，线程又切回默认 AppDomain ，使 `CreateInstanceAndUnwrap` 能返回对新`MarshalByRefType`对象的引用。
+
+> 注意 `CreateInstanceAndUnwrap` 方法的一些重载版本允许在调用类型的构造器时传递实参。
+
+所有这一切听起来都很美好，但还有一个问题；CLR 不允许一个 AppDomain 中的变量(根)引用另一个 AppDomain 中创建的对象。如果 `CreateInstanceAndUnwrap` 直接返回对象引用，隔离性就会被打破，而隔离是 AppDomain 的全部目的！因此，`CreateInstanceAndUnwrap`在返回对象引用，隔离性就会被打破，而隔离是 AppDomain 的全部目的！因此，`CreateInstanceAndUnwrap` 在返回对象引用前要执行一些额外的逻辑。
+
+我们的 `MarshalByRefType` 类型从一个很特别的基类 `System.MarshalByRefObject` 派生。当 `CreateInstanceAndUnwrap` 发现它封送的一个对象的类型派生自 `MarshalByRefObject` 时，CLR 就会跨 AppDomain 边界按引用封送对象。下面讲述了按引用将对象从一个 AppDomain(源 AppDomain，这是真正创建对象的地方)封送到另一个 AppDomain(目标 AppDomain，这是调用 `CreateInstanceAndUnwrap` 的地方)的具体含义。
+
+源 AppDomain 想向目标 AppDomain 发送或返回对象引用时，CLR 会在目标 AppDomain 的Loader 堆中定义一个代理类型。代理类型是用原始类型完全一样；有完全一样的实例成员(属性、事件和方法)。但是，实例字段不会成为(代理)类型的一部分，我稍后会具体解释这一点。代理类型确实定义了几个(自己的)实例字段，但这些字段和原始类型的不一致。`````````````````````
