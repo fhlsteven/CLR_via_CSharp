@@ -316,4 +316,56 @@ AppDomain 创建后可被赋予一个**友好名称**。它是用于标识 AppDo
 
 我们的 `MarshalByRefType` 类型从一个很特别的基类 `System.MarshalByRefObject` 派生。当 `CreateInstanceAndUnwrap` 发现它封送的一个对象的类型派生自 `MarshalByRefObject` 时，CLR 就会跨 AppDomain 边界按引用封送对象。下面讲述了按引用将对象从一个 AppDomain(源 AppDomain，这是真正创建对象的地方)封送到另一个 AppDomain(目标 AppDomain，这是调用 `CreateInstanceAndUnwrap` 的地方)的具体含义。
 
-源 AppDomain 想向目标 AppDomain 发送或返回对象引用时，CLR 会在目标 AppDomain 的Loader 堆中定义一个代理类型。代理类型是用原始类型完全一样；有完全一样的实例成员(属性、事件和方法)。但是，实例字段不会成为(代理)类型的一部分，我稍后会具体解释这一点。代理类型确实定义了几个(自己的)实例字段，但这些字段和原始类型的不一致。`````````````````````
+源 AppDomain 想向目标 AppDomain 发送或返回对象引用时，CLR 会在目标 AppDomain 的Loader 堆中定义一个代理类型。代理类型是用原始类型完全一样；有完全一样的实例成员(属性、事件和方法)。但是，实例字段不会成为(代理)类型的一部分，我稍后会具体解释这一点。代理类型确实定义了几个(自己的)实例字段，但这些字段和原始类型的不一致。相反，这些字段只是指出哪个 AppDomain “拥有”真实的对象，以及如何在拥有(对象的)AppDomain 中找到真实的对象。(在内部，代理对象用一个 `GCHandle` 实例引用真实的对象。第 21 章“托管堆和垃圾回收”讨论了 `GCHandle` 类型。)
+
+在目标 AppDomain 中定义好这个代理类型之后，`CreateInstanceAndUnwrap` 方法就会创建代理类型的实例，初始化它的字段来标识源 AppDomain 和真实对象，然后将对这个代理对象的引用返回给目标 AppDomain。在 Ch22-1AppDomains 应用程序中，`mbrt` 变量被设为引用这个代理。注意，从`CreateInstanceAndUnwrap` 方法返回的对象实际不是 `MarshalByRefType` 类型的实例。CLR 一般不允许将一个类型的对象转换成不兼容的类型。但在当前这种情况下，CLR 允许转型，因为新类型具有和原始类型一样的实例成员。事实上，用代理对象调用 `GetType`，它会向你撒谎，说自己是一个`MarshalByRefType` 对象。
+
+但可以证明从 `CreateInstanceAndUnwrap` 返回的对象实际是对代理对象的引用。为此，Ch22-1-AppDomains 应用程序调用了 `System.Runtime.Remoting.RemotingService` 的公共静态 `IsTransparentProxy` 方法并向其传递 `CreateInstanceAndUnwrap` 方法返回的引用。从输出结果可知，`IsTransparentProxy` 方法返回 `true`，证明返回的是代理。
+
+接着，Ch22-1-AppDomains 应用程序使用代理调用 `SomeMethod` 方法。由于 `mbrt` 变量引用代理对象，所以会调用由代理实现的 `SomeMethod`。代理的实现利用代理对象中的信息字段，将调用线程从默认 AppDomain 切换至新 AppDomain。现在，该线程的任何行动都在新 AppDomain 的安全策略和配置设置下运行。线程接着使用代理对象的 `GCHandle` 字段查找新 AppDomain 中的真实对象，并用真实对象调用真实的 `SomeMethod` 方法。
+
+有两个办法可证明调用线程已从默认 AppDomain 切换至新 AppDomain。首先，我在 AppDomain。首先，我在 `SomeMethod` 方法调用了 `Thread.GetDomain.CreateDomain` 方法，并传递“AD #2”作为友好名称参数来创建的。其次，在调试器中逐语句调试代码，并打开了“调用堆栈”窗口，那么“[外部代码]”行会标注一个线程在什么位置跨越 AppDomain 边界。请参见图 22-2 底部的“调用堆栈”窗口。
+
+![22_2](../resources/images/22_2.png)  
+
+图 22-2 调试器的“调用堆栈”窗口显示了一次 AppDomain 切换
+
+真实的 `SomeMethod` 方法返回后，会返回至代理的 `SomeMethod` 方法，后者将线程切换回默认 AppDomain。线程继续执行默认 AppDomain 中的代码。
+
+> 注意 一个 AppDomain 中的线程调用另一个 AppDomain 中的方法时，线程会在这两个 AppDomain 之间切换。这意味着跨 AppDomain 边界的方法调用是同步执行的<sup>①</sup>。任何时刻一个线程只能在一个 AppDomain 中，而且要用那个 AppDomain 的安全和配置设置来执行代码。如果希望多个 AppDomain 中的代码并发执行，应创建额外的线程，让这些线程在你希望的 AppDomain 中执行你希望的代码。
+
+>> ① 一个 AppDomain 的方法执行完毕，才能执行另一个 AppDomain 的方法。不能多个 AppDomain 的代码并发执行。 ———— 译注
+
+Ch22-1-AppDomains 应用程序接着做的事情是调用 `AppDomain` 类的公共静态 `Unload` 方法，这会强制 CLR 卸载指定的 AppDomain(包括加载到其中的所有程序集)，并强制执行一次垃圾回收，以释放由卸载的 AppDomain 中的代码创建的所有对象。这时，默认 AppDomain 的 `mbrt` 变量仍然引用一个有效的代理对象。但代理对象已不再引用一个有效的 AppDomain(因为它已经卸载了)。
+
+当默认 AppDomain 试图使用代理对象调用 `SomeMethod` 方法时，调用的是该方法在代理中的实现。代理的实现发现包含真实对象的 `AppDomain` 已卸载。所以，代理的 `SomeMethod` 方法抛出一个 `AppDomainUnloadedException` 异常，告诉调用者操作无法完成。
+
+显然，Microsoft 的 CLR 团队不得不做大量的工作来确保 AppDomain 的正确隔离，但这是他们必须做的。跨 AppDomain 访问对象的功能正在被大量地使用，开发人员对这个功能的依赖性正在日益增加。不过，使用“按引用封送”的语义进行跨 AppDomain 边界的对象访问，会产生一些性能上的开销。所以，一般应尽量少用这个功能。
+
+前面我承诺会更多地讨论实例字段。从 `MarshalByRefObject` 派生的类型可定义实例字段。但这些实例字段不会成为代理类型的一部分，也不会包含在代理对象中。写代码对派生自 `MarshalByRefObject` 的类型的实例字段进行读写时，JIT 编译器会自动生成代码，分别调用 `System.Object` 的 `FieldGetter` 方法(用于读)或 `FieldSetter` 方法(用于写)来使用代理对象(以找到真正的 AppDomain/对象)。这些方法是私有的，而且没有在文档中记录。简单地说，这些方法利用反射机制获取或设置字段值。因此，虽然能访问派生自 `MarshalByRefObject`的一个类型中的字段，但性能很差，因为 CLR 最终要调用方法来执行字段访问。事实上，即使要访问的字段在你自己的 AppDomain 中，性能也好不到哪里去。<sup>①</sup>
+
+> ① 如果 CLR 要求所有字段都必须私有(为了获得好的数据封装，我强烈建议这样做)，那么 `FieldGetter` 和 `FieldSetter` 方法根本没有存在的必要，从方法中总是能够直接访问字段，避免(因为还要经由中间的 getter 或 setter 方法)造成性能损失。
+
+>> 访问实例字段时的性能问题  
+>> 我用以下代码演示性能损失的程度：
+
+```C#
+private sealed class NonMBRO : Object { public Int32 x; }
+private sealed class MBRO    : Object { public Int32 x; }
+
+private static void FieldAccessTiming() {
+    const Int32 count = 100000000;
+    NonMBRO nonMbro = new NonMBRO();
+    MBRO mbro = new MBRO();
+
+    Stopwatch sw = Stopwatch.StartNew();
+    for (Int32 c = 0; c < count; c++ ) nonMbro.x++;
+    Console.WriteLine("{0}", sw.Elapsed);       // 00:00:00.4073560
+
+    sw = Stopwatch.StartNew();
+    for (Int32 c = 0; c < count; c++) mbro.x++;
+    Console.WriteLine("{0}", sw.Elapsed);       // 00:00:02.5388665 
+}
+```
+
+我运行以上代码，访问从 `Object` 派生的 ```````````````
