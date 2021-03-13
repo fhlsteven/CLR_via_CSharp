@@ -368,4 +368,8 @@ private static void FieldAccessTiming() {
 }
 ```
 
-我运行以上代码，访问从 `Object` 派生的 ```````````````
+>> 我运行以上代码，访问从 `Object` 派生的 `NonMBRO` 类的实例字段只花了约 0.4 秒，但访问从 `MarshalByRefObject` 派生的 `MBRO` 类的实例字段却花了 2.54 秒。也就是说，访问从 `MarshalByRefObject` 派生的一个类的实例字段要多花约 6 倍的时间！
+
+从好不好用(usability)的角度说，派生自 `MarshalByRefObject` 的类型真的应该避免定义任何静态成员。这是因为静态成员总是在调用 AppDomain 的上下文中访问。要切换到哪个 AppDomain 的信息包含在代理对象中，但调用静态成员时没有代理对象，所以不会发生 AppDomain 的切换。让类型的静态成员一个 AppDomain 中执行，实例成员却在另一个 AppDomain 中执行，这样的编程模型未免太“丑”了！
+
+由于第二个 AppDomain 中没有根，所以代理引用的原始对象可以被垃圾回收。这当然不理想。但另一方面，假如将原始对象不确定地(indefinitely)留在内存中，代理可能不再引用它，而原始对象依然存活；这同样不理想。CLR 解决这个问题的办法是使用一个“租约管理器”(lease manager)。一个对象的代理创建好之后，CLR 保持对象存活 5 分钟。5 分钟内没有通过代理`````
