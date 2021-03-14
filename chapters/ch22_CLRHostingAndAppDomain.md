@@ -372,4 +372,195 @@ private static void FieldAccessTiming() {
 
 从好不好用(usability)的角度说，派生自 `MarshalByRefObject` 的类型真的应该避免定义任何静态成员。这是因为静态成员总是在调用 AppDomain 的上下文中访问。要切换到哪个 AppDomain 的信息包含在代理对象中，但调用静态成员时没有代理对象，所以不会发生 AppDomain 的切换。让类型的静态成员一个 AppDomain 中执行，实例成员却在另一个 AppDomain 中执行，这样的编程模型未免太“丑”了！
 
-由于第二个 AppDomain 中没有根，所以代理引用的原始对象可以被垃圾回收。这当然不理想。但另一方面，假如将原始对象不确定地(indefinitely)留在内存中，代理可能不再引用它，而原始对象依然存活；这同样不理想。CLR 解决这个问题的办法是使用一个“租约管理器”(lease manager)。一个对象的代理创建好之后，CLR 保持对象存活 5 分钟。5 分钟内没有通过代理`````
+由于第二个 AppDomain 中没有根，所以代理引用的原始对象可以被垃圾回收。这当然不理想。但另一方面，假如将原始对象不确定地(indefinitely)留在内存中，代理可能不再引用它，而原始对象依然存活；这同样不理想。CLR 解决这个问题的办法是使用一个“租约管理器”(lease manager)。一个对象的代理创建好之后，CLR 保持对象存活 5 分钟。5 分钟内没有通过代理发出调用，对象就会失效，下次垃圾回收会释放它的内存。每发出一次对对象的调用，“租约管理器”都会续订对象的租期，保证它在接下来的 2 分钟内在内存中保持存活。在对象过期后试图通过代理调用它，CLR 会抛出 `System.Runtime.Remoting.RemotingException` 异常。
+
+默认的 5 分钟和 2 分钟租期设定是可以修改的，重写 `MarshalByRefObject` 的虚方法 `InitializeLifetimeService` 即可。详情参见文档的“生存期租约”主题。
+
+#### 演示2: 使用“按值封送”进行跨 AppDomain 通信
+
+演示 2 与演示 1 很相似。和演示 1 一样，演示 2 也创建了新 AppDomain。然后调用 `CreateInstanceAndUnwrap` 方法将同一个程序集加载到新建 AppDomain 中，并在这个新 AppDomain 中创建 `MarshalByRefType` 类型的实例。CLR 为这个对象创建代理，`mbrt` 变量(在默认 AppDomain中)被初始化成引用这个代理。接着用代理调用 `MethodWithReturn` 方法。这个方法是无参的，将在新 AppDomain 中执行以创建 `MarshalByValType` 类型的实例，并将一个对象引用返回给默认 AppDomain。
+
+`MarshalByValType` 不从 `System.MarshalByRefObject` 派生，所以 CLR 不能定义一个代理类型并创建代理类型的实例；对象不能按引用跨 AppDomain 边界进行封送。
+
+但由于 `MarshalByValType` 标记了自定义特性`[Serializble]`，所以 `MethodWithReturn` 方法能按值封送对象。下面具体描述了将一个对象按值从一个 AppDomain(源 AppDomain)封送到另一个 AppDomain(目标 AppDomain)的含义。欲知 CLR 序列化和反序列化的详情，请参见第 24 章“运行时序列化”。
+
+源 AppDomain 想向目标 AppDomain 发送或返回一个对象引用时，CLR 将对象的实例字段序列化成一个字节数组。字节数组从源 AppDomain 复制到目标 AppDomain。然后，CLR 在目标 AppDomain 中反序列化字节数组，这会强制 CLR 将定义了“被反序列化的类型”的程序集加载到目标 AppDomain 中(如果尚未加载的话)。接着，CLR 创建类型的实例，并利用字节数组中的值初始化对象的字段，使之与源对象中的值相同。换言之，CLR 在目标 AppDomain 中精确复制了源对象。然后， `MethodWithReturn` 方法返回对这个副本的引用；这样一来，对象就跨 AppDomain 的边界按值封送了。
+
+> 重要提示 加载程序集时，CLR 使用目标 AppDomain 的策略和配置设置(而 AppDomain 可能设置了不同的 AppBase 目录或者不同的版本绑定重定向)。策略上的差异可能妨碍 CLR 定位程程序集。程序集无法加载时会抛出异常，目标 AppDomain 接收不到对象引用。
+
+至此，源 AppDomain 中的对象和目标 AppDomain 中的对象就有了独立的生存期，它们的状态也可以独立地更改。如果源 AppDomain 中没有保持对象存活(就像我的 Ch22-1-AppDomains 应用程序所做的那样)，源对象的内存就会在下次垃圾回收时被回收。
+
+为了证明 `MethodWithReturn` 方法返回的不是对代理对象的引用，Ch22-1-AppDomains 应用程序调用了 `System.Runtime.Remoting.RemotingService` 的公共静态 `IsTransparentProxy` 方法，将 `MethodWithReturn` 方法返回的引用作为参数传给它。如输出所示，`IsTransparentProxy` 方法返回 `false`， 表明对象是一个真实的对象，不是代理。
+
+现在，程序使用真实的对象调用 `ToString` 方法。由于 `mbvt` 变量引用真实的对象，所以会调用这个方法的真实实现，线程不会在 AppDomain 之前切换。为了证明这一点，可查看调试器“调用堆栈”窗口，它没有显示一个“[外部代码]”行。
+
+为进一步证实没有涉及道理，Ch22-1-AppDomains 应用程序卸载了 AppDomain，然后尝试再次调用 `ToString`。和演示 1 不一样，这次调用会成功，因为卸载新 AppDomain 对默认 AppDomain “拥有”的对象(其中包括按值封送的对象)没有影响。
+
+#### 演示3：使用不可封送的类型跨 AppDomain 通信
+
+演示 3 的开始部分与演示 1 和 2 相似，都是新建 AppDomain，调用 `CreateInstanceAndUnwrap` 方法将相同的程序集加载到新 AppDomain 中，在新 AppDomain 中创建一个 `MarshalByRefType` 对象，并让 `mbrt` 引用该对象的代理。
+
+然后，我用代理调用接受一个实参的 `MethodArgAndReturn` 方法。同样地，CLR 必须保持 AppDomain 的隔离，所以不能直接将对实参的引用传给新 AppDomain。如果对象的类型派生自  `MarshalByRefObject`， CLR 会为它创建代理并按引用封送。如果对象的类型用 `[Serializable]` 进行了标记，CLR 会将对象(及其子)序列化成一个字节数组，将字节数组封送到新 AppDomain 中，再将字节数组反序列化成对象图，将对象图的根传给 `MethodArgAndReturn` 方法。
+
+在这个特定的例子中，我跨越 AppDomain 边界传递一个`System.String` 对象。`System.String` 类型不是从 `MarshalByRefObject` 派生的，所以 CLR 不能创建代理。幸好， `System.String` 被标记为`[Serializable]`，所以 CLR 能按值封送它，使代码能正常工作。注意，对于 `String` 对象，CLR 会采取特殊的优化措施。跨越 AppDomain 边界封送一个 `String` 对象时， CLR 只是跨越边界传递对 `String` 对象的引用；不会真的生成 `String` 对象的副本。之所以能提供这个优化，是因为 `String` 对象是不可变的；所以，一个 AppDomain 中的代码不可能破坏 `String` 对象的字段。<sup>①</sup>`String`“不可变”的详情强参见第 14 章“字符、字符串和文本处理”。
+
+> ① 顺便说一句，这正是为什么 `System.String` 类是密封类的原因。类不密封，就能定义从 `String` 派生的类，并添加自己的字段。如果这样做了，CLR 就没有办法确保你的“字符串”类是不可变的。
+
+在 `MethodArgAndReturn` 内部，我显示传给它的字符串，证明字符串跨越了 AppDomain 边界。然后，我创建 `NonMarshalableType` 类型的实例，并将对这个对象的引用返回至默认 AppDomain。由于 `NonMarshalableType` 不是从 `System.MarshalByRefObject` 派生的，也没有用 `[Serializable]` 定制特性进行标记，所以不允许 `MethodArgAndReturn` 按引用或按值封送对象 ———— 对象完全不能跨越 AppDomain 边界进行封送！为了报告这个问题， `MethodArgAndReturn` 在默认 AppDomain 中抛出一个 `SerializationException` 异常。由于我的程序没有捕捉这个异常，所以程序终止。
+
+## <a name="22_3">22.3 卸载 AppDomain</a>
+
+AppDomain 很强大的一个地方就是可以卸载它。卸载 AppDomain 会导致 CLR 卸载 AppDomain 中的所有程序集，还会释放 AppDomain 的 Loader 堆。卸载 AppDomain 的办法是调用 `AppDomain` 的静态 `Unload` 方法(参见 Ch22-1-AppDomains 应用程序)。这导致 CLR 执行一系列操作来得体地卸载指定的 AppDomain。
+
+1. CLR 挂起进程中执行过托管代码的所有线程。
+
+2. CLR 检查所有线程栈，查看哪些线程正在执行要卸载的 AppDomain 中的代码，或者哪些线程会在某个时候返回至要卸载的 AppDomain。任何栈上有要卸载的 AppDomain，CLR 都会强迫对应的线程抛出一个 `ThreadAbortException`(同时恢复线程的执行)。这将导致线程展开(unwind)，并执行遇到的所有`finally` 块以清理资源。如果没有代码捕捉 `ThreadAbortException`，它最终会成为未处理的异常，CLR会“吞噬”这个异常：线程会终止，但进程可继续运行。这是很特别的一点，因为对于其他所有未经处理的异常，CLR 都会终止进程。
+
+> 重要提示 如果线程当前正在 `finally` 块、`catch` 块、类构造器、临界执行区域<sup>②</sup>或非托管代码中执行，那么 CLR 不会立即终止该线程。否则、资源清理代码、错误恢复代码、类型初始化代码、关键(critical)代码或者其他任何 CLR 不了解的代码都将无法完成，导致应用程序的行为无法预测，甚至可能造成安全漏洞。线程终止时会等待这些代码块执行完毕。然后，当代码块结束时，CLR 再强制线程抛出一个 `ThreadAbortException` 异常。
+
+>> ② 即 critical execution region，文档翻译为 “关键执行区域”，本书翻译为“临界执行区域”或“临界区”。临界区是指线程终止或未处理异常的影响可能不限于当前任务的区域。相反，非临界区中的终止或失败只对出错的任务有影响。 ———— 译注
+
+3. 当第 2 步发现的所有线程都离开 AppDomain 后，CLR 遍历堆，为引用了“由已卸载的 AppDomain 创建的对象”的每个代理对象都设置一个标志(flag
+)。这些代理对象现在知道它们引用的真实对象已经不在了。现在，任何代码在无效的代理对象上调用方法都会抛出一个 `AppDomainUnloadedException`异常。
+
+4. CLR强制垃圾回收，回收由已卸载的 AppDomain 创建的任何对象的内存。这些对象的 `Finalize` 方法被调用，使对象有机会正确清理它们占用的资源。
+
+5. CLR 恢复剩余所有线程的执行。调用 `AppDomain.Unload` 方法的线程将继续运行；对 `AppDomain.Unload` 的调用是同步进行的。<sup>①</sup>。
+
+> ① 换言之，一旦调用 Unload，只有在它返回之后，线程才能恢复运行。 ———— 译注
+
+在 Ch22-1-AppDomains 应用程序中，所有工作都用一个线程来做。因此，任何时候只要调用 `AppDomain.Unload` ，都不可能有另一个线程在要卸载的 AppDomain 中。因此，CLR 不必抛出任何 `ThreadAbortException` 异常。本章后面将进一步讨论 `ThreadAbortException`。
+
+顺便说一句，当一个线程调用 `AppDomain.Unload` 方法时，针对要卸载的 AppDomain 中的线程， CLR 会给它们 10 秒钟的时间离开。10 秒钟后，如果调用 `AppDomain.Unload` 方法的线程还没有返回，CLR 将抛出一个 `CannotUnloadAppDomainException` 异常，AppDomain 将来可能会、也可能不会卸载。
+
+> 注意 如果调用 `AppDomain.Unload` 方法的线程不巧在要卸载的 AppDomain 中，CLR 会创建另一个线程来尝试卸载 AppDomain。第一个线程被强制抛出 `ThreadAbortException` 并展开(unwind)。新线程将等待 AppDomain 卸载，然后新线程会终止。如果 AppDomain 卸载失败，新线程将抛出 `CannotUnloadAppDomainException` 异常。但是，由于我们没有写由新线程执行的代码，所以无法捕捉这异常。
+
+## <a name="22_4">22.4 监视 AppDomain</a>
+
+宿主应用程序可监视 AppDomain 消耗的资源。有的宿主根据这种信息判断一个 AppDomain 的内存或 CPU 消耗是否超过了应有的水准，并强制卸载一个 AppDomain。还可利用监视来比较不同算法的资源消耗情况，判断哪一种算法用的资源较少。由于 AppDomain 监视本身也会产生开销，所以宿主必须将 `AppDomain` 的静态 `MonitoringEnabled` 属性设为 `true`，从而显式地打开监视。监视一旦打开便不能关闭；将 `MonitoringEnabled` 属性设为 `false` 会抛出一个 `ArgumentException` 异常。
+
+监视打开后，代码可查询 `AppDomain` 类提供的以下 4 个只读属性。
+
+* `MonitoringSurvivedProcessMemorySize` 这个 `Int64` 静态属性返回由当前 CLR  实例控制的所有 AppDomain 使用的字节数。这个数字只保证在上一次垃圾回收时是准确的。
+
+* `MonitoringTotalAllocatedMemorySize` 这个 `Int64` 实例属性返回特定 AppDomain 已分配的字节数。这个数字只保证在上一次垃圾回收时是准确的。
+
+* `MonitoringSurvivedMemorySize` 这个 `Int64` 实例属性返回特定 `AppDomain` 当前正在使用的字节数。这个数字只保证在上一次垃圾回收时是准确的。
+
+* `MonitoringTotalProcessorTime` 这个 `TimeSpan` 实例属性返回特定 AppDomain 的 CPU 占用率。
+
+下面这个类演示了如何利用这些属性检查两个时间点之间一个 AppDomain 发生的变化：
+
+```C#
+private sealed class AppDomainMonitorDelta : IDisposable {
+    private AppDomain m_appDomain;
+    private TimeSpan m_thisADCpu;
+    private Int64 m_thisADMemoryInUse;
+    private Int64 m_thisADMemoryAllocated;
+
+    static AppDomainMonitorDelta() {
+        // 确定已打开了 AppDomain 监视
+        AppDomain.MonitoringIsEnabled = true;
+    }
+
+    public AppDomainMonitorDelta(AppDomain ad) {
+        m_appDomain = ad ?? AppDomain.CurrentDomain;
+        m_thisADCpu = m_appDomain.MonitoringTotalProcessorTime;
+        m_thisADMemoryInUse = m_appDomain.MonitoringSurvivedMemorySize;
+        m_thisADMemoryAllocated = m_appDomain.MonitoringTotalAllocatedMemorySize;
+    }
+
+    public void Dispose() {
+        GC.Collect();
+        Console.WriteLine("FriendlyName={0}, CPU={1}ms", m_appDomain.FriendlyName,
+            (m_appDomain.MonitoringTotalProcessorTime - m_thisADCpu).TotalMilliseconds);
+        Console.WriteLine(" Allocated {0:N0} bytes of which {1:N0} survived GCs",
+            m_appDomain.MonitoringTotalAllocatedMemorySize - m_thisADMemoryAllocated,
+            m_appDomain.MonitoringSurvivedMemorySize - m_thisADMemoryInUse);
+    }
+}
+```
+
+以下代码演示了如何使用 `AppDomainMonitorDelta` 类：
+
+```C#
+private static void AppDomainResourceMonitoring() {
+    using(new AppDomainMonitorDelta(null)) {
+        // 分配在回收时能存活的约 10 MB 
+        var list = new List<Object>();
+        for (Int32 x = 0; x < 1000; x++) list.Add(new Byte[10000]);
+
+        // 分配在回收时存活不了的约 20 MB
+        for (Int32 x = 0; x < 2000; x++) new Byte[10000].GetType();
+
+        // 保持 CPU 工作约 5 秒
+        Int64 stop = Environment.TickCount + 5000;
+        while (Environment.TickCount < stop) ;
+    }
+}
+```
+
+在我的机器上运行以上代码，得到以下输入：<sup>①</sup>
+
+```C#
+FriendlyName=03-Ch22-1-AppDomains.exe, CPU=4937.982ms
+ Allocated 30,159,424 bytes of which 10,099,024 survived GCs
+```
+
+> ① 在本书配套代码中，找到 Ch22-1 AppDomains 项目，在 `Main()`方法中注释掉`Marshalling()` 和 `FieldAccessTiming()`方法调用，然后解除对 `AppDomainResourceMonitoring()` 调用 `R` 的注释。 ————译注
+
+## <a name="22_5">22.5 AppDomain FirstChance 异常通知</a>
+
+每个 AppDomain 都可关联一组回调方法；CLR 开始查找 AppDomain 中的 `catch` 块时，这些回调方法将得以调用。可用这些方法执行日志记录操作。另外，宿主可利用这个机制监视 AppDomain 中抛出的异常。回调方法不能处理异常，也不能以任何方式“吞噬”异常(装作异常没有发生)；它们只是接收关于异常发生的通知。要登记回调方法，为 AppDomain 的实例事件 `FirstChanceException` 添加一个委托就可以了。
+
+下面描述了 CLR 如何处理异常：异常首次抛出时，CLR 调用向抛出异常的 AppDomain 登记的所有 `FirstChanceException` 回调方法。然后，CLR 查找栈上在同一个 AppDomain 中的任何 `catch` 块。有一个 `catch` 块能处理异常，则异常处理完成，将继续正常执行。如果 AppDomain 中没有一个 `catch` 块能处理异常，则 CLR 沿着栈向上来到调用 AppDomain，再次抛出同一个异常对象(序列化和反序列化之后)。这时感觉就像是抛出了一个全新的异常，CLR 调用向当前 AppDomain 登记的所有 `FirstChanceException` 回调方法。这个过程会一直持续，直到抵达线程栈顶部。届时如果异常还未被任何代理处理，CLR 只好终止整个进程。
+
+## <a name="22_6">22.6 宿主如何使用 AppDomain</a>
+
+前面已讨论了宿主以及宿主加载 CLR 的方式。同时还讨论了宿主如何告诉 CLR 创建和卸载 AppDomain。为了使这些讨论更加具体，下面将描述一些常见的寄宿和 AppDomain 使用情形。我看重解释了不同应用程序类型如何寄宿(容纳)CLR，以及如何管理 AppDomain。
+
+### 22.6.1 可执行应用程序
+
+控制台 UI 应用程序、NT Service应用程序、Windows窗体应用程序和 Windows Presentation Foundation(WPF)应用程序都会自寄宿(self-hosted，即自己容纳 CLR)的应用程序，它们都有托管 EXE 文件。Windows 用托管 EXE 文件初始化进程时，会加载垫片<sup>②</sup>。垫片检查应用程序的程序集(EXE 文件)中的CLR头信息。头信息指明了生成和测试应用程序时使用的 CLR 版本。垫片根据这些信息决定将哪个版本的 CLR 加载到进程中，CLR 加载并初始化好之后，会再次检查程序集的 CLR 头，判断哪个方法是应用程序的入口方(`Main`)。CLR 调用该方法，此时应用程序才真正启动并运行起来。
+
+代码运行时会访问其他类型。引用另一个程序集中的类型时，CLR 会定位所需的程序集，并将其加载到同一个 AppDomain 中。应用程序的 `Main` 方法返回后，Windows 进程终止(销毁默认 AppDomain 和其他所有 AppDomain)。
+
+> 注意 顺便说一句，要关闭 Windows 进程(包括它的所有 AppDomain)，可调用 `System.Enviroment` 的静态方法 `Exit`。`Exit` 是终止进程最得体的方式，因为它首先调用托管堆上的所有对象的 `Finalize` 方法，再释放 CLR 容纳的所有非托管 COM 对象，最后，`Exit` 调用 Win32 `ExitProcess` 函数。
+
+应用程序可告诉 CLR 在进程的地址空间中创建额外的 AppDomain。事实上，我的 Ch22-1-AppDomains 应用程序正是这么做的。
+
+### 22.6.2 Microsoft Silverlight 富 Internet 应用程序
+
+Microsoft Silverlight “运行时” 使用了有别于 .NET Framework 普通桌面版本的特殊 CLR。安装好 Silverlight “运行时”之后，每次访问使用了 Silverlight 技术的网站，都会造成 Silverlight CLR(CoreClr.dll)加载到浏览器(可能是、也可能不是 Windows Internet Explorer————甚至不一定是 Windows 机器)中。网页上的每个 Silverlight 控件都在它自己的 AppDomain 中运行。用户关闭标签页或切换至另一个网站，不再使用的任何 Silverlight 控件都在它自己的 AppDomain 都会被卸载。AppDomain 中的 Silverlight 代码在限制了安全权限的沙盒中运行，不会对用户或机器造成任何损害。
+
+### 22.6.3 Microsoft ASP.NET 和 XML Web 服务应用程序
+
+ASP.NET 作为一个 ISAPI DLL(ASPNet_ISAPI.dll)实现。客户端首次请求由这个 DLL 处理的 URL 时，ASP.NET 判断这是不是第一次请求。如果是，ASP.NET 要求 CLR 为该 Web 应用程序创建新 AppDomain；每个 Web 应用程序都根据虚拟目录来标识。然后，ASP.NET 要求 CLR 将包含应用程序所公开类型的程序集加载到新 AppDomain 中，创建该型的实例，并调用其中的方法响应客户端的 Web 请求。如果代码引用了更多的类型，CLR 将所需的程序集加载到 Web 应用程序的 AppDomain 中。
+
+以后，如果客户端请求已开始运行的 Web 应用程序，ASP.NET 就不再新建 AppDomain 了，而是使用现有的 AppDomain，创建 Web 应用程序的类型的新实例并开始调用方法。这些方法已 JIT 编译成本机代码，所以后续客户端请求的性能会比较出众。
+
+如果客户端请求不同的 Web 应用程序，ASP.NET 会告诉 CLR 创建新 AppDomain。新 AppDomain 通常在和其他 AppDomain 一样的工作进程中创建。这意味着将有大量 Web 应用程序在同一个 Windows 进程中运行，这提升了系统的总体效率。同样地，每个 Web 应用程序需要的程序集都会加载到一个单独的 AppDomain 中，以隔离不同 Web 应用程序的代码和对象。
+
+ASP.NET 的一个亮点是允许在不关闭 Web 服务器的前提下动态更改网站代码。网站的文件在硬盘上发生改动时，ASP.NET 会检测到这个情况，并卸载包含旧版本文件的 AppDomain(在当前运行的最后一个请求完成之后)，并创建一个新 AppDomain，向其中加载新版本的文件。为了确保这个过程的顺利进行。ASP.NET 使用了 AppDomain 的一个名为 “影像复制<sup>①</sup>”(shadow copying)的功能。
+
+> ① 文档如此。参见 `AppDomainSetup.ShadowCopyDirectories` 属性。 ——译注
+
+### 22.6.4 Microsoft SQL Server
+
+Microsoft SQL Server 是非托管应用程序，它的大部分代码仍是用非托管 C++ 写的。 SQL Server 允许开发人员使用托管代码创建存储过程。首次请求数据库运行一个用托管代码写的存储过程时，SQL Server 会加载 CLR。存储过程在它们自己的安全 AppDomain 中运行，这避免了存储过程对数据库服务器产生负面影响。
+
+这其实是一项非同寻常的功能！它意味着开发人员可以选择自己喜欢的编程语言来编写存储过程。存储过程可以在自己的代码中使用强类型的数据对象。代码还会被 JIT 编译成本机代码执行，而不是采用解释执行的方式。开发人员可利用 FCL 或任何其他程序集中定义的任何类型。结果是我们的工作变得越来越轻松，但应用程序的表现变得越来越好。作为开发人员，我表示很知足！
+
+### 22.6.5 更多的用法只局限于想象力
+
+生产型应用程序(比如字处理和电子表格软件)也允许用户使用任何编程语言来编写宏。宏可以访问与 CLR 一起运行的所有程序集和类型。宏会被编译，所以执行得更快。最重要的是，宏在一个安全 AppDomain 中运行，不会骚扰到用户。你自己的应用程序也可利用这个功能。具体怎么用，只局限于你自己的想象力。
+
+## <a name="22_7">22.7 高级宿主控制</a>
+
+本节探讨与寄宿 CLR 有关的高级话题。目的是让你有一个初步的认识，帮你更多地理解 CLR 的能力。如果有兴趣，鼓励你参考其他更有针对性的参考书。
+
+### 22.7.1 使用托管代码管理 CLR
+
+`System.AppDomainManager` 类允许宿主使用托管代码(而不是非托管代码)覆盖 CLR 的默认行为。当然，使用托管代码使宿主的实现变得更容易。你唯一要做的就是定义自己的类，让它从 `System.AppDomainManager` 派生，重写想接手控制的任何虚方法。然后，在专用的程序集中生成类，并将程序集安装到 GAC 中。这是由于该程序集需要被授予完全信任权限，而 GAC 中的所有程序集都总是被授予完全信任权限。
+
+```````````
