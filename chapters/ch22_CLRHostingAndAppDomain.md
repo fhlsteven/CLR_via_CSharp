@@ -563,4 +563,34 @@ Microsoft SQL Server 是非托管应用程序，它的大部分代码仍是用�
 
 `System.AppDomainManager` 类允许宿主使用托管代码(而不是非托管代码)覆盖 CLR 的默认行为。当然，使用托管代码使宿主的实现变得更容易。你唯一要做的就是定义自己的类，让它从 `System.AppDomainManager` 派生，重写想接手控制的任何虚方法。然后，在专用的程序集中生成类，并将程序集安装到 GAC 中。这是由于该程序集需要被授予完全信任权限，而 GAC 中的所有程序集都总是被授予完全信任权限。
 
-```````````
+然后要告诉 `CLR` 使用你的 `AppDomainManager` 派生类。在代码中，最佳的办法就是创建一个 `AppDomainSetup` 对象，初始化它的 `AppDomainManagerAssembly` 和 `AppDomainManagerType` 属性(均为 `String` 类型)。将前面设为定义了你的 `AppDomainManager` 派生类的那个程序集的强名称字符串，后者设为你的 `AppDomainManager` 派生类的全名。还可在应用程序 `XML` 配置文件中，用 `appDomainManagerAssembly` 和 `appDomainManagerType`元素来设置 `AppDomainManager`。此外，本机宿主可查询 `ICLRRControl` 接口，调用该接口的 `SetAppDomainManagerType` 函数，向它传递 `GAC` 安装的程序集的标识和 `AppDomainManager` 派生类的名称。<sup>①</sup>
+
+> ① 还可使用环境变量和注册表设置来配置一个 `AppDomainManager`。但这些机制比正文描述的方法麻烦得多。除非是在一些测试性的场合中，否则应避免使用。
+
+现在看看 `AppDomainManager` 派生类能做什么。`AppDomainManager` 派生类的作用是使宿主保持控制权，即使是在加载项(add-in)试图创建自己的 AppDomain 时。进程中的代码试图创建新 AppDomain 时，那个 AppDomain 中的 `AppDomainManager` 派生对象可修改安全性和配置设置。它还可决定阻止一次 AppDomain 创建，或返回对现有 AppDomain 的引用。新 AppDomain 创建好之后，CLR 会在其中创建新的 `AppDomainManager` 派生对象。新 AppDomain 创建好之后，CLR 会在其中创建新的 `AppDomainManager` 派生对象。这个对象也能修改配置设置、决定执行上下文如何在线程之间切换，并决定向程序集授予的权限。
+
+### 22.7.2 写健壮的宿主应用程序  
+
+托管代码出现错误时，宿主可告诉 CLR 采取什么行动。下面是一些例子(按严重性从低到高排序)。
+
+* 如果线程执行时间过长，CLR 可终止线程并返回一个响应。(下一节会更多地讨论这个问题。)
+
+* CLR 可卸载 AppDomain。这会终止该 AppDomain 中的所有线程，导致有问题的代码卸载。
+
+* CLR 可被禁用。这会阻止更多的托管代码在程序中运行，但仍然允许非托管代码运行。
+
+* CLR 可退出 Windows 进程。首先会终止所有线程，并卸载所有 AppDomain，使资源清理操作得以执行，然后才会终止进程。
+
+CLR 可以得体地(gracefully)或者粗鲁地(rudely)终止线程或 AppDomain。得体意味着会执行(资源)清理代码。换言之，`finally` 块中的代码会运行，对象的 `Finalize` 方法也将被执行。而粗鲁意味着清理代码不会执行。换言之，`finally` 块中的代码可能不会运行，对象的 `Finalize` 方法也可能不会执行。如果得体地终止，当前正在一个 `catch` 块或 `finally` 块中的线程。遗憾的是，非托管代码或者约束执行区(Constrained Execution Region，CER)中的线程完全无法终止。
+
+宿主可设置所谓的升级策略(escalation policy)，从而告诉 CLR 应该如何处理托管代码的错误。例如，SQL Server 就告诉 CLR 在执行托管代码时，假如遇到未处理的异常应该如何处理。线程遇到未经处理的异常时，CLR 首先尝试将该异常升级成一次得体的线程终止。如果线程在指定时间内没有终止，CLR 就尝试将得体的终止升级成粗鲁的终止。
+
+刚才描述的是最常见的情况。但如果线程在一个临界区(critical region)遇到了未处理的异常，策略就有所不同。位于临界区的线程是指进入线程同步锁的线程，该锁必须由同一个线程释放(例如最初调用 `Monitor.Enter` 方法，调用 `Mutex` 的 `WaitOne` 方法，或者调用 `ReaderWriterLock` 的 `AcquireReaderLock` 或 `AcquireWriteLock` 方法的那个线程<sup>①</sup>)。成功等待一个 `AutoResetEvent`，`ManualResetEvent` 或者 `Semaphore` 不会造成线程进入临界区，因为另一个线程可通知这些同步对象。线程在临界区时，CLR 认为线程访问的数据是由同一个 AppDomain 中的多个线程共享的。毕竟，这才是导致线程跑去获取一个锁的原因。直接终止正在访问共享数据的线程是不合适的，因为其他线程随后得到的就可能是已损坏的数据，造成 AppDomain 的运行变得无法预测，甚至可能留下安全隐患。
+
+> ① 所有这些锁都在内部调用 `Thread` 的 `BeginCriticalRegion` 和 `EndCriticalRegion` 方法，指出它们要进入和离开临界区。如有必要，你的代码也可调用这些方法。但一般只有在和非托管代码进行互操作时才有必要。
+
+所以，位于临界区的线程遭遇未处理的异常时，CLR 首先尝试将异常升级成一次得体的 AppDomain 卸载，从而摆脱(清理)当前正在这个 AppDomain 中的所有线程以及当前正在使用的数据对象。如果 AppDomain 未能在指定时间内卸载，CLR 就将得体的 AppDomain 卸载升级成粗鲁的 AppDomain 卸载。
+
+### 22.7.3 宿主如何拿回它的线程
+
+宿主应用程序一般都想保持对自己的线程的控制。```
