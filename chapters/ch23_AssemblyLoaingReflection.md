@@ -132,3 +132,50 @@ private static Assembly ResolveEventHandler(Object sender, ResolveEventArgs args
 
 使用反射调用成员也会影响性能。用反射调用方法时，首先必须将实参打包(pack)成数组；在内部，反射必须将这些实参解包(unpack)到线程栈上。此外，在调用方法前，CLR 必须检查实参具有正确的数据类型。最后，CLR 必须确保调用者有正确的安全权限来访问被调用的成员。
 
+基于上述所有原因，最好避免利用反射来访问字段或调用方法/属性。应该利用一下两种技术之一开发应用程序来动态发现和构造类型实例。
+
+* 让类型从编译时已知的基类型派生。在运行时构造派生类型的实例，将对它的引用方法放到基类型的变量中(利用转型)，再调用基类型定义的虚方法。
+
+* 让类型实现编译时已知的接口。在运行时构造类型的实例，将对它的引用放到接口类型的变量中(利用转型)，再调用接口定义的方法。
+
+在这两种技术中，我个人更喜欢使用接口技术而非基类技术，因为基类技术不允许开发人员选择特定情况下工作得最好的基类。不过，需要版本控制的时候基类技术更合适，因为可随时向基类型添加成员，派生类会直接继承该成员。相反，要向接口添加程成员，实现该接口的所有类型都得修改它们的代码并重新编译。
+
+使用这两种技术时，强烈建议接口或基类型在它们自己的程序集中定义，这有助于缓解版本控制问题。欲知详情，请参见稍后的 23.4 节“设计支持加载项的应用程序”。
+
+### 23.3.1 发现程序集中定义的类型
+
+反射经常用于判断程序集定义了哪些类型。FCL 提供了许多 API 来获取这方面的信息。目前最常用的 API 是 `Assembly` 的 `ExportedTypes` 属性。下例加载一个程序集，并显示其中定义的所有公开导出的类型<sup>①<sup>:
+
+> ① 所谓公开导出的类型，就是程序集中定义的 `public` 类型，它们在程序集的外部可见。 ———— 译注
+
+```C#
+using System;
+using System.Reflection;
+
+public static class Program {
+    public static void Main() {
+        String dataAssembly = "System.Data, version=4.0.0.0, "
+            + "culture=neutral, PublicKeyToken=b77a5c561934e089";
+        LoadAssemAndShowPublicTypes(dataAssembly);
+    }
+
+    private static void LoadAssemAndShowPublicTypes(String assemId) {
+        // 显式地将程序集加载到这个 AppDomain 中
+        Assembly a = Assembly.Load(assemId);
+
+        // 在一个循环中显示已加载程序集中每个公开导出 Type 的全名
+        foreach (Type t in a.ExportedTypes) {
+            // 显示类型全名
+            Console.WriteLine(t.FullName);
+        }
+    }
+}
+```
+
+### 23.3.2 类型对象的准确含义
+
+注意，上述代码遍历 `System.Type` 对象构成的数组。 `System.Type` 类型是执行类型和对象操作的起点。`System.Type` 对象代表一个类型引用(而不是类型定义)。
+
+众所周知，`System.Object` 定义了公共非虚实例方法 `GetType`。调用这个方法时，CLR 会判断指定对象的类型，并返回对该类型的 `Type` 对象的引用。由于在一个 AppDomain 中，每个类型只有一个 `Type` 对象，所以可以使用相等和不等操作符来判断两个对象是不是相同的类型：
+
+````
