@@ -178,4 +178,26 @@ public static class Program {
 
 众所周知，`System.Object` 定义了公共非虚实例方法 `GetType`。调用这个方法时，CLR 会判断指定对象的类型，并返回对该类型的 `Type` 对象的引用。由于在一个 AppDomain 中，每个类型只有一个 `Type` 对象，所以可以使用相等和不等操作符来判断两个对象是不是相同的类型：
 
-````
+```C#
+private static Boolean AreObjectsTheSameType(Object o1, Object o2) {
+    return o1.GetType() == o2.GetType();
+}
+```
+
+除了调用 `Object` 的 `GetType` 方法， FCL 还提供了获得 `Type` 对象的其他几种方式。
+
+* `System.Type` 类型提供了静态 `GetType` 方法的几个重载版本。所有版本都接收一个 `String` 参数。字符串必须指定类型的全名(包括它的命名空间)。注意不允许使用编译器支持的基元类型(比如 C# 的 `int`，`string`，`bool`等)，这些名称对于 CLR 没有任何意义。如果传递的只是一个类型名称，方法将检查调用程序集，看它是否定义了指定名称的类型。如果是，就返回对恰当 `Type` 对象的引用。
+
+如果调用程序集没有定义指定的类型，就检查 MSCorLib.dll 定义的类型。如果还是没有找到，就返回 `null` 或抛出 `System.TypeLoadException`(取决于调用的是 `GetType` 方法的哪个重载，以及传递的是什么参数)。文档对该方法进行了完整解释。
+
+可向 `GetType` 传递限定了程序集的类型字符串，比如`"System.Int32, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089"`。在本例中，`GetType` 会在指定程序集中查找类型(如有必要会加载程序集)。
+
+* `System.Type` 类型提供了静态 `ReflectionOnlyGetType` 方法。该方法与上一条提到的 `GetType` 方法在行为上相似，只是类型会以“仅反射”的方式加载，不能执行。
+
+* `System.TypeInfo` 类型提供了实例成员 `DeclaredNestedTypes` 和 `GetDeclaredNestedType`.
+
+* `System.Reflection.Assembly` 类型提供了实例成员 `GetType`，`DefinedTypes` 和 `ExportedTypes`。
+
+
+
+
