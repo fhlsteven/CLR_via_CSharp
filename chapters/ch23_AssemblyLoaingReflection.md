@@ -198,6 +198,43 @@ private static Boolean AreObjectsTheSameType(Object o1, Object o2) {
 
 * `System.Reflection.Assembly` 类型提供了实例成员 `GetType`，`DefinedTypes` 和 `ExportedTypes`。
 
+> 注意 构造传给反射方法的字符串时，要使用类型名称或限定了程序集的类型名称。Microsoft 为这些名称定义了巴克斯——诺尔范式(Backus-MaurForm， BNF)语法。使用反射时，了解这种语法对你很有帮助，尤其是在处理嵌套类型、泛型类型、泛型类型、引用参数或者数组的时候。要想了解完整语法，请参考文档<sup>①</sup>或者 Google “BNF 类型名称”。还可参考 `Type` 和 `TypeInfo` 的 `MakeArrayType,MakeByRefType,MakeGenericType` 和 `MakePointerType` 方法。
 
+> ① 参考文档中的 “指定完全限定的类型名称”主题。————译注
 
+许多编程语言都允许使用一个操作符并根据编译时已知的类型名称来获得 `Type` 对象。尽量用这个操作符获得 `Type` 引用，而不要使用上述列表中的任何方法，因为操作符生成的代码通常更快。C# 的这个操作符称为 `typeof`，通常用它将晚期绑定的类型信息与早期绑定(编译时已知)的类型信息进行比较。以下代码演示了一个例子：
 
+```C#
+private static void SomeMethod(Object o) {
+    // GetType 在运行时返回对象的类型(晚期绑定)
+    // typeof 返回指定类的类型(早期绑定)
+    if (o.GetType() == typeof(FileInfo)) { ... }
+    if (o.GetType() == typeof(DirectoryInfo)) { ... }
+}
+```
+
+> 注意 上述代码的第一个 `if` 语句检查变量 `o` 是否引用了 `FileInfo` 类型的对象；它不检查 `o` 是否引用从 `FileInfo` 类型派生的对象。换言之，上述代码测试的是精确匹配，而非兼容匹配，(使用转型或 C# 的 `is/as` 操作符时，测试的就是兼容匹配。)
+
+如前所述，`Type` 对象是轻量级的对象引用。要更多地了解类型本身，必须获取一个 `TypeInfo` 对象，后者才代表类型定义。可调用 `System.Reflection.IntrospectionExtensions` 的 `GetTypeInfo` 扩展方法将 `Type` 对象转换成 `TypeInfo` 对象。
+
+```C#
+Type typeReference = ...;       // 例如： o.GetType() 或者 typeof(Object)
+TypeInfo typeDefinition = typeReference.GetTypeInfo();
+```
+
+另外，虽然作用不大，但还可调用 `TypeInfo` 的 `AsType` 方法将 `TypeInfo` 对象转换成 `Type` 对象。
+
+```C#
+TypeInfo typeDefinition = ...;
+Type typeReference = typeDefinition.AsType();
+```
+
+获取 `TypeInfo` 对象会强迫 CLR 确保已加载类型的定义程序集，从而对类型进行解析。这个操作可能代价高昂。如果只需要类型引用(`Type` 对象)，就应避免这个操作。但一旦获得了 `TypeInfo` 对象，就可查询类型的许多属性进一步了解它。大多数属性，比如 `IsPublic`，`IsSealed`，`IsAbstract`，`IsClass` 和 `IsValueType` 等，都指明了与类型关联的标志。另一些属性，比如 `Assembly`，`AssemblyQualifiedName`,`FullName` 和 `Module` 等，则返回定义该类型的程序集或模块的名称以及类型的全名。还可查询 `BaseType` 属性来获取对类型的基类型的引用。除此之外，还有许多方法能提供关于类型的更多信息。文档描述了 `TypeInfo` 公开的所有方法和属性。
+
+### 23.3.3 构建 Exception 派生类型的层次结构
+
+以下代码使用本章讨论的许多概念将一组程序集加载到 AppDomain 中，并显示最终从 `System.Exception` 派生的所有类型。顺便说一句，20.4 节 “FCL 定义的异常类” 展示的 `Exception` 层次结构就是用这个程序显示的。
+
+```C#
+
+```
