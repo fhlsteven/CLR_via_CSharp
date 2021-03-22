@@ -236,5 +236,308 @@ Type typeReference = typeDefinition.AsType();
 以下代码使用本章讨论的许多概念将一组程序集加载到 AppDomain 中，并显示最终从 `System.Exception` 派生的所有类型。顺便说一句，20.4 节 “FCL 定义的异常类” 展示的 `Exception` 层次结构就是用这个程序显示的。
 
 ```C#
+public static void Go() {
+    // 显式加载想要反射的程序集
+    LoadAssemblies();
 
+    // 对所有类型进行筛选和排序
+    var allTypes = (from a in AppDomain.CurrentDomain.GetAssemblies()
+                    from t in a.ExportedTypes
+                    where typeof(Exception).GetTypeInfo().IsAssignableFrom(t.GetTypeInfo())
+                    orderby t.Name
+                    select t).ToArray();
+
+    // 生成并显示继承层次结构
+    Console.WriteLine(WalkInheritanceHierarchy(new StringBuilder(), 0, typeof(Exception), allTypes));
+}
+
+private static StringBuilder WalkInheritanceHierarchy(StringBuilder sb, Int32 indent, Type baseType, IEnumerable<Type> allTypes) {
+    String spaces = new String(' ', indent * 3);
+    sb.AppendLine(spaces + baseType.FullName);
+    foreach (var t in allTypes) {
+        if (t.GetTypeInfo().BaseType != baseType) continue;
+        WalkInheritanceHierarchy(sb, indent + 1, t, allTypes);
+    }
+    return sb;
+}
+
+private static void LoadAssemblies() {
+    String[] assemblies = {
+        "System, PublicKeyToken={0}",
+        "System.Core, PublicKeyToken={0}",
+        "System.Data, PublicKeyToken={0}",
+        "System.Design, PublicKeyToken={1}",
+        "System.DirectoryServices, PublicKeyToken={1}",
+        "System.Drawing, PublicKeyToken={1}",
+        "System.Drawing.Design, PublicKeyToken={1}",
+        "System.Management, PublicKeyToken={1}",
+        "System.Messaging, PublicKeyToken={1}",
+        "System.Runtime.Remoting, PublicKeyToken={0}",
+        "System.Security, PublicKeyToken={1}",
+        "System.ServiceProcess, PublicKeyToken={1}",
+        "System.Web, PublicKeyToken={1}",
+        "System.Web.RegularExpressions, PublicKeyToken={1}",
+        "System.Web.Services, PublicKeyToken={1}",
+        "System.Xml, PublicKeyToken={0}"
+    };
+
+    String EcmaPublicKeyToken = "b77a5c561934e089";
+    String MSPublicKeyToken = "b03f5f7f11d50a3a";
+
+    // 获取包含 System.Object 的程序集的版本，
+    // 假定其他所有程序集都是相同的版本
+    Version version = typeof(System.Object).Assembly.GetName().Version;
+
+    // 显示加载想要反射的程序集
+    foreach (String a in assemblies) {
+        String AssemblyIdentity = String.Format(a, EcmaPublicKeyToken, MSPublicKeyToken) + 
+            ", Culture=neutral, Version=" + version;
+        Assembly.Load(AssemblyIdentity);
+    }
+}
 ```
+
+### 23.3.4 构造类型的实例
+
+获得对 `Type` 派生对象的引用之后，就可以构造该类型的实例了。FCL 提供了以下几个机制。
+
+* `System.Activator` 的 `CreateInstance` 方法  
+  `Activator` 类提供了静态 `CreateInstance` 方法的几个重载版本。调用方法时既可传递一个 `Type` 对象引用，也可传递标识了类型的 `String`。直接获取类型对象的几个版本较为简单。你要为类型的构造器传递一组实参，方法返回对新对象的引用。
+  用字符串来指定类型的几个版本则稍微复杂一些。首先必须指定另一个字符串来标识定义了类型的程序集。其次，如果正确匹配了远程访问(remoting)选项，这些方法还允许构造远程对象。第三，这次版本返回的不是对新对象的引用，而是一个 `System.Runtime.Remoting.ObjectHandle` 对象(从 `System.MarshalByRefObject` 派生)。`ObjectHandle`类型允许将一个 AppDomain 中创建的对象传至其他 AppDomain，期间不强迫对象具体化(materialize)。准备好具体化这个对象时，请调用 `ObjectHandle` 的 `Unwrap` 方法。在一个 AppDomain 中调用该方法时，它将定义了要具体化的类型的程序集加载到这个 AppDomain 中。如果对象按引用封送，会创建代理类型和对象。如果对象按值封送，对象的副本会被反序列化。
+
+* `System.Activator` 的 `CreateInstanceFrom` 方法  
+  `Activator` 类还提供了一组静态 `CreateInstanceFrom` 方法。它们与 `CreateInstance` 的行为相似，只是必须通过字符串参数来指定类型及其程序集。程序集用 `Assembly` 的 `LoadFrom`(而非 Load)方法加载到调用 `AppDomain` 中。由于都不接受 Type 参数，所以返回的都会一个`ObjectHandle` 对象引用，必须调用 `ObjectHandle` 的 `Unwrap` 方法进行具体化。
+  
+* `System.AppDomain` 的方法  
+  `AppDomain` 类型提供了 4 个用于构造类型实例的实例方法(每个都有几个重载版本)，包括 `CreateInstance`，`CreateInstanceAndUnwrap`，`CreateInstanceFrom` 和 `CreateInstanceFromAndUnwrap`。这些方法的行为和 `Activator` 类的方法相似，区别在于它们都是实例方法，允许指定在哪个 AppDomain 中构造对象。另外，带 `Unwrap` 后缀的方法还能简化操作，不必执行额外的方法调用。
+
+* `System.Reflection.ConstructorInfo` 的 `Invoke` 实例方法  
+  使用一个 `Type` 对象引用，可以绑定到一个特定的构造器，并获取对构造器的 `ConstructorInfo` 对象的引用。然后，可利用 `ConstructorInfo` 对象引用来调用它的 `Invoke` 方法。类型总是在调用 AppDomain 中创建，返回的是对新对象的引用。本章稍后会详细讨论该方法。
+  
+> 注意 CLR 不要求值类型定义任何构造器。但这会造成一个问题，因为上述列表中的所有机制都要求调用构造器来构造对象。然而，`Activator` 的`CreateInstance` 方法允许在不调用构造器的情况下创建值类型的实例。要在不调用构造器的情况下创建值类型的实例，必须调用 `CreateInstance` 方法获取单个 `Type` 参数的版本或者获取 `Type` 和 `Boolean` 参数的版本。
+
+利用前面列出的机制，可为出数组(`System.Array` 派生类型)和委托(`System.MulticastDelegate` 派生类型)之外的所有类型创建对象。创建数组需要调用 `Array` 的静态 `CreateInstance` 方法(有几个重载的版本)。所有版本的 `CreateInstance` 方法获取的第一个参数都是对数组元数 `Type` 的引用。`CreateInstance` 的其他参数允许指定数组维数和上下限的各种组合。创建委托则要调用 `MethodInfo` 的静态 `CreateDelegate` 方法。所有版本的 `CreateDelegate` 方法获取的第一个参数都是对委托 `Type` 的引用。`CreateDelegate` 方法的其他参数允许指定在调用实例方法时应将哪个对象作为 `this` 参数传递。
+
+构造泛型类型的实例首先要获取对开放类型的引用，然后调用 `Type` 的 `MakeGenericType` 方法并向其传递一个数组(其中包含要作为类型实参使用的类型)<sup>①</sup>。然后，获取返回的 `Type` 对象并把它传给上面列出的某个方法。下面是一个例子：
+
+> ① 要想进一步了解开放类型、封闭类型、类型参数和类型实参等术语，请参见第 12 章 “泛型”。———— 译注
+
+```C#
+using System;
+using System.Reflection;
+
+internal sealed class Dictionary<Tkey, TValue> { }
+
+public static class Program {
+    public static void Main() {
+        // 获取对泛型类型的类型对象的引用
+        Type openType = typeof(Dictionary<,>);
+
+        // 使用 TKey=String、TValue=Int32 封闭泛型类型 ①
+        Type closedType = openType.MakeGenericType(typeof(String), typeof(Int32));
+
+        // 构造封闭类型的实例
+        Object o = Activator.CreateInstance(closedType);
+
+        // 证实能正常工作
+        Console.WriteLine(o.GetType());
+    }
+}
+```
+
+> ① 开放类型变成了封闭类型。 ———— 译注
+
+编译并运行上述代码得到以下输出：
+
+```cmd
+Dictionary`2[System.String,System.Int32]
+```
+
+## <a name="23_4">23.4 设计支持加载项的应用程序</a>
+
+构建可扩展应用程序时，接口是中心。可用基类代替接口，但接口通常是首选的，因为它允许加载项开发人员选择他们自己的基类。例如，假定要写一个应用程序来无缝地加载和使用别人创建的类型。下面描述了如何设计这种应用程序。
+
+* 创建“宿主 SDK”(Host SDK)程序集，它定义了一个接口，接口的方法作为宿主应用程序与加载项之间的通信机制使用。为接口方法定义参数和返回类型时，请尝试使用 MSCorLib.dll 中定义的其他接口或类型。要传递并返回自己的数据类型，也在“宿主 SDK”程序集中定义。一旦搞定接口定义，就可为这个程序集赋予强名称(参见第 3 章)，然后把它打包并部署到合作伙伴和用户那里。发布后要避免对该程序集中的类型做出任何重大的改变。例如，不要以任何方式更改接口。但如果定义了任何数据类型，在类型中添加新成员是完全允许的。对程序集进行任何修改之后，可能需要使用一个发布者策略文件来部署它(也参见第 3 章的讨论)。
+
+> 注意 之所以能使用 MSCorLib.dll 中定义的类型，是因为 CLR 总是加载与 CLR 本身的版本匹配的那个版本的 MSCorLib.dll。此外，一个 CLR 实例只会加载一个版本的 MSCorLib.dll 。换言之，永远不会出现多个不同版本的 MSCorLib.dll 都加载的情况(详见第 3 章)。最后结果就是，绝不会出现类型版本不匹配的情况。这还有助于减少应用程序对内存的需求。
+
+* 当然，加载项开发人员会在加载项程序集中定义自己的类型。这些程序集将引用你的“宿主”程序集中的类型。加载项开发人员可按自己的步骤推出程序集的新版本，而宿主应用程序能正常使用加载项中的类型，不会出任何纰漏。
+
+* 创建单独的“宿主应用程序”程序集，在其中包含你的应用程序的类型。这个程序集显然要引用“宿主 SDK”程序集，并使用其中定义的类型。可自由修改“宿主应用程序”程序集的代码。由于加载项开发人员不会引用这个“宿主应用程序”程序集的新版本，这不会对加载项开发人员产生任何影响。
+
+本节包含了一些非常重要的信息。跨程序集使用类型时，需要关注程序集的版本控制问题。要花一些时间精心建构，将跨程序集通信的类型隔离到它们自己的程序集中。要避免以后更改这些类型的定义。但是，如果真的要修改类型定义，一定要修改程序集的版本号，并为新版本的程序集创建发布者策略文件。
+
+下面来看一个非常简单的例子，它综合运用了所有这些知识。首选是 HostSDK.dll 程序集的代码：
+
+```C#
+using System;
+
+namespace Wintellect.HostSDK {
+    public interface IAddIn {
+        String DoSomething(Int32 x);
+    }
+}
+```
+
+其次是 AddInTypes.dll 程序集的代码，其中定义了两个公共类型，它们实现了 HostSDK.dll 的接口。要生成该程序集，必须引用 HostSDK.dll 程序集：
+
+```C#
+using System;
+using Wintellect.HostSDK;
+
+public sealed class AddIn_A : IAddIn {
+    public AddIn_A() {         
+    }
+    public String DoSomething(Int32 x) {
+        return "AddIn_A: " + x.ToString();
+    }
+}
+
+public sealed class AddIn_B :IAddIn {
+    public AddIn_B() {
+    }
+    public String DoSomething(Int32 x) {
+        return "AddIn_B: " + (x * 2).ToString();
+    }
+}
+```
+
+然后是一个简单的 Host.exe 程序集(控制台应用程序)的代码。生成该程序集必须引用 HostSDK.dll 程序集。为了发现有哪些可用的加载项类型，以下宿主代码假定类型是在一个以 .dll 文件扩展名结尾的程序集中定义的，而且这些程序集已部署到和宿主的 EXE 文件相同的目录中。 Microsoft 的“托管可扩展性框架”(Managed Extensibility Framework， MEF)是在我刚才描述的各种机制的顶部构建的，它提供了加载项注册和发现机制。构建动态可扩展引用程序时，强烈建议研究一下 MEF，它能简化本章描述的一些操作。
+
+```C#
+using System;
+using System.IO;
+using System.Reflection;
+using System.Collections.Generic;
+using Wintellect.HostSDK;
+
+public static class Program {
+    public static void Main() {
+        // 查找宿主 EXE 文件所在的目录
+        String AddInDir = Path.GetDirectoryName(Assembly.GetEntryAssembly().Location);
+
+        // 假定加载项程序集合宿主 EXE 文件在同一个目录
+        var AddInAssemblies = Directory.EnumerateFiles(AddInDir, "*.dll");
+
+        // 创建可由宿主使用的所有加载 Type 的一个集合
+        var AddInTypes =
+            from file in AddInAssemblies
+            let assembly = Assembly.Load(file)
+            from t in assembly.ExportedTypes // 公开导出的类型
+            // 如果类型实现了 IAddIn 接口，该类型就可由宿主使用
+            where t.IsClass && typeof(IAddIn).GetTypeInfo().IsAssignableFrom(t.GetTypeInfo())
+            select t;
+        // 初始化完成：宿主已发现了所有可用的加载项
+
+        // 下面示范宿主如何构造加载项对象并使用它们
+        foreach (Type t in AddInTypes) {
+            IAddIn ai = (IAddIn)Activator.CreateInstance(t);
+            Console.WriteLine(ai.DoSomething(5));
+        }
+    }
+}
+```
+
+这个简单的宿主/加载项例子没有用到 AppDomain。但在实际应用中，每个加载项都可能要在自己的 AppDomain 中创建，每个 AppDomain 都有自己的安全性和配置设置。当然，如果希望将加载项从内存中移除，可以卸载相应的 AppDomain。为了跨 AppDomain 边界通信，可告诉加载项开发人员从 `MarshalByRefObject` 派生出他们自己的加载类型。但另一个更常见的办法是让宿主应用程序定义自己的、从 `MarshalByRefObject` 派生的内部类型。每个 AppDomain 创建好后，宿主要在新 AppDomain 中创建它自己的 `MarshalByRefObject` 派生类型实例。宿主的代码(位于默认 AppDomain 中)将与它自己的类型(位于其他 AppDomain 中)通信，让后者载入加载项程序集，并创建和使用加载的类型的实例。
+
+
+## <a name="23_5">23.5 使用反射发现类型的成员</a>
+
+到目前为止，本章的重点一直都是构建动态可扩展应用程序所需的反射机制，包括程序集加载、类型发现以及对象构造。要获得好的性能和编译时的类型安全性，应尽量避免使用反射。如果是动态可扩展应用程序，构造好对象后，宿主代码一般要将对象转型为编译时已知的接口类型或者基类。这样访问对象的成员就可以获得较好的性能，而且可以确保编译时的类型安全性。
+
+本章剩余部分将从其他角度探讨反射，目的是发现并调用类型的成员。一般利用这个功能创建开发工具和实用程序，查找特定编程模式或者对特定成员的使用，从而对程序集进行分析。例子包括 ILDasm，FxCopCmd.exe 以及 Visual Studio 的 Windows 窗体/WPF/Web 窗体设计器。另外，一些类库也利用这个功能发现和调用类型的成员，为开发人员提供便利和丰富的功能。例子包括执行序列化/反序列化以及简单数据绑定的类库。
+
+### 23.5.1 发现类型的成员 
+
+字段、构造器、方法、属性、事件和嵌套类型都可以定义成类型的成员。FCL 包含抽象基类 `System.Reflection.MemberInfo` ，封装了所有类型成员都通用的一组属性。`MemberInfo` 有许多派生类，每个都封装了与特定类型成员相关的更多属性。图 23-1 是这些类型的层次结构。
+
+![23_1](../resources/images/23_1.png)  
+
+图 23-1 封装了类型成员信息的反射类型层次结构
+
+以下程序演示了如何查询类型的成员并显示成员的信息。代码处理的是由调用 AppDomain 加载的所有程序集定义的所有公共类型。对每个类型都调用 `DeclaredMembers` 属性以返回由 `MemeberInfo` 派生对象构成的集合；每个对象都引用类型中定义的一个成员。然后，显示每个成员的种类(字段、构构造器、方法和属性等)及其字符串值(调用 `ToString` 来获取)。
+
+
+```C#
+using System;
+using System.Reflection;
+
+public static class Program {
+    public static void Main() {
+        // 遍历这个 AppDomain 中加载的所有程序集
+        Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
+        foreach (Assembly a in assemblies) {
+            Show(0, "Assembly: {0}", a);
+
+            // 查找程序集中的类型
+            foreach (Type t in a.ExportedTypes) {
+                Show(1, "Type: {0}", t);
+
+                // 发现类型的成员
+                foreach (MemberInfo mi in t.GetTypeInfo().DeclaredMembers) {
+                    String typeName = String.Empty;
+                    if (mi is Type) typeName = "(Nested) Type";
+                    if (mi is FieldInfo) typeName = "FieldInfo";
+                    if (mi is MethodInfo) typeName = "MethodInfo";
+                    if (mi is ConstructorInfo) typeName = "ConstructorInfo";
+                    if (mi is PropertyInfo) typeName = "PropertyInfo";
+                    if (mi is EventInfo) typeName = "EventInfo";
+                    Show(2, "{0}: {1}", typeName, mi);
+                }
+            }
+        }
+    }
+
+    private static void Show(Int32 indent, String format, params Object[] args) {
+        Console.WriteLine(new String(' ', 3 * indent) + format, args);
+    }
+}
+```
+
+编译并运行上述代码会产生大量输出。下面摘录了其中一小部分：
+
+```cmd
+Assembly: mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089
+ Type: System.Object
+ MethodInfo: System.String ToString()
+ MethodInfo: Boolean Equals(System.Object)
+ MethodInfo: Boolean Equals(System.Object, System.Object)
+ MethodInfo: Boolean ReferenceEquals(System.Object, System.Object)
+ MethodInfo: Int32 GetHashCode()
+ MethodInfo: System.Type GetType()
+ MethodInfo: Void Finalize()
+ MethodInfo: System.Object MemberwiseClone()
+ MethodInfo: Void FieldSetter(System.String, System.String, System.Object)
+ MethodInfo: Void FieldGetter(System.String, System.String, System.Object ByRef)
+ MethodInfo: System.Reflection.FieldInfo GetFieldInfo(System.String, System.String)
+ ConstructoInfo: Void .ctor()
+ Type: System.Collections.Generic.IComparer`1[T]
+ MethodInfo: Int32 Compare(T, T)
+ Type: System.Collections.IEnumerator
+ MethodInfo: Boolean MoveNext()
+ MethodInfo: System.Object get_Current()
+ MethodInfo: Void Reset()
+ PropertyInfo: System.Object Current
+ Type: System.IDisposable
+ MethodInfo: Void Dispose()
+ Type: System.Collections.Generic.IEnumerator`1[T]
+ MethodInfo: T get_Current()
+ PropertyInfo: T Current
+ Type: System.ArraySegment`1[T]
+ MethodInfo: T[] get_Array()
+ MethodInfo: Int32 get_Offset()
+ MethodInfo: Int32 get_Count()
+ MethodInfo: Int32 GetHashCode()
+ MethodInfo: Boolean Equals(System.Object)
+ MethodInfo: Boolean Equals(System.ArraySegment`1[T])
+ MethodInfo: Boolean op_Equality(System.ArraySegment`1[T], System.ArraySegment`1[T])
+ MethodInfo: Boolean op_Inequality(System.ArraySegment`1[T], System.ArraySegment`1[T])
+ ConstructoInfo: Void .ctor(T[])
+ ConstructoInfo: Void .ctor(T[], Int32, Int32)
+ PropertyInfo: T[] Array
+ PropertyInfo: Int32 Offset
+ PropertyInfo: Int32 Count
+ FieldInfo: T[] _array
+ FieldInfo: Int32 _offset 
+```
+
