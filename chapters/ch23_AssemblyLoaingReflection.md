@@ -541,3 +541,5 @@ Assembly: mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c56193
  FieldInfo: Int32 _offset 
 ```
 
+由于 `MemberInfo` 类是成员层次结构的根，所以有必要更深入地研究一下它。表 23-1 展示了 `MemberInfo` 类提供的几个只读属性和方法。这些属性和方法是一个类型的所有成员都通用的。不要忘了 `System.TypeInfo` 从 `MemberInfo` 派生。 `TypeInfo` 也提供了表 23-1 列出的所有属性。
+
