@@ -543,3 +543,252 @@ Assembly: mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c56193
 
 由于 `MemberInfo` 类是成员层次结构的根，所以有必要更深入地研究一下它。表 23-1 展示了 `MemberInfo` 类提供的几个只读属性和方法。这些属性和方法是一个类型的所有成员都通用的。不要忘了 `System.TypeInfo` 从 `MemberInfo` 派生。 `TypeInfo` 也提供了表 23-1 列出的所有属性。
 
+表 23-1 MemberInfo 的所有派生类型都通用的属性和方法
+
+|成员名称|成员类型|说明|
+|---|---|---|
+|`Name`|一个 `String` 属性| 返回成员名称|
+|`DeclaringType`| 一个 `Type` 属性|返回声明成员的 `Type`|
+|`Module`|一个 `Module` 属性| 返回声明成员的 `Module`|
+|`CustomAttributes`|该属性返回一个 `IEnumerable<CustomAttributeData>`|返回一个集合，其中每个元素都标识了应用于该成员的一个定制特性的实例。定制特性可应用于任何成员。虽然 `Assembly` 不从 `MemberInfo` 派生，但它提供了可用于程序集的相同属性|
+
+在查询 `DeclaredMemebers` 属性所返回的集合中，每个元素都会对层次结构中的一个具体类型的引用。虽然 `TypeInfo` 的 `DeclaredMembers` 属性能返回类型的所有成员，但还可利用 `TypeInfo` 提供的一些方法返回具有指定字符串名称的成员类型。例如，利用 `TypeInfo` 的 `GetDeclaredNestedType`，`GetDeclaredField`，`GetDeclaredMethod`，`GetDeclaredProperty` 和 `GetDeclaredEvent` 方法，可分别返回一个 `TypeInfo`、`FieldInfo`、`MethodInfo`、`PropertyInfo` 和 `EventInfo` 对象引用。而利用`GetDeclaredMethods`方法能返回由`MethodInfo`对象构成的集合，这些对象描述了和指定字符串名称匹配的一个(多个)方法。
+
+图 23-2 总结了用于遍历反射对象模型的各种类型。基于 AppDomain，可发现其中加载的所有程序集。基于程序集，可发现构成它的所有模块。基于程序集或模块，可发现它定义的所有类型。基于类型，可发现它的嵌套类型、字段、构造器、方法、属性和事件。命名空间不是这个层次结构的一部分，因为它们只是从语法角度将相关类型聚集到一起。CLR 不知道什么是命名空间。要列出程序集中定义的所有命名空间，需枚举程序集中的所有类型，并查看其 `Namespace` 属性。
+
+![23_2](../resources/images/23_2.png)  
+
+图 23-2 应用程序用于遍历反射对象模型的各种类型
+
+基于一个类型，还可发现它实现的接口。基于构造器、方法、属性访问器方法或者事件的添加/删除方法，可调用 `GetParameters` 方法来获取由 `ParameterInfo` 对象构成的数组，从而了解成员的参数的类型。还可查询只读属性 `ReturnParameter` 获得一个 `ParameterInfo` 对象，它详细描述了成员的返回类型。对于泛型类型或方法，可调用 `GetGenericArguments` 方法来获得类型参数的集合。最后，针对上述任何一项，都可查询 `CustomAttributes` 属性来获得应用于它们的自定义定制特性的集合。
+
+### 23.5.2 调用类型的成员
+
+发现类型定义的成员后可调用它们。“调用”(invoke)的确切含义取决于要调用的成员的种类。表 23-2 展示了为了调用(invoke)一种成员而需调用(call)的方法。
+
+表 23-2 如何调用成员
+|成员类型|调用(invoke)成员而需调用(call)的方法|
+|---|---|
+|`FieldInfo`|调用 `GetValue` 获取字段的值</br>调用 `SetValue` 设置字段的值|
+|`ConstructorInfo`|调用 `Invoke` 构造类型的实例并调用构造器|
+|`MethodInfo`| 调用 `Invoke` 来调用类型的方法|
+|`PropertyInfo`|调用 `GetValue` 来调用的属性的 `get` 访问器方法</br>调用 `SetValue` 来调用属性的 `set` 访问器方法|
+|`EventInfo`|调用 `AddEventHandler` 来调用事件的 `add` 访问器方法 </br> 调用 `RemoveEventHandler` 来调用事件的 `remove` 访问器方法|
+
+`PropertyInfo` 类型代表与属性有关的元数据信息(参见第 10 章“属性”)；也就是说，`PropertyInfo` 提供了 `CanRead`、`CanWrite`、和 `PropertyType`只读属性，它们指出属性是否可读和可写，以及属性的数据类型是什么。`PropertyInfo` 还提供了只读 `GetMethod` 和 `SetMethod` 属性，它们返回代表属性 `get` 和 `set` 访问器方法的 `MethodInfo` 对象。`PropertyInfo` 的 `GetValue` 和 `SetValue` 方法只是为了提供方法；在内部，它们会自己调用合适的`MethodInfo` 对象。为了支持有参属性(C# 的索引器)，`GetValue` 和 `SetValue` 方法提供了一个 `Object[]` 类型的 `index` 参数。
+
+`EventInfo` 类型代表与事件有关的元数据信息(参见第 11 章“事件”)。`EventInfo` 类型提供了只读 `EventHandlerType`属性，返回事件的基础委托的 `Type`。`EventInfo` 类型还提供了只读 `AddMethod` 和 `RemoveMethod` 属性，返回为事件增删委托的方法的 `MethodInfo`对象。增删委托可调用这些 `MethodInfo` 对象，也可调用 `EventInfo` 类型提供的更好用的 `AddEventHandler` 和 `RemoveEventHandler` 方法。
+
+以下示例应用程序演示了用反射来访问类型成员的各种方式。`SomeType` 类包含多种成员：一个私有字段(`m_someField`)；一个公共构造器(`SomeType`)，它获取一个传引用的 `Int32` 实参；一个公共方法(`ToString`)；一个公共属性(`SomeProp`)；以及一个公共事件(`SomeEvent`)。定义好`SomeType` 类型后，我提供了三个不同的方法，它们利用反射来访问 `SomeType` 的成员。三个方法用不同的方式做相同的事情。
+
+* `BindToMemberThenInvokeTheMember` 方法演示了如何绑定到成员并调用它。
+
+* `BindToMemberCreateDelegateToMemberThenInvokeTheMember` 方法演示了如何绑定到一个对象或成员，然后创建一个委托来引用该对象或成员。通过委托来调用的速度很快。如果需要在相同的对象上多次调用相同的成员，这个技术的性能比上一个好。
+
+* `UseDynamicToBindAndInvokeTheMember` 方法演示了如何利用 C# 的 `dynamic` 基元类型(参见第 5 章“基元类型、引用类型和值类型”)简化成员访问语法。此外，在相同类型的不同对象上调用相同成员时，这个技术还能提供不错的性能，因为针对每个类型，绑定都只会发生一次。而且可以缓存起来，以后多次调用的速度会非常快。用这个技术也可以调用不同类型的对象的成员。
+
+```C#
+using System;
+using System.Reflection;
+using Microsoft.CSharp.RuntimeBinder;
+using System.Linq;
+
+// 该类用于演示反射机制，
+// 其中定义了一个字段、构造器、方法、属性和一个事件
+internal sealed class SomeType {
+    private Int32 m_someField;
+    public SomeType(ref Int32 x) { x *= 2; }
+    public override String ToString() { return m_someField.ToString(); }
+    public Int32 SomeProp {
+        get { return m_someField; }
+        set {
+            if (value < 1)
+                throw new ArgumentOutOfRangeException("value");
+            m_someField = value;
+        }
+    }
+    public event EventHandler SomeEvent;
+    private void NoCompilerWarnings() { SomeEvent.ToString(); }
+}
+
+public static class Program {
+    public static void Main() {
+        Type t = typeof(SomeType);
+        BindToMemberThenInvokeTheMember(t);
+        Console.WriteLine();
+
+        BindToMemberCreateDelegateToMemberThenInvokeTheMember(t);
+        Console.WriteLine();
+
+        UseDynamicToBindAndInvokeTheMember(t);
+        Console.WriteLine();
+    }
+
+    private static void BindToMemberThenInvokeTheMember(Type t) {
+        Console.WriteLine("BindToMemberThenInvokeTheMember");
+
+        // 构造实例
+        Type ctorArgument = Type.GetType("System.Int32&");   // 或者 typeof(Int32).MakeByRefType();
+        ConstructorInfo ctor = t.GetTypeInfo().DeclaredConstructors.First(
+               c => c.GetParameters()[0].ParameterType == ctorArgument);
+        Object[] args = new Object[] { 12 };        // 构造器的实参
+
+        Console.WriteLine("x before constructor called: " + args[0]);
+        Object obj = ctor.Invoke(args);
+        Console.WriteLine("Type: " + obj.GetType());
+        Console.WriteLine("x after constructor returns: " + args[0]);
+
+        // 读写字段
+        FieldInfo fi = obj.GetType().GetTypeInfo().GetDeclaredField("m_someField");
+        fi.SetValue(obj, 33);
+        Console.WriteLine("someField: " + fi.GetValue(obj));
+
+        // 调用方法
+        MethodInfo mi = obj.GetType().GetTypeInfo().GetDeclaredMethod("ToString");
+        String s = (String)mi.Invoke(obj, null);
+        Console.WriteLine("ToString: " + s);
+
+        // 读写属性
+        PropertyInfo pi = obj.GetType().GetTypeInfo().GetDeclaredProperty("SomeProp");
+        try  {
+            pi.SetValue(obj, 0, null);
+        }
+        catch (TargetInvocationException e) {
+            if (e.InnerException.GetType() != typeof(ArgumentOutOfRangeException)) throw;
+            Console.WriteLine("Property set catch.");
+        }
+        pi.SetValue(obj, 2, null);
+        Console.WriteLine("SomeProp: " + pi.GetValue(obj, null));
+
+        // 为事件添加和删除委托
+        EventInfo ei = obj.GetType().GetTypeInfo().GetDeclaredEvent("SomeEvent");
+        EventHandler eh = new EventHandler(EventCallback);      // See ei.EventHandleType
+        ei.AddEventHandler(obj, eh);
+        ei.RemoveEventHandler(obj, eh);
+    }
+
+    // 添加到事件的回调方法
+    private static void EventCallback(Object sender, EventArgs e) { }
+
+    private static void BindToMemberCreateDelegateToMemberThenInvokeTheMember(Type t) {
+        Console.WriteLine("BindToMemberCreateDelegateToMemberThenInvokeTheMember");
+
+        // 构造实例(不能创建对构造器的委托)
+        Object[] args = new Object[] { 12 };  // 构造器实参
+        Console.WriteLine("x before constructor called: " + args[0]);
+        Object obj = Activator.CreateInstance(t, args);
+        Console.WriteLine("Type: " + obj.GetType().ToString());
+        Console.WriteLine("x after constructor returns: " + args[0]);
+
+        // 注意： 不能创建对字段的委托
+
+        // 调用方法
+        MethodInfo mi = obj.GetType().GetTypeInfo().GetDeclaredMethod("ToString");
+        var toString = mi.CreateDelegate<Func<String>>(obj);
+        String s = toString();
+        Console.WriteLine("ToString: " + s);
+
+        // 读写属性
+        PropertyInfo pi = obj.GetType().GetTypeInfo().GetDeclaredProperty("SomeProp");
+        var setSomeProp = pi.SetMethod.CreateDelegate<Action<Int32>>(obj);
+        try {
+            setSomeProp(0);
+        }
+        catch (ArgumentOutOfRangeException) {
+            Console.WriteLine("Property set catch.");
+        }
+        setSomeProp(2);
+        var getSomeProp = pi.GetMethod.CreateDelegate<Func<Int32>>(obj);
+        Console.WriteLine("SomeProp: " + getSomeProp());
+
+        // 向事件增删委托
+        EventInfo ei = obj.GetType().GetTypeInfo().GetDeclaredEvent("SomeEvent");
+        var addSomeEvent = ei.AddMethod.CreateDelegate<Action<EventHandler>>(obj);
+        addSomeEvent(EventCallback);
+        var removeSomeEvent = ei.RemoveMethod.CreateDelegate<Action<EventHandler>>(obj);
+        removeSomeEvent(EventCallback);
+    }
+
+    private static void UseDynamicToBindAndInvokeTheMember(Type t) {
+        Console.WriteLine("UseDynamicToBindAndInvokeTheMember");
+
+        // 构造实例(不能创建对构造器的委托)
+        Object[] args = new Object[] { 12 };    // 构造器的实参
+        Console.WriteLine("x before constructor called: " + args[0]);
+        dynamic obj = Activator.CreateInstance(t, args);
+        Console.WriteLine("Type: " + obj.GetType().ToString());
+        Console.WriteLine("x after constructor returns: " + args[0]);
+
+        // 读写字段
+        try {
+            obj.m_someField = 5;
+            Int32 v = (Int32)obj.m_someField;
+            Console.WriteLine("someField: " + v);
+        }
+        catch(RuntimeBinderException e) {
+            // 之所以会执行到这里，是因为字段是私有的
+            Console.WriteLine("Failed to access field: " + e.Message);
+        }
+
+        // 调用方法
+        String s = (String)obj.ToString();
+        Console.WriteLine("TpString: " + s);
+
+        // 读写属性
+        try {
+            obj.SomeProp = 0;
+        }
+        catch (ArgumentOutOfRangeException) {
+            Console.WriteLine("Property set catch.");
+        }
+        obj.SomeProp = 2;
+        Int32 val = (Int32)obj.SomeProp;
+        Console.WriteLine("SomeProp: " + val);
+
+        // 从事件增删委托
+        obj.SomeEvent += new EventHandler(EventCallback);
+        obj.SomeEvent -= new EventHandler(EventCallback);
+    }
+}
+
+internal static class ReflectionExtensions {
+    // 这个辅助扩展方法简化了创建委托的语法
+    public static TDelegate CreateDelegate<TDelegate>(this MethodInfo mi, Object target= null) {
+        return (TDelegate)(Object)mi.CreateDelegate(typeof(TDelegate), target);
+    }
+}
+```
+
+生成并运行上述代码得到以下输出：
+
+```cmd
+BindToMemberThenInvokeTheMember
+x before constructor called: 12
+Type: SomeType
+x after constructor returns: 24
+someField: 33
+ToString: 33
+Property set catch.
+SomeProp: 2
+
+BindToMemberCreateDelegateToMemberThenInvokeTheMember
+x before constructor called: 12
+Type: SomeType
+x after constructor returns: 24
+ToString: 0
+Property set catch.
+SomeProp: 2
+
+UseDynamicToBindAndInvokeTheMember
+x before constructor called: 12
+Type: SomeType
+x after constructor returns: 24
+Failed to access field: 'SomeType.m_someField' is inaccessible due to its protection level
+TpString: 0
+Property set catch.
+SomeProp: 2
+```
+
+> `Failed to access field: 'SomeType.m_someField' is inaccessible due to its protection level` = `Failed to access field: 'SomeType.m_someField' 不可访问，因为它具有一定的保护级` 
+
+注意，`SomeType`
