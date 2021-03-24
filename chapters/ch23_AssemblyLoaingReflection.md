@@ -791,4 +791,90 @@ SomeProp: 2
 
 > `Failed to access field: 'SomeType.m_someField' is inaccessible due to its protection level` = `Failed to access field: 'SomeType.m_someField' 不可访问，因为它具有一定的保护级` 
 
-注意，`SomeType`
+注意，`SomeType` 构造器唯一的参数即使传引用的`Int32`。上述代码演示了如何调用这个构造器，如何在构造器返回后检查修改的 `Int32` 值。在 `BindToMemberThenInvokeTheMember` 方法靠近顶部的地方，我调用 `Type` 的 `GetType` 方法并传递字符串`"System.Int32&"`。其中的“`&`”表明参数是传引用的。这个符号是类型名称的巴克斯-诺尔范式(BNF)语法的一部分，详情请参考文档。在注释中，我还解释了如何用 `Type` 的 `MakeByRefType` 方法获得相同效果。
+
+### 23.5.3 使用绑定句柄减少进程的内存消耗
+
+许多应用程序都绑定了一组类型(`Type` 对象)或类型成员(`MemeberInfo` 派生对象)，并将这些对象保存在某种形式的集合中。以后，应用程序搜索这个集合，查找特定对象，然后调用(invoke)这个对象。这个机制很好，只是有个小问题：`Type` 和 `MemberInfo` 派生对象需要大量内存。所以，如果应用程序容纳了太多这样的对象，但只是偶尔调用，应用程序消耗的内存就会急剧增加，对应用程序的性能产生负面影响。
+
+CLR 内部用更精简的方式表示这种信息。CLR 之所以为应用程序创建这些对象，只是为了方便开发人员。CLR 不需要这些大对象就能运行。如果需要保存/缓存大量 `Type` 和 `MemberInfo` 派生对象，开发人员可以使用运行时句柄(runtime handle)代替对象以减小工作集(占用的内存)。FCL 定义了三个运行时句柄(全部都在 `System` 命名空间中)，包括 `RuntimeTypeHandle`，`RuntimeFieldHandle` 和 `RuntimeMethodHandle`。三个类型都是值类型，都只包含一个字段，也就是一个 `IntPtr`；这使类型的实例显得相当精简(相当省内存)。`IntPtr` 字段是一个句柄，引用了 AppDomain 的 Loader 堆中的一个类型、字段或方法。因此，现在需要以一种简单、高效的方式将重量级的 `Type` 或 `MemberInfo` 对象转换为轻量级的运行时句柄实例，反之亦然。幸好，使用以下转换方法和属性可轻松达到目的。
+
+* 要将 Type 对象转换为一个 `RuntimeTypeHandle`，调用 `Type` 的静态 `GetTypeHandle` 方法并传递那个 `Type` 对象引用。
+
+* 要将一个 `RuntimeTypeHandle` 转换为 `Type` 对象，调用 `Type` 的静态方法 `GetTypeFromHandle`，并传递那个 `RuntimeTypeHandle`。
+
+* 要将 `FieldInfo` 对象转换为一个 `RuntimeFieldHandle`，查询 `FieldInfo` 的实例只读属性 `FieldHandle`。
+
+* 要将一个 `RuntimeFieldHandle` 转换为 `FieldInfo` 对象，调用 `FieldInfo` 的静态方法 `GetFieldFromHandle`。
+
+* 要将 `MethodInfo` 对象转换为一个 `RuntimeMethodHandle`，查询 `MethodInfo` 的实例只读属性 `MethodHandle`。
+
+* 要将一个 `RuntimeMethodHandle` 转换为一个 `MethodInfo` 对象，调用 MethodInfo 的静态方法 `GetMethodFromHandle`。
+
+以下示例程序获取许多 `MethodInfo` 对象，把它们转换为 `RuntimeMethodHandle` 实例，并演示了转换前后的工作集的差异：
+
+```C#
+using System;
+using System.Collections.Generic;
+using System.Reflection;
+
+public static class Program {
+    private const BindingFlags c_bf = BindingFlags.FlattenHierarchy |
+            BindingFlags.Instance | BindingFlags.Static |
+            BindingFlags.Public | BindingFlags.NonPublic;
+
+    public static void Main() {
+        // 显示在任何反射操作之前堆的大小
+        Show("Before doing anything");
+
+        // 为 MSCorLib.dll 中的所有方法构建 MethodInfo 对象缓存
+        List<MethodBase> methodInfos = new List<MethodBase>();
+        foreach (Type t in typeof(Object).Assembly.GetExportedTypes()) {
+            // 跳过任何泛型类型
+            if (t.IsGenericTypeDefinition) continue;
+
+            MethodBase[] mb = t.GetMethods(c_bf);
+            methodInfos.AddRange(mb);
+        }
+
+        // 显示当绑定所有方法之后，方法的个数和堆的大小
+        Console.WriteLine("# of methods={0:N0}", methodInfos.Count);
+        Show("After building cache of MethodInfo objects");
+
+        // 为所有 MethodInfo 对象构建 RuntimeMethodHandle 缓存
+        List<RuntimeMethodHandle> methodHandles =
+            methodInfos.ConvertAll<RuntimeMethodHandle>(mb => mb.MethodHandle);
+
+        Show("Holding MethodInfo and RuntimeMethodHandle cache");
+        GC.KeepAlive(methodInfos);          // 阻止缓存被过早垃圾回收
+
+        methodInfos = null;                 // 现在允许缓存垃圾回收
+        Show("After freeing MethodInfo objects");
+
+        methodInfos = methodHandles.ConvertAll<MethodBase>(
+            rmh => MethodBase.GetMethodFromHandle(rmh));
+        Show("Size of heap after re-creating MethodInfo objects");
+        GC.KeepAlive(methodHandles);        // 阻止缓存被过早垃圾回收
+        GC.KeepAlive(methodInfos);          // 阻止缓存被过早垃圾回收
+
+        methodHandles = null;               // 现在允许缓存垃圾回收
+        methodInfos = null;                 // 现在允许缓存垃圾回收
+        Show("After freeing MethodInfos and RuntimeMethodHandles");
+    }
+
+    private static void Show(String s) {
+        Console.WriteLine("Heap size={0,12:N0} - {1}",
+            GC.GetTotalMemory(true), s);
+    }
+}
+```
+
+编译并运行以上程序，在我的机器上得到以下输出：
+
+```cmd
+Heap size=      57,056 - Before doing anything
+# of methods=41,353
+Heap size=   5,360,456 - After building cache of MethodInfo objects
+Heap size=   5,691,656 - Holding MethodInfo and RuntimeMethodHandle cache
+Heap size=   5,691,520 - After freeing MethodInfo objects
+```
