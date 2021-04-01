@@ -229,10 +229,211 @@ internal static class CancellationDemo {
 
 > 注意 向被取消的 `CancellationTokenSource` 登记一个回调方法，将由调用 `Register` 的线程调用回调方法(如果为 `useSynchronizationContext` 参数传递了 `true` 值，就可能要通过调用线程的 `SynchronizationContext` 进行)。
 
-多次调用 `Register`，多个回调方法都会调用。这些回调方法可能抛出未处理的异常。如果调用 `CancellationTokenSource` 的 `Cancel` 方法，向它传递 `true`，那么抛出了未处理异常的第一个回调方法会阻止其他回调方法的执行，抛出的异常也会从 `Cancel` 中抛出。如果调用 `Cancel` 并向它传递 `false`，那么登记的所有回调方法都会调用。所有未处理的异常都会添加到一个集合中。所有回调方法都执行好后，其中任何一个抛出了未处理的异常，`Cancel` 就会抛出一个 ``
+多次调用 `Register`，多个回调方法都会调用。这些回调方法可能抛出未处理的异常。如果调用 `CancellationTokenSource` 的 `Cancel` 方法，向它传递 `true`，那么抛出了未处理异常的第一个回调方法会阻止其他回调方法的执行，抛出的异常也会从 `Cancel` 中抛出。如果调用 `Cancel` 并向它传递 `false`，那么登记的所有回调方法都会调用。所有未处理的异常都会添加到一个集合中。所有回调方法都执行好后，其中任何一个抛出了未处理的异常，`Cancel` 就会抛出一个 `AggregateException`，该异常实例的 `InnerExceptions` 属性被设为已抛出的所有异常对象的集合。如果登记的所有回调方法都没有抛出未处理的异常，那么 `Cancel` 直接返回，不抛出任何异常。
+
+> 重要提示 没有办法将 `AggregateException` 的 `InnerExceptions` 集合中的一个异常对象和特的操作对应起来；你只知道某个操作出错，并通过异常类型知道出了什么错。要跟踪错误的具体位置，需要检查异常对象的 `StackTrace` 属性，并手动扫描你的源代码。
+
+`CancellationToken` 的 `Register` 方法返回一个 `CancellationTokenRegistration`，如下所示：
+
+```C#
+public readonly struct CancellationTokenRegistration : 
+    IEquatable<CancellationTokenRegistration>, IDisposable {
+    public void Dispose();
+    // GetHashCode, Equals, operator== 和 operator!=成员未列出
+}
+```
+
+可以调用 `Dispose` 从关联的 `CancellationTokenSource` 中删除已登记的回调；这样一来，在调用 `Cancel` 时，便不会再调用这个回调。以下代码演示了如何向一个 `CancellationTokenSource` 登记两个回调：
+
+```C#
+var cts = new CancellationTokenSource();
+cts.Token.Register(() => Console.WriteLine("Canceled 1"));
+cts.Token.Register(() => Console.WriteLine("Canceled 2"));
+
+// 出于测试的目的，让我们取消它，以便执行 2 个回调
+cts.Cancel();
+```
+
+运行上述代码，一旦调用 `Cancel` 方法，就会得到以下输出： 
+
+```cmd
+Canceled 2
+Canceled 1
+```
+
+最后，可以通过链接另一组 `CancellationTokenSource` 来新建一个 `CancellationTokenSource` 对象。任何一个链接的 `CancellationTokenSource` 被取消，这个新的 `CancellationTokenSource` 对象就会被取消。以下代码对此进行了演示：
+
+```C#
+// 创建一个 CancellationTokenSource
+var cts1 = new CancellationTokenSource();
+cts1.Token.Register(() => Console.WriteLine("cts1 canceled"));
+
+// 创建另一个 CancellationTokenSource
+var cts2 = new CancellationTokenSource();
+cts2.Token.Register(() => Console.WriteLine("cts2 canceled"));
+
+// 创建一个新的 CancellationTokenSource，它在 cts1 或 cts2 取消时取消
+var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cts1.Token, cts2.Token);
+linkedCts.Token.Register(() => Console.WriteLine("linkedCts canceled"));
+
+// 取消其中一个 CancellationTokenSource 对象(我选择cts2)
+cts2.Cancel();
+
+// 显示哪个 CancellationTokenSource 对象被取消了
+Console.WriteLine("cts1 canceled={0}, cts2 canceled={1}, linkedCts={2}",
+    cts1.IsCancellationRequested, cts2.IsCancellationRequested, linkedCts.IsCancellationRequested);
+```
+
+运行上述代码得到以下输出：
+
+```cmd
+linkedCts canceled
+cts2 canceled
+cts1 canceled=False, cts2 canceled=True, linkedCts=True
+```
+
+在很多情况下，我们需要在过一段时间之后才取消操作。例如，服务器应用程序可能会根据客户端的请求而开始计算。但必须在 2 秒钟之内有响应，无论此时工作是否已经完成。有的时候，与其等待漫长时间获得一个完整的结果，还不如在短时间内报错，或者用部分计算好的结果进行响应。幸好，`CancellationTokenSource` 提供了在指定时间后自动取消的机制。为了利用这个机制，要么用接受延时参数的构造构造一个 `CancellationTokenSource` 对象，要么调用 `CancellationTokenSource` 的 `CancelAfter` 方法。
+
+```C#
+public sealed class CancellationTokenSource : IDisposable {
+    public CancellationTokenSource(int millisecondsDelay);
+    public CancellationTokenSource(TimeSpan delay);
+    public void CancelAfter(int millisecondsDelay);
+    public void CancelAfter(TimeSpan delay);
+    ...
+}
+```
 
 ## <a name="27_5">27.5 任务</a>
 
+很容易调用 `ThreadPool` 的 `QueueUserWorkItem` 方法发起一次异步的计算限制操作。但这个技术有许多限制。最大的问题是没有内建的机制让你知道操作在什么时候完成，也没有机制在操作完成时获得返回值。为了克服这些限制(并解决其他一些问题)，Microsoft 引入了 **任务**的概念。我们通过 `System.Threading.Tasks` 命名空间中的类型来使用任务。
+
+所以，不是调用 `ThreadPool` 的 `QueueUserWorkItem` 方法，而是用任务来做相同的事情：
+
+```C#
+ThreadPool.QueueUserWorkItem(ComputeBoundOp, 5);    // 调用 QueueUserWorkItem
+new Task(ComputeBoundOp, 5).Start();                // 用 Task 来做相同的事情
+Task.Run(() => ComputeBoundOp(5));                  // 另一个等价的写法
+```
+
+第二行代码创建 `Task` 对象并立即调用 `Start` 来调度任务。当然，也可先创建好 `Task` 对象再调用 `Start`。例如，可以创建一个 `Task` 对象再调用`Start` 来调度任务。由于创建 `Task` 对象并立即调用 `Start` 是常见的编程模式，所以可以像最后一行代码展示的那样调用 `Task` 的静态 `Run` 方法。
+
+为了创建一个 `Task`，需要调用构造器并传递一个 `Action` 或 `Action<Object>` 委托。这个委托就是你想执行的操作。如果传递的是期待一个`Object` 的方法，还必须向 `Task` 的构造器传递最终要传给操作的实参。调用 `Run` 时可以传递一个 `Action` 或 `Func<TResult>` 委托来指定想要执行的操作。无论调用构造器还是`Run`，都可选择传递一个 `CancellationToken`，它使 `Task` 能在调度前取消(详情参见稍后的 27.5.2 节“取消任务”)。
+
+还可选择向构造器传递一些 `TaskCreationOptions` 标志来控制 `Task` 的执行方式。`TaskCreationOptions` 枚举类型定义了一组可按位 OR 的标志。定义如下：
+
+```C#
+[Flags, Serializable]
+public enum TaskCreationOptions {
+	None           = 0x0000,      // 默认
+	
+    // 提议 TaskScheduler 你希望该任务尽快执行
+	PreferFairness = 0x0001,
+	
+    // 提议 TaskScheduler 应尽可能地创建线程池线程
+	LongRunning    = 0x0002,
+	
+    // 该提议总是被采纳：将一个 Task 和它的父 Task 关联(稍后讨论)
+	AttachedToParent = 0x0004,
+	
+    // 该提议总是被采纳：如果一个任务试图和这个父任务连接，它就是一个普通任务，而不是子任务
+	DenyChildAttach = 0x0008,
+	
+    // 该提议总是被采纳：强迫子任务使用默认调度器而不是父任务的调度器
+	HideScheduler = 0x0010
+}
+```
+
+有的标志只是“提议”，`TaskScheduler` 在调度一个 `Task` 时，可能会、也可能不会采纳这些提议。不过，`AttachedToParent`，`DenyChildAttach` 和`HideScheduler` 总是得以采纳，因为它们和 `TaskScheduler` 本身无关。`TaskScheduler` 对象的详情将在 27.5.7 节“任务调度器”讨论。
+
+### 27.5.1 等待任务完成并获取结果 
+
+可等待任务完成并获取结果。例如，以下 `Sum` 方法在 `n` 值很大的时候会执行较长时间：
+
+```C#
+private static Int32 Sum(Int32 n) {
+    Int32 sum = 0;
+    for (; n > 0; n--)
+        checked { sum += n; }       // 如果 n 太大，会抛出 System.OverflowException
+    return sum;
+}
+```
+
+现在可以构造一个 `Task<TResult>`对象(派生自 `Task`)，并为泛型 `TResult` 参数传递计算限制操作的返回类型。开始任务之后，可等待它完成并获得结果，如以下代码所示：
+
+```C#
+// 创建一个 Task(现在还没有开始运行)
+Task<Int32> t = new Task<Int32>(n => Sum((Int32)n), 1000000000);
+
+// 可以后再启动任务
+t.Start();
+
+// 可选择显式等待任务完成
+t.Wait();   // 注意：还有一些重载的版本能接受 timeout/CancellationToken 值
+
+// 可获得结果(Result 属性内部会调用 Wait)
+Console.WriteLine("The Sum is: " + t.Result);   // 一个 Int32 值
+```
+
+如果计算限制的任务抛出未处理的异常，异常会被“吞噬”并存储到一个集合中，而线程池线程可以返回到线程池中。调用 `Wait` 方法或者 `Result` 属性时，这些成员会抛出一个 `System.AggregateException` 对象。
+
+> 重要提示 线程调用 `Wait` 方法时，系统检查线程要等待的 `Task` 是否已开始执行。如果是，调用 `Wait` 的线程来执行 `Task`。在这种情况下，调用`Wait` 的线程不会阻塞；它会执行 `Task` 并立即返回。好处在于，没有线程会被阻塞，所以减少了对资源的占用(因为不需要创建一个线程来替代被阻塞的线程)，并提升了性能(因为不需要花时间创建线程，也没有上下文切换)。不好的地方在于，假如线程在调用 `Wait` 前已获得了一个线程同步锁，而 `Task` 试图获取同一个锁，就会造成死锁的线程！
+
+`AggregateException` 类型封装了异常对象的一个集合(如果父任务生成了多个子任务，而多个子任务都抛出了异常，这个集合便可能包含多个异常)。该类型的 `InnerExceptions` 属性返回一个 `ReadOnlyCollection<Exception>` 对象。不要混淆 `InnerExceptions` 属性和 `InnerException` 属性，后者是`AggregateException` 类从 `System.Exception` 基类继承的，在本例中，`AggregateException` 的 `InnerExceptions` 属性的元素 `0` 将引用由计算限制方法(`Sum`)抛出的实际 `System.OverflowException` 对象。
+
+为方便编码，`AggregateException` 重写了 `Exception` 的 `GetBaseException` 方法，返回作为问题根源的最内层的 `AggregateException`(假定集合只有一个最内层的异常)。`AggregateException` 还提供了一个 `Flatten` 方法，它创建一个新的 `AggregateException`， 其 `InnerExceptions` 属性包含一个异常列表，其中的异常是通过遍历原始 `AggregateException` 的内层异常层次结构而生成的。最后，`AggregateException` 还提供了一个 `Handle` 方法，它为 `AggregateException` 中包含的每个异常都调用一个回调方法。然后，回调方法可以为每个异常决定如何对其进行处理：回调返回 `true` 表示异常已处理；返回 `false` 表示未处理。调用 `Handle` 后，如果至少有一个异常没有被处理，就创建一个新的 `AggregateException` 对象，其中只包含未处理的异常，并抛出这个新的 `AggregateException` 对象。本章以后会展示使用了 `Flatten` 和 `Handle` 方法的例子。
+
+> 重要提示 如果一致不调用 `Wait` 或 `Result`，或者一直不查询 `Task` 的 `Exception` 属性，代码就一直注意不到这个异常的发生。这当然不好，因为程序遇到了未预料到的问题，而你居然没注意到。为了帮助你检测没有被注意到。为了帮助你检测没有被注意到的异常，可以向 `TaskScheduler` 的静态 `UnobservedTaskException` 事件登记一个回调方法。每次放一个 `Task` 被垃圾回收时，如果存在一个没有被注意到的异常，CLR 的终结器线程就会引发这个事件。一旦引发，就会向你的事件处理方法传递一个 `UnobservedTaskExceptionEventArgs` 对象，其中包含你没有注意到的 `AggregateException`。
+
+除了等待单个任务，`Task` 类还提供了两个静态方法，允许线程等待一个 `Task` 对象数组。其中，`Task` 的静态 `WaitAny` 方法会阻塞调用线程，直到数组中的任何 `Task` 对象完成。方法返回 `Int32` 数组索引值，指明完成的是哪个 `Task` 对象。方法返回后，线程被唤醒并继续运行。如果发生超时，方法将返回 `-1`。如果 `WaitAny` 通过一个 `CancellationToken` 取消，会抛出一个 `OperationCanceledException`。
+
+类似地，`Task` 类还有一个静态 `WaitAll` 方法，它阻塞调用线程，直到数组中的所有 `Task` 对象完成。如果所有 `Task` 对象都完成，`WaitAll` 方法返回`true`。发生超时则返回 `false`。如果 `WaitAll` 通过一个 `CancellationToken`取消，会抛出一个 `OperationCanceledException`。
+
+### 27.5.2 取消任务
+
+可用一个 `CancellationTokenSource` 取消 `Task`。首先必须修订前面的 `Sun` 方法，让它接受一个 `CancellationToken`：
+
+```C#
+private static Int32 Sum(CancellationToken ct, Int32 n) {
+    Int32 sum = 0;
+    for (; n > 0; n--) {
+
+        // 在取消标志引用的 CancellationTokenSource 上调用 Cancel，
+        // 下面这行代码就会抛出 OperationCanceledException
+        ct.ThrowIfCancellationRequested();
+
+        checked { sum += n; }  // 如果 n 太大，会抛出 System.OverflowException
+    }    
+    return sum;
+}
+```
+
+循环(负责执行计算限制的操作)中调用 `CancellationToken` 的 `ThrowIfCancellationRequested` 方法定时检查操作是否已取消。这个方法与`CancellationToken` 的 `IsCancellationRequested` 属性相似(27.4 节“协作式取消和超时”已经讨论过这个属性)。但如果 `CancellationTokenSource` 已经取消，`ThrowIfCancellationRequested` 会抛出一个 `OperationCanceledException`。之所以选择抛出异常，是因为和 `ThreadPool` 的 `QueueUserWorkItem` 方法初始化的工作项不同，任务有办法表示完成，任务甚至能返回一个值。所以，需要采取一种方式将已完成的任务和出错的任务区分开。而让任务抛出异常，就可以知道任务没有一直运行到结束。
+
+现在像下面这样创建 `CancellationTokenSource` 和 `Task` 对象：
+
+```C#
+CancellationTokenSource cts = new CancellationTokenSource();
+Task<Int32> t = Task.Run(() => Sum(cts.Token, 1000000000), cts.Token);
+
+// 在之后的某个时间，取消 CancellationTokenSource 以取消 Task
+cts.Cancel();       // 这是异步请求，Task 可能已经完成了
+
+try {
+    // 如果任务已取消，Request 会抛出一个 AggregateException
+    Console.WriteLine("The sum is: " + t.Result);   // 一个 Int32 值
+}
+catch (AggregateException x) {
+    // 将任何 OperationCanceledException 对象都视为已处理。
+    // 其他任何异常都造成抛出一个新的 AggregateException，
+    // 其中只包含未处理的异常
+    x.Handle(e => e is OperationCanceledException);
+    // 所有异常都处理好之后，执行下面这一行
+    Console.WriteLine("Sum was canceled");
+}
+```
+
+可在创建 `Task` 时将一个 `CancellationToken` 传给构造器(如上例所示)，从而将两者关联。如果 `CancellationToken` 在 `Task` 调度前取消， 
 
 ## <a name="27_6">27.6 `Parallel` 的静态 `For`，`ForEach` 和 `Invoke`方法</a>
 ## <a name="27_7">27.7 并行语言集成查询(PLINQ)</a>
