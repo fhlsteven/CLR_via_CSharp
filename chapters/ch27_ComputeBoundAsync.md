@@ -433,9 +433,98 @@ catch (AggregateException x) {
 }
 ```
 
-可在创建 `Task` 时将一个 `CancellationToken` 传给构造器(如上例所示)，从而将两者关联。如果 `CancellationToken` 在 `Task` 调度前取消， 
+可在创建 `Task` 时将一个 `CancellationToken` 传给构造器(如上例所示)，从而将两者关联。如果 `CancellationToken` 在 `Task` 调度前取消，`Task`会被取消，永远都不执行<sup>①</sup>。但如果 `Task` 已调度(通过调用 `Start` 方法<sup>②</sup>)，那么`Task`的代码只有显示支持取消，其操作才能在执行期间取消。遗憾的是，虽然 `Task` 对象关联了一个 `CancellationToken`，但却没有办法访问它。因此，必须在`Task` 的代码中获得创建`Task` 对象时的同一个`CancellationToken`。为此，最简单的办法就是使用一个 lambda 表达式，将 `CancellationToken` 作为闭包变量“传递”(就像上例那样)。
+
+> ① 顺便说一句，如果一个任务还没有开始就试图取消它，会抛出一个 `InvalidOperationException`。
+> ② 调用静态 `Run` 方法会自动创建 `Task`对象并立即调用`Start`。  ———— 译注
+
+### 27.5.3 任务完成时自动启动新任务
+
+伸缩性好的软件不应该使线程阻塞。调用 `Wait`，或者在任务尚未完成时查询任务的 `Result` 属性<sup>③</sup>，极有可能造成线程池创建新线程，这增大了资源的消耗，也不利于性能和伸缩性。幸好，有更好的办法可以知道一个任务在什么时候结束运行。任务完成时可启动另一个任务。下面重写了之前的代码，它不阻塞任何线程：
+
+> ③ `Result` 属性内部会调用 `Wait`。 ———— 译注
+
+```C#
+// 创建并启动一个 Task，继续另一个任务
+Task<Int32> t = Task.Run(() => Sum(CancellationToken.None, 1000));
+
+// ContinueWith 返回一个 Task，但一般都不需要再使用该对象(下例的 cwt)
+Task cwt = t.ContinueWith(task => Concole.WriteLine("The sum is: " + task.Result));
+```
+
+现在，执行 `Sum` 的任务完成时会启动另一个任务(也在某个线程池线程上)以显示结果。执行上述代码的线程不会进入阻塞状态并等待这两个任务中的任何一个完成。相反，线程可以执行其他代码。如果线程本身就是一个线程池线程，它可以返回池中以执行其他操作。注意，执行 `Sum` 的任务可能在调用 `ContinueWith` 之前完成。但这不是一个问题，因为 `ContinueWith` 方法会看到 `Sum` 任务已经完成，会立即启动显示结果的任务。
+
+注意， `ContinueWith` 返回对新 `Task` 对象的引用(我的代码是将该引用放到 `cwt` 变量中)。当然，可以用这个 `Task` 对象调用各种成员(比如 `Wait`，`Result`，甚至 `ContinueWith`)，但一般都忽略这个 `Task` 对象，不再用变量保存对它的引用。
+
+另外，`Task` 对象内部包含了 `ContinueWith` 任务的一个集合。所以，实际可以用一个 `Task` 对象来多次调用 `ContinueWith`。任务完成时，所有`ContinueWith` 任务都会进入线程池的队列中。此外，可在调用 `ContinueWith` 时传递对一组 `TaskContinuationOptions` 枚举值进行按位 OR 运算的结果。前 6 个标志(`None`，`PreferFairness`，`LongRunning`，`AttachedToParent`，`DenyChildAttach` 和 `HideScheduler`)与之前描述的 `TaskCreationOptions` 枚举类型提供的标志完全一致。下面是 `TaskContinuationOptions` 类型的定义：
+
+```C#
+[Flags, Serializable]
+public enum TaskContinuationOptions
+{
+    None                    = 0x0000,  // 默认
+
+    // 提议 TaskScheduler 你希望该任务尽快执行.
+    PreferFairness          = 0x0001,
+    // 提议 TaskScheduler 应尽可能地创建池线程线程
+    LongRunning             = 0x0002,
+    
+    // 该提议总是被采纳：将一个 Task 和它的父 Task 关联(稍后讨论) 
+    AttachedToParent        = 0x0004,
+
+    // 任务试图和这个父任务连接将抛出一个 InvalidOperationException
+    DenyChildAttach         = 0x0008,
+
+    // 强迫子任务使用默认调度器而不是父任务的调度器
+    HideScheduler           = 0x0010,
+
+    // 除非前置任务(antecedent task)完成，否则禁止延续任务完成(取消)
+    LazyCancellation        = 0x0020,
+
+    // 这个标志指出你希望由执行第一个任务的线程执行
+    // ContinueWith 任务。第一个任务完成后，调用
+    // ContinueWith 的线程接着执行 ContinueWith 任务 ①
+    ExecuteSynchronously    = 0x80000,
+
+    // 这些标志指出在什么情况下运行 ContinueWith 任务
+    NotOnRanToCompletion    = 0x10000,
+    NotOnFaulted            = 0x20000,
+    NotOnCanceled           = 0x40000,
+
+    // 这些标志是以上三个标志的便利组合
+    OnlyOnRanToCompletion   = NotOnRanToCompletion | NotOnFaulted, //0x60000,
+    OnlyOnFaulted           = NotOnRanToCompletion | NotOnCanceled,// 0x50000,
+    OnlyOnCanceled          = NotOnFaulted | NotOnCanceled,// 0x30000
+}
+```
+
+> ① `ExecuteSynchronously` 是指同步执行。两个任务都在使用同一个线程一前一后地执行，就称为同步执行。 ————译注
+
+调用 `ContinueWith` 时，可用 `TaskContinuationOptions.OnlyOnCanceled` 标志指定新任务只有在第一个任务被取消时才执行。类速地，`TaskContinuationOptions.OnlyOnFaulted` 标志指定新任务只有在第一个任务抛出未处理的异常时才执行。当然，还可使用 `TaskContinuationOptions.OnlyOnRanToCompletion` 标志指定新任务只有在第一个任务顺利完成(中途没有取消，也没有抛出未处理异常)时才执行。默认情况下，如果不指定上述任何标志，则新任务无论如何都会运行，不管第一个任务如何完成。一个 `Task` 完成时，它的所有未运行的延续任务都被自动取消<sup>②</sup>。下面用一个例子来演示所有这些概念。
+
+> ② 未运行是因为不满足前面说的各种条件。 ———— 译注
+
+```C#
+// 创建并启动一个 Task，它有多个延续任务 
+Task<Int32> t = Task.Run(() => Sum(10000)); 
+
+// 每个 ContinueWith 都返回一个 Task， 但这些 Task 一般都用不着了
+t.ContinueWith(task => Console.WriteLine("The sum is: " + task.Result), 
+ TaskContinuationOptions.OnlyOnRanToCompletion); 
+t.ContinueWith(task => Console.WriteLine("Sum threw: " + task.Exception.InnerException), 
+ TaskContinuationOptions.OnlyOnFaulted); 
+t.ContinueWith(task => Console.WriteLine("Sum was canceled"), 
+ TaskContinuationOptions.OnlyOnCanceled); 
+```
+
+### 27.5.4 任务可以启动子任务
+
+最后，任务支持父/子关系，如以下代码所示：
 
 ## <a name="27_6">27.6 `Parallel` 的静态 `For`，`ForEach` 和 `Invoke`方法</a>
+
 ## <a name="27_7">27.7 并行语言集成查询(PLINQ)</a>
+
 ## <a name="27_8">27.8 执行定时的计算限制操作</a>
+
 ## <a name="27_9">27.9 线程池如何管理线程</a>
