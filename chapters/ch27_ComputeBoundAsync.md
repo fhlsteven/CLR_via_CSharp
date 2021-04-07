@@ -549,6 +549,103 @@ parent.Start();
 
 `Task` 和 `Task<TResult>` 类实现了 `IDisposable` 接口，允许在用完 `Task` 对象后调用 `Dispose`。如今，所有 `Dispose` 方法所做的都是关闭 `ManualResetEventSlim` 对象。但可定义从 `Task` 和 `Task<TResult>` 派生的类，在这些类中分配它们自己的资源，并在它们重写的 `Dispose` 方法中释放这些资源。我建议不要在代码中为 `Task` 对象显式调用 `Dispose`；相反，应该让垃圾回收器自己清理任何不再需要的资源。
 
+每个 `Task` 对象都包含代表 `Task` 唯一 ID 的 `Int32` 字段。创建 `Task` 对象时该字段初始化为零。首次查询 `Task` 的只读 `Id` 属性时，属性将一个唯一的 `Int32` 值分配给该字段，并返回该值。任务 ID 从 1 开始，没分配一个 ID 都递增 1。在 Microsoft Visual Studio 调试器中查看 `Task` 对象，会造成调试器显示 `Task` 对象，会造成调试器显示 `Task` 的 ID，从而造成为 `Task` 分配 ID。
+
+该 ID 的意义在于每个 `Task` 都可用唯一值进行标识。事实上，Visual Studio 会在“并行任务” 和 “并行堆栈” 窗口中显示这些任务 ID。但由于不能在自己的代码中分配 ID，所以几乎不可能将 ID 和代码正在做的事情联系起来。运行任务的代码时，可查询 `Task` 的静态 `CurrentId` 属性来返回一个可空`Int32(Int32?)`。调试期间，可在 Visual Studio 的“监视”或“即使”窗口中调用它，获得当前正在调试的代码的 ID。然后，可在“并行任务”或“并行堆栈”窗口中找到自己的任务。如果当前没有任务正在执行，查询 `CurrentId` 属性会返回 `null`。
+
+在一个 `Task` 对象的存在期间，可查询 `Task` 的只读 `Status` 属性了解它在其生存期的什么位置。该属性返回一个 `TaskStatus` 值，定义如下：
+
+```C#
+public enum TaskStatus {
+	// 这些标志指出一个 Task 在其生命期内的状态
+	Created,                // 任务已显示创建：可以手动 Start() 这个任务
+	WaitingForActivation,   // 任务已隐式创建：会自动开始
+	
+    WaitingToRun,           // 任务已调度，但尚未运行
+	Running,                // 任务正在运行
+
+    // 任务正在等待他的子任务完成，子任务完成后它才完成
+	WaitingForChildrenToComplete,
+
+    // 任务的最终状态是一下三个之一：
+	RanToCompletion,
+	Canceled,
+	Faulted
+}
+```
+
+首次构造 `Task` 对象时，它的状态是 `Created`。以后，当任务启动时，它的状态变成 `WaitingToRun`。`Task` 实际在一个线程上运行时，它的状态变成 `Running`。任务停止运行，状态变成 `WaitingForChildrenToComplete`。任务完成时进入一下状态之一：`RanToCompletion`(运行完成)，`Canceled`(取消)或`Faulted`(出错)。如果运行完成，可通过 `Task<TResult>` 的 `Result` 属性来查询任务结果。`Task` 或 `Task<TResult>` 出错时，可查询 `Task` 的 `Exception` 属性来获得任务抛出的未处理异常；该属性总是返回一个 `AggregateException` 对象，对象的 `InnerException` 集合包含了所有未处理的异常。
+
+为简化编码，`Task` 提供了几个只读 `Boolean` 属性，包括 `IsCanceled`，`IsFaulted` 和 `IsCompleted`。注意当 `Task` 处于 `RanToCompletion`，`Canceled` 或 `Faulted` 状态时，`IsCompleted` 返回 `true`。判断一个 `Task` 是否成功完成最简单的办法是使用如下所示的代码：
+
+`if (task.Status == TaskStatus.RanToCompletion) ...`
+
+调用 `ContinueWith`，`ContinueWhenAll`，`ContinueWhenAny` 或 `FromAsync` 等方法来创建的 `Task` 对象处于 `WaitingForActivation` 装填。该状态意味着 `Task` 的调度由任务基础结构控制。例如，不可显式启动通过调用 `ContinueWith` 来创建的对象，该 `Task` 在它的前置任务(antecedent task)执行完毕后自动启动。
+
+### 27.5.6 任务工厂
+
+有时需要创建一组共享相同配置的 `Task` 对象。为避免机械地将相同的参数传给每个 `Task` 的构造器，可创建一个任务工厂来封装通用的配置。`System.Threading.Tasks` 命名空间定义了一个 `TaskFactory` 类型和一个 `TaskFactory<TResult>` 类型。两个类型都派生自 `System.Object`；也就是说，它们是平级的。
+
+要创建一组返回 `void` 的任务，就构造一个 `TaskFactory`；要创建一组具有特定返回类型的任务，就构造一个 `TaskFactory<TResult>`，并通过泛型 `TResult` 实参传递任务的返回类型。创建上述任何工厂类时，要向构造器传递工厂创建的所有任务都具有的默认值。具体地说，要向任务工厂传递希望任务具有的 `CancellationToken`，`TaskScheduler`，`TaskCreationOptions` 和 `TaskContinuationOptions` 设置。
+
+以下代码演示了如何使用一个 `TaskFactory`：
+
+```C#
+Task parent = new Task(() => {
+    var cts = new CancellationTokenSource();
+    var tf = new TaskFactory<Int32>(cts.Token,
+        TaskCreationOptions.AttachedToParent,
+        TaskContinuationOptions.ExecuteSynchronously,
+        TaskScheduler.Default);
+
+    // 这个任务创建并启动 3 个子任务
+    var childTasks = new[] {
+        tf.StartNew(() => Sum(cts.Token, 10000)),
+        tf.StartNew(()=> Sum(cts.Token, 20000)),
+        tf.StartNew(()=> Sum(cts.Token, Int32.MaxValue)) // 太大，抛出 OverflowException
+    };
+
+    // 任何子任务抛出异常，就取消其余子任务
+    for (Int32 task = 0; task < childTasks.Length; task++)
+        childTasks[task].ContinueWith(
+            t => cts.Cancel(), TaskContinuationOptions.OnlyOnFaulted);
+
+    // 所有子任务完成后，从未出错/未取消的任务获取返回的最大值，
+    // 然后将最大值传给另一个任务来显示最大结果
+    tf.ContinueWhenAll(
+        childTasks,
+        completedTasks => completedTasks.Where(t => !t.IsFaulted && !t.IsCanceled).Max(t => t.Result),
+        CancellationToken.None)
+            .ContinueWith(t => Console.WriteLine("The maximum is: " + t.Result),
+                TaskContinuationOptions.ExecuteSynchronously);                        
+});
+
+// 子任务完成后，也显示任何未处理的异常
+parent.ContinueWith(p => {
+    // 我将所有文本放到一个 StringBuilder 中，并只调用 Console.WriteLine 一次，
+    // 因为这个任何可能和上面的任务并行执行，而我不希望任务的输出变得不连续
+    StringBuilder sb = new StringBuilder(
+        "The following exception(s) occurred:" + Environment.NewLine);
+
+    foreach (var e in p.Exception.Flatten().InnerExceptions)
+        sb.AppendLine(" " + e.GetType().ToString());
+    Console.WriteLine(sb.ToString());
+}, TaskContinuationOptions.OnlyOnFaulted);
+
+// 启动父任务，使它能启动子任务
+parent.Start();
+```
+
+我通过上述代码创建了一个 `TaskFactory<Int32>` 对象。该任务工厂创建 3 个 `Task` 对象。我希望所有子任务都以相同方式配置：每个 `Task` 对象都共享相同的 `CancellationTokenSource` 标记，任务都被视为其父任务的子任务，`TaskFactory` 创建的所有延续任务都以同步方式执行，而且 `TaskFactory` 创建的所有 `Task` 对象都使用默认 `TaskScheduler`。 
+
+然后创建包含 3 个子任务对象的数组，所有子任务都调用 `TaskFactory` 的 `StartNew` 方法来创建。使用该方法可以很方便地创建并启动子任务。我通过一个循环告诉每个子任务，如果抛出未处理的异常，就取消其他仍在运行的所有子任务。最后，我在 `TaskFactory` 上调用 `ContinueWhenAll`，它创建在所有子任务都完成后启动的一个 `Task`。由于这个任务是用 `TaskFactory` 创建的，所以它仍被视为父任务的一个子任务，会用默认 `TaskScheduler` 同步执行。但我希望即使其他子任务被取消，也要运行这个任务，所以我通过传递 `CancellationToken.None` 来覆盖 `TaskFactory` 的 `CancellationToken`。这使该任务不能取消。最后，当处理所有结果的任务完成后，我创建另一个任务来显示从所有子任务中返回的最大值。
+
+> 注意 调用 `TaskFactory` 或 `TaskFactory<TResult>`的静态 `ContinueWhenAll` 和 `ContinueWhenAny` 方法时，以下`TaskContinuationOption` 标志是非法的：`NotOnRanToCompletion`，`NotOnFaulted` 和 `NotOnCanceled`。当然，基于这些标志组合起来的标志(`OnlyOnCanceled`，`OnlyOnFaulted` 和 `OnlyOnRanToCompletion`)也是非法的。也就是说，无论前置任务是如何完成的，`ContinueWhenAll` 和 `ContinueWhenAny` 都会执行延续任务。
+
+### 27.5.7 任务调度器
+
+任务基础结构非常灵活，其中 `TaskScheduler` 对象功不可没。`TaskScheduler` 对象负责执行被调度的任务，同时向``````````
+
 ## <a name="27_6">27.6 `Parallel` 的静态 `For`，`ForEach` 和 `Invoke`方法</a>
 
 ## <a name="27_7">27.7 并行语言集成查询(PLINQ)</a>
