@@ -644,7 +644,39 @@ parent.Start();
 
 ### 27.5.7 任务调度器
 
-任务基础结构非常灵活，其中 `TaskScheduler` 对象功不可没。`TaskScheduler` 对象负责执行被调度的任务，同时向``````````
+任务基础结构非常灵活，其中 `TaskScheduler` 对象功不可没。`TaskScheduler` 对象负责执行被调度的任务，同时向 Visual Studio 调试器公开任务信息。FCL 提供了两个派生自 `TaskScheduler` 的类型：线程池任务调度器(thread pool task scheduler)，和同步上下文任务调度器(synchronization context task scheduler)。默认情况下，所有应用程序使用的都是线程池任务调度器。这个任务调度器将任务调度给线程池的工作者线程，将在本章后面的 27.9 节“线程池如何管理线程”进行更详细的讨论。可查询 `TaskScheduler` 的静态 `Default` 属性来获得对默认任务调度器的引用。
+
+同步上下文任务调度器适合提供了图形用户界面的应用程序，例如 Windows 窗体、Windows Presentation Foundation(WPF)、Silverlight 和 Windows Store 应用程序。它将所有任务都调度给应用程序的 GUI 线程，使所有任务代码都能成功更新 UI 组件(按钮、菜单项等)。该调度器不使用线程池。可执行 `TaskScheduler` 的静态 `FromCurrentSynchronizationContext` 方法来获得对同步上下文任务调度器的引用。
+
+下面这个简单的 Windows 窗体应用程序演示了如何使用同步上下文任务调度器。
+
+```C#
+internal sealed class MyForm : Form {
+    private readonly TaskScheduler m_syncContextTaskScheduler;
+    public MyForm() {
+        // 获得对一个同步上下文任务调度器的引用
+        m_syncContextTaskScheduler = TaskScheduler.FromCurrentSynchronizationContext();
+
+        Text = "Synchronization Context Task Scheduler Demo";
+        Visible = true; Width = 400; Height = 100;
+    }
+
+
+    private CancellationTokenSource m_cts;
+
+    protected override void OnMouseClick(MouseEventArgs e) {
+        if (m_cts != null) {    // 一个操作正在进行，取消它
+            m_cts.Cancel();
+            m_cts = null;
+        } else {    // 操作没有开始，启动它
+            Text = "Operation running";
+            m_cts = new CancellationTokenSource();
+
+            //
+        }
+    }
+}
+```
 
 ## <a name="27_6">27.6 `Parallel` 的静态 `For`，`ForEach` 和 `Invoke`方法</a>
 
