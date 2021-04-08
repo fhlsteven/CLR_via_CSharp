@@ -669,14 +669,50 @@ internal sealed class MyForm : Form {
             m_cts.Cancel();
             m_cts = null;
         } else {    // 操作没有开始，启动它
+            // 操作没有开始，启动它
             Text = "Operation running";
             m_cts = new CancellationTokenSource();
 
-            //
+            // 这个任务使用默认任务调度器，在一个线程池线程上执行
+            Task<Int32> t = Task.Run(() => Sum(m_cts.Token, 20000), m_cts.Token);
+
+            // 这些任务使用同步上下文任务调度器，在 GUI 线程上执行
+            t.ContinueWith(task => Text = "Result: " + task.Result,
+                CancellationToken.None, TaskContinuationOptions.OnlyOnRanToCompletion, m_syncContextTaskScheduler);
+
+            t.ContinueWith(task => Text = "Operation canceled",
+                CancellationToken.None, TaskContinuationOptions.OnlyOnCanceled, m_syncContextTaskScheduler);
+
+            t.ContinueWith(task => Text = "Operation faulted",
+                CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, m_syncContextTaskScheduler);
         }
+        base.OnMouseClick(e);
     }
 }
 ```
+
+单击窗体的客户区域，就会在一个线程池线程上启动一个计算限制的任务。使用线程池线程很好，因为 GUI 线程在此期间不会被阻塞，能响应其他 UI 操作。但线程池线程执行的代码不应尝试更新 UI 组件，否则会抛出 `InvalidOperationException`。
+
+计算限制的任务完成后执行三个延续任务之一。它们由与 GUI 线程对应的同步上下文任务调度器来调度。任务调度器将任务放到 GUI 线程的队列中，使它们的代码能成功更新 UI 组件。所有任务都通过继承的 `Text` 属性来更新窗体的标题。
+
+由于计算限制的工作(`Sum`)在线程池线程上运行，所以用户可以和 UI 交互来取消操作。在这个简单的例子中，我允许用户在操作进行期间单击窗体的客户区域来取消操作。
+
+当然，如果有特殊的任务调度需求，完全可以定义自己的 `TaskScheduler` 派生类。Microsoft 在 Parallel Extensions Extras 包中提供了大量和任务有关的示例代码，其中包括多个任务调度器源码，下载地址是 [http://code.msdn.microsoft.com/ParExtSamples](http://code.msdn.microsoft.com/ParExtSamples)。下面是这个包提供的一部分任务调度器。
+
+* `IOTaskScheduler`  
+  这个任务调度器将任务排队给线程池的 I/O 线程而不是工作者线程。
+
+* `LimitedConcurrencyLevelTaskScheduler`  
+  这个任务调度器不允许超过 *n*(一个构造器参数)个任务同时执行
+
+* `OrderedTaskScheduler`  
+  这个任务调度器一次只允许一个任务执行。这个类派生自 `LimitedConcurrencyLevelTaskScheduler`，为 *n* 传递 1。
+
+* `PrioritizingTaskScheduler`  
+  这个任务调度器将任务送入 CLR 线程池队列。之后，可调用 `Prioritize` 指出一个 `Task` 应该在所有普通任务之前处理(如果它还没有处理的话)。可以调用 `Deprioritize` 使一个 `Task` 在所有普通任务之后处理。
+  
+* `ThreadPerTaskScheduler`  
+  这个任务调度器为每个任务创建并启动一个单独的线程；他完全不使用线程池。
 
 ## <a name="27_6">27.6 `Parallel` 的静态 `For`，`ForEach` 和 `Invoke`方法</a>
 
