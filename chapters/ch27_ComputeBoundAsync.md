@@ -716,7 +716,234 @@ internal sealed class MyForm : Form {
 
 ## <a name="27_6">27.6 `Parallel` 的静态 `For`，`ForEach` 和 `Invoke`方法</a>
 
+一些常见的编程情形可通过任务提升性能。为简化编程，静态 `System.Threading.Tasks.Parallel` 类封装了这些情形，它内部使用 `Task` 对象。例如，不要像下面这样处理集合中的所有项：
+
+```C#
+// 一个线程顺序执行这个工作(每次迭代调用一次 DoWork)
+for (Int32 i = 0; i < 1000; i++) DoWork(i);
+```
+
+而要使用 `Parallel` 类的 `For` 方法，用多个线程池线程辅助完成工作：
+
+```C#
+// 线程池的线程并行处理工作
+Parallel.For(0, 1000, i => DoWork(i));
+```
+
+类似地，如果有一个集合，那么不要像这样写：
+
+```C#
+// 一个线程顺序执行这个工作(每次迭代调用一次 DoWork)
+foreach (var item in collection) DoWork(item);
+```
+
+而要像这样写：
+
+```C#
+// 线程池的线程并行处理工作
+Parallel.ForEach(collection, item => DoWork(item));
+```
+
+如果既可以使用 `For`， 也可以使用 `ForEach`， 那么建议使用 `For`，因为它执行得更快。
+
+最后，如果要执行多个方法，那么既可像下面这样顺序执行：
+
+```C#
+// 一个线程顺序执行所有方法
+Method1();
+Method2();
+Method3();
+```
+
+也可并行执行，如下所示：
+
+```C#
+// 线程池的线程并行执行方法
+Parallel.Invoke(
+    () => Method1(),
+    () => Method2(),
+    () => Method3());
+```
+
+`Parallel` 的所有方法都让调用线程参与处理。从资源利用的角度说，这是一件好事，因为我们不希望调用线程停下来(阻塞)，等线程池线程做完所有工作才能继续。然而，如果调用线程在线程池线程完成自己额那一部分工作之前完成工作，调用线程会将自己挂起，直到所有工作完成工作。这也是一件好事，因为这提供了和使用普通`for` 或 `foreach` 循环时相同的语义：线程要在所有工作完成后才继续运行。还要注意，如果任何操作抛出未处理的异常，你调用的 `Parallel` 方法最后会抛出一个 `AggregateException`。
+
+但这并不是说需要对自己的源代码进行全文替换，将 `for` 循环替换成对 `Parallel.For` 的调用，将 `foreach` 循环替换成对 `Parallel.ForEach` 的调用。调用 `Parallel` 的方法时有一个很重要的前提条件：工作项必须能并行执行！所以，如果工作必须顺序执行，就不要使用 `Parallel` 的方法。另外，要避免会修改任何共享数据的工作项，否则多个线程同时处理可能会损坏数据。解决这个问题一般的办法是围绕数据访问添加线程同步锁。但这样一次就只能有一个线程访问数据，无法享受并行处理多个项所带来的好处。
+
+另外，`Parallel` 的方法本身也有开销；委托对象必须分配，而针对每个工作项都要调用一次这些委托。如果有大量可由多个线程处理的工作项，那么也许能获得性能的提升。另外，如果每一项都涉及大量工作，那么通过委托来调用所产生的性能损失是可以忽略不计的。但如果只为区区几个工作项使用 `Parallel` 的方法，或者为处理得非常快的工作项使用 `Parallel` 的方法，就会得不偿失，反而降低性能。
+
+注意 `Parallel` 的 `For`， `ForEach` 和 `Invoke` 方法都提供了接受一个 `ParallelOptions` 对象的重载版本。这个对象的定义如下：
+
+```C#
+public class ParallelOptions {
+    public ParallelOptions();
+
+    // 允许取消操作
+    public CancellationToken CancellationToken { get; set; }  // 默认为 CancellationToken.None
+
+    // 允许指定可以并发操作的最大工作项数目
+    public Int32 MaxDegreeOfParallelism { get; set; }  // 默认为 -1 (可用 CPU 数)
+
+    // 允许指定要使用那个 TaskScheduler
+    public TaskSchedulerTaskScheduler { get; set; }   // 默认为 TakScheduler.Default
+}
+```
+
+除此之外，`For` 和 `ForEach` 方法有一些重载版本允许传递 3 个委托。
+
+* 任务局部初始化委托(localInit)，为参与工作的每个任务都调用一次该委托。这个委托是在任务被要求处理一个工作项之前调用的。
+
+* 主体委托(body)，为参与工作的各个线程所处理的每一项都调用一次该委托。
+
+* 任务局部终结委托(localFinally)，为参与工作的每一个任务都调用一次该委托。这个委托是在任务处理好派发给它的所有工作项之后调用的。即使主体委托代码引发一个未处理的异常，也会调用它。
+
+以下代码演示如何利用这三个委托计算一个目录中的所有文件的字节长度。
+
+```C#
+private static Int64 DirectoryBytes(String path, String searchPattern, SearchOption searchOption) {
+    var files = Directory.EnumerateFiles(path, searchPattern, searchOption);
+    Int64 masterTotal = 0;
+
+    ParallelLoopResult result = Parallel.ForEach<String, Int64>(
+        files,
+
+        () => { // localInit: 每个任务开始之前调用一次
+            // 每个任务开始之前，总计值都初始化为 0
+            return 0;   // 将 taskLocalTotal 初始值设为 0
+        },
+
+        (file, loopState, index, taskLocalTotal) => { // body:每个工作项调用一次
+            // 获得这个文件的大小，把它添加到这个任务的累加值上
+            Int64 fileLength = 0;
+            FileStream fs = null;
+            try {
+                fs = File.OpenRead(file);
+                fileLength = fs.Length;
+            }
+            catch (IOException) { /* 忽略拒绝访问的任何文件 */ }
+            finally { if (fs != null) fs.Dispose(); }
+            return taskLocalTotal + fileLength;
+        },
+
+        taskLocalTotal => {  // localFinally: 每个任务完成时调用一次
+            // 将这个任务的总计值(taskLocalTotal)加到总的总计值(masterTotal)上
+            Interlocked.Add(ref masterTotal, taskLocalTotal);
+        });
+
+    return masterTotal;
+}
+```
+
+每个任务都通过 `taskLocalTotal` 变量为分配给它的文件维护它自己的总计值。每个任务在完成工作之后，都通过调用 `Interlocked.Add` 方法(参见第 29 章“基元线程同步构造”)，以一种线程安全的方式更新总的总计值(master total)。由于每个任务都有自己的总计值，所以在一个工作项处理期间，无需进行线程同步。由于线程同步会造成性能的损失，所以不需要线程同步是好事。只有在每个任务返回之后，`masterTotal` 才需要以一种线程安全的方式更新 `masterTotal` 变量。所以，因为调用 `Interlocked.Add` 而造成的性能损失每个任务只发生一次，而不会每个工作项都发生。
+
+注意，我们向主体委托传递了一个 `ParallelLoopState` 对象，它的定义如下：
+
+```C#
+public class ParallelLoopState {
+	public void Stop ();
+    public Boolean IsStopped { get; }
+
+    public void Break ();
+    public Int64? LowestBreakIteration { get; }
+
+	public Boolean IsExceptional { get; }
+    public Boolean ShouldExitCurrentIteration { get; }
+}
+```
+
+参与工作的每个任务都获得它自己的 `ParallelLoopState` 对象，并可通过这个对象和参与工作的其他任务进行交互。`Stop` 方法告诉循环停止处理任何更多的工作，未来对 `IsStopped` 属性的查询会返回 `true`。 `Break` 方法告诉循环不再继续处理当前项之后的项。例如，假如 `ForEach` 被告知要处理 100 项，并在处理第 5 项时调用了 `Break`，那么循环会确保前 5 项处理好之后，`ForEach` 才返回。但要注意，这并不是说在这 100 项中，只有前 5 项才会被处理，第 5 项之后的项可能在以前已经处理过了。`LowestBreakIteration` 属性返回在处理过程中调用过 `Break` 方法的最低的项。如果从来没有调用过 `Break`，`LowestBreakIteration` 属性会返回 `null`。
+
+处理任何一项时，如果造成未处理的异常，`IsException` 属性会返回 `true`。处理一项时花费太长时间，代码可查询 `ShouldExitCurrentIteration` 属性看它是否应该提前退出。如果调用过 `Stop`，调用过 `Break`，取消过 `CancellationTokenSource`(由 `ParallelOption` 的 `CancellationToken` 属性引用)，或者处理一项时造成了未处理的异常，这个属性就会返回 `true`。
+
+`Parallel` 的 `For` 和 `ForEach` 方法都返回一个 `ParallelLoopResult` 实例，它看起来像下面这样：
+
+```C#
+public struct ParallelLoopResult {
+    // 如果操作提前终止，以下方法返回 false
+    public Boolean IsCompleted { get; }
+    public Int64? LowestBreakIteration { get; }
+}
+```
+
+可检查属性来了解循环的结果。如果 `IsCompleted` 返回 `true`，表明循环运行完成，所有项都得到了处理。如果 `IsCompleted` 为 `false`，而且 `LowestBreakIteration` 为 `null`，表明参与工作的某个线程调用了 `Stop` 方法。如果 `IsCompleted` 返回`false`，而且`LowestBreakIteration` 不为 `null`，表明参与工作的某个线程调用了 `Break` 方法，从 `LowestBreakIteration` 返回的 `Int64` 值是保证得到处理的最低一项的索引。如果抛出异常，应捕捉 `AggregateException` 来得体地恢复。
+
 ## <a name="27_7">27.7 并行语言集成查询(PLINQ)</a>
+
+Microsoft 的语言集成查询(Language Integrated Query，LINQ)功能提供了一个简捷的语法来查询数据集合。可用 LINQ 轻松对数据项进行筛选、排序、投射等操作。使用 LINQ to Objects 时，只有一个线程顺序处理数据集合中的所有项；我们称之为**顺序查询**(sequential query)。要提高处理性能，可以使用**并行 LINQ**(Parallel LINQ)，它将顺序查询转换成并行查询，在内部使用任务(排队给默认 `TaskScheduler`)，将集合中的数据项的处理工作分散到多个 CPU 上，以便并发处理多个数据项。和 `Parallel` 的方法相似，要同时处理大量项，或者每一项的处理过程都是一个耗时的计算限制的操作，那么能从并行 LINQ 获得最大的收益。
+
+静态 `System.Linq.ParallelEnumerable` 类(在 System.Core.dll 中定义)实现了 PLINQ 的所有功能，所以必须通过 C# 的 `using` 指令将`System.Linq` 命名空间导入你的源代码。尤其是这个类公开了所有标准 LINQ 操作符(`Where`，`Select`，`SelectMany`，`GroupBy`，`Join`，`OrderBy`，`Skip`，`Take`等)的并行版本。所有这些方法都是扩展了 `System.Linq.ParallelQuery<T>` 类型的扩展方法。要让自己的 LINQ to Objects 查询调用这些方法的并行版本，必须将自己的顺序查询(基于 `IEnumerable` 或者 `IEnumerable<T>`)转换成并行查询(基础 `ParallelQuery` 或者 `ParallelQuery<T>`)，这是用 `ParallelEnumerable` 的 `AsParallel` 扩展方法来实现的<sup>①</sup>，如下所示：
+
+> ① `ParallelQuery<T>` 类派生自 `ParallelQuery` 类。
+
+```C#
+public static ParallelQuery<TSource> AsParallel<TSource>(this IEnumerable<TSource> source)
+public static ParallelQuery          AsParallel(this IEnumerable source)
+```
+
+下面是将顺序查询转换成并行查询的例子。查询返回的是一个程序集中定义的所有过时(obsolete)方法：
+
+```C#
+private static void ObsoleteMethods(Assembly assembly) {
+    var query = 
+        from type in assembly.GetExportedTypes().AsParallel()
+
+        from method in type.GetMethods(BindingFlags.Public |
+            BindingFlags.Instance | BindingFlags.Static)
+
+        let obsoleteAttrType = typeof(ObsoleteAttribute)
+
+        where Attribute.IsDefined(method, obsoleteAttrType)
+
+        orderby type.FullName
+
+        let obsoleteAttrObj = (ObsoleteAttribute)
+            Attribute.GetCustomAttribute(method, obsoleteAttrType)
+
+        select String.Format("Type={0}\nMethod={1}\nMessage={2}\n",
+                type.FullName, method.ToString(), obsoleteAttrObj.Message);
+
+    // 显示结果
+    foreach (var result in query) Console.WriteLine(result);
+}
+```
+
+虽然不太常见，但在一个查询中，可以从执行并行操作切换回执行顺序操作，这是通过调用 `ParallelEnumerable` 的 `AsSequential` 方法做到的：
+
+`public static IEnumerable<TSource> AsSequential<TSource>(this ParallelQuery<TSource> source)`
+
+该方法将一个 `ParallelQuery<T>` 转换回一个 `IEnumerable<T>`。这样一来，在调用了 `AsSequential` 之后执行的操作将只由一个线程执行。
+
+通过，一个 LINQ 查询的结果数据是让某个线程执行一个 `foreach` 语句来计算获得的，就像前面展示的那样。这意味着只有一个线程遍历查询的所有结果。如果希望以并行方式处理查询的结果，就应该使用 `ParallelEnumerable` 的 `ForAll` 方法处理查询：
+
+`static void ForAll<TSource>(this ParallelQuery<TSource> source, Action<TSource> action)`
+
+这个方法允许多个线程同时处理结果。可修改前面的代码来使用该方法：
+
+```C#
+// 显示结果
+query.ForAll(Console.WriteLine);
+```
+
+然而，让多个线程同时调用 `Console.WriteLine` 反而会损害性能，因为 `Console` 类内部会对线程进行同步，确保每次只有一个线程能访问控制台窗口，避免来自多个线程的文本在最后显示时乱成一团。希望为每个结果都执行计算时，才使用 `ForALl` 方法。
+
+由于 PLINQ 用多个线程处理数据项，所以数据项被并发处理，结果被无序地返回。如果需要让 PLINQ 保持数据项的顺序，可调用 `ParallelEnumerable` 的 `AsOrdered` 方法。调用这个方法时，线程会成组处理数据项。然后，这些组被合并回去，同时保持顺序。这样会损害性能。以下操作符生成不排序的操作：`Distinct`，`Except`，`Intersect`，`Union`，`Join`，`GroupBy`，`GroupJoin` 和 `ToLookup`。在这些操作符之后要再次强制排序，只需调用`AsOrdered` 方法。
+
+以下操作符生成排序的操作：`OrderBy`，`OrderByDescending`，`ThenBy` 和 `ThenByDescending`。在这些操作符之后，要再次恢复不排序的处理，只需调用 `AsUnordered` 方法。
+
+PLINQ 提供了一些额外的 `ParallelEnumerable` 方法，可调用它们来控制查询的处理方式：
+
+```C#
+public static ParallelQuery<TSource> WithCancellation<TSource>(
+    this ParallelQuery<TSource> source, CancellationToken cancellationToken)
+
+public static ParallelQuery<TSource> WithDegreeOfParallelism<TSource>(
+    this ParallelQuery<TSource> source, Int32 degreeOfParallelism)
+
+public static ParallelQuery<TSource> WithExecutionMode<TSource>(
+    this ParallelQuery<TSource> source, ParallelExecutionMode executionMode)
+
+public static ParallelQuery<TSource> WithMergeOptions<TSource>(
+    this ParallelQuery<TSource> source, ParallelMergeOptions mergeOptions)
+```
 
 ## <a name="27_8">27.8 执行定时的计算限制操作</a>
 
