@@ -945,6 +945,181 @@ public static ParallelQuery<TSource> WithMergeOptions<TSource>(
     this ParallelQuery<TSource> source, ParallelMergeOptions mergeOptions)
 ```
 
+显然，`WithCancellation` 方法允许传递一个 `CancellationToken`，使查询处理能提前停止。`WithDegreeOfParallelism` 方法指定最多允许多少个线程处理查询。但不是说指定多少个它就创建多少个。它是有原则的，不需要的不会创建。你一般不用调用该方法。另外，默认是没个内核用一个线程执行查询。但如果想空出一些内核做其他工作，可调用 `WithDegreeOfParallelism` 并传递小于可用内核数的一个数字。另外，如果查询要执行同步I/O 操作，还可传递比内核数大的一个数字，因为线程会在这些操作期间阻塞。这虽然会浪费更多线程，但可以用更少的时间生成最终结果。同步 I/O 操作在客户端应用程序中没什么问题，但我强烈建议不要再服务器应用程序中执行同步 I/O 操作。
+
+PLINQ 分析一个查询，然后决定如何最好地处理它。有的时候，顺序处理一个查询可以获得更好的性能，尤其是在使用以下任何操作时：`Concat`，`ElementAt(OrDefault)`，`First(OrDefault)`，`Last(OrDefault)`，`Skip(While)`，`Take(While)`或`Zip`。使用 `Select(Many)` 或 `Where` 的重载版本，并向你的 `selector` 或 `predicate` 委托传递一个位置索引时也是如此。然而，可以调用 `WithExecutionMode`， 向它传递某个 `ParallelExecutionMode` 标志，从而强迫查询以并行方式处理：
+
+```C#
+public enum ParallelExecutionMode {
+    Default = 0,            // 让并行 LINQ 决定处理查询的最佳方式
+    ForceParallelism = 1    // 强迫查询以其并行方式处理
+}
+```
+
+如前所述，并行 LINQ 让多个线程处理数据项，结果必须再合并回去。可调用 `WithMergeOptions`，向它传递以下某个 `ParallelMergeOptions` 标志，从而控制这些结果的缓冲与合并方式：
+
+```C#
+public enum ParallelMergeOptions {
+    Default       = 0,      // 目前和 AutoBuffered 一样(将来可能改变)
+    NotBuffered   = 1,      // 结果一但就绪就开始处理
+    AutoBuffered  = 2,      // 每个线程在处理前缓冲一些结果
+    FullyBuffered = 3       // 每个线程在处理前缓冲所有结果
+}
+```
+
+这些选项使你能在某种程度上平衡执行速度和内存消耗。`NotBuffered` 最省内存，但处理速度慢一些。`FullyBuffered` 消费较多的内存，`AutoBuffered` 介于 `NotBuffered` 和 `FullyBuffered` 之间。说真的，要想知道应该为一个给定的查询选择哪个并行合并选项，最好的办法就是亲自试验所有选项，并对比其性能。也可以“无脑”地接受默认值，它对于许多查询来说都工作得非常好。请参见以下博客文章，进一步了解 PLIQ 如何在 CPU 内核之间分配工作：
+
+* *[http://blogs.msdn.com/pfxteam/archive/2009/05/28/9648672.aspx](http://blogs.msdn.com/pfxteam/archive/2009/05/28/9648672.aspx)*
+
+* *[http://blogs.msdn.com/pfxteam/archive/2009/06/13/9741072.aspx](http://blogs.msdn.com/pfxteam/archive/2009/06/13/9741072.aspx)*
+
 ## <a name="27_8">27.8 执行定时的计算限制操作</a>
 
+`System.Threading` 命名空间定义了一个 `Timer` 类，可用它让一个线程池线程定时调用一个方法。构造 `Timer` 类的实例相当于告诉线程池：在将来某个时间(具体由你指定)回调你的一个方法。`Timer` 类提供了几个相似的构造器：
+
+```C#
+public sealed class Timer : MarshalByRefObject, IDisposable {
+    public Timer(TimerCallback callback, Object state, Int32    dueTime, Int32 period);
+    public Timer(TimerCallback callback, Object state, UInt32   dueTime, UInt32 period);
+    public Timer(TimerCallback callback, Object state, Int64    dueTime, Int64 period);
+    public Timer(TimerCallback callback, Object state, TimeSpan dueTime, TimeSpan period)
+}
+```
+
+4 个构造器以完全一致的方式构造 `Timer` 对象。`callback` 参数标识希望由一个线程池线程回调的方法。当然，你写的回调方法必须和`System.Threading.TimerCallback` 委托类型匹配，如下所示：
+
+`delegate void TimerCallback(Object state);`
+
+构造器的 `state` 参数允许在每次调用回调方法时都向它传递状态数据；如果没有需要传递的状态数据，可以传递 `null`。`dueTime`参数告诉CLR 在首次调用回调方法之前要等待多少毫秒。可以使用一个有符号或无符号的 32 位值、一个有符号的 64 位值或者一个 `TimeSpan` 值指定毫秒数。如果希望回调方法立即调用，为 `dueTime` 参数指定 `0` 即可。最后一个参数 `(period)` 指定了以后每次调用回调方法之前要等多少毫秒。如果为这个参数传递 `Timeout.Infinite(-1)`，线程池线程只调用回调方法一次。
+
+在内部，线程池为所有 `Timer` 对象只使用了一个线程。这个线程知道下一个 `Timer` 对象在什么时候到期(计时器还有多久触发)。下一个 `Timer` 对象到期时，线程就会唤醒，在内部调用 `ThreadPool` 的 `QueueUserWorkItem`， 将一个工作项添加到线程池的队列中，使你的回调方法得到调用。如果回调方法的执行时间很长，计时器可能(在上个回调还没有完成的时候)再次触发。这可能造成多个线程池线程同时执行你的回调方法。为解决这个问题，我的建议是：构造 `Timer` 时，为 `period` 参数指定 `Timeout.Infinite`。这样，计时器就只触发一次。然后，在你的回调方法中，调用 `Change` 方法来指定一个新的 `dueTime`，并再次为 `period` 参数指定 `Timeout.Infinite`。以下是 `Change` 方法的各个重载版本：
+
+```C#
+public sealed class Timer : MarshalByRefObject, IDisposable {
+    public bool Change(Int32    dueTime, Int32    period);
+    public bool Change(UInt32   dueTime, UInt32   period);
+    public bool Change(Int64    dueTime, Int64    period);
+    public bool Change(TimeSpan dueTime, TimeSpan period);
+}
+```
+
+`Timer` 类还提供了一个 `Dispose` 方法，允许完全取消计时器，并可在当时处于 pending 状态的所有回调完成之后，向 `notifyObject` 参数标识的内核对象发出信号。以下是 `Dispose` 方法的各个重载版本：
+
+```C#
+public sealed class Timer : MarshalByRefObject, IDisposable {
+    public void Dispose();
+    public bool Dispose(WaitHandle notifyObject);
+}
+```
+
+> 重要提示 `Timer` 对象被垃圾回收时，它的终结代码告诉线程池取消计时器，使它不再触发。所以，使用 `Timer` 对象时，要确定有一个变量在保持 `Timer` 对象的存活，否则对你的回调方法的调用就会停止。21.1.3 节“垃圾回收与调试”对此进行了详细讨论和演示。
+
+以下代码演示了如何让一个线程池线程立即调用回调方法，以后每 2 秒调用一次：
+
+```C#
+internal static class TimerDemo {
+    private static Timer s_timer;
+
+    public static void Main() {
+        Console.WriteLine("Checking status every 2 seconds");
+
+        // 创建但不启动计时器。确保 s_timer 在线程池线程调用 Status 之前引用该计时器
+        s_timer = new Timer(Status, null,Timeout.Infinite, Timeout.Infinite);
+
+        // 现在 s_timer 已被赋值，可以启动计时器了
+        // 现在在 Status 中调用 Change，保证不会抛出 NullReferenceException
+        s_timer.Change(0, Timeout.Infinite);
+
+        Console.ReadLine();  // 防止进程终止
+    }
+
+    // 这个方法的签名必须和 TimerCallback 委托匹配
+    private static void Status(Object state) {
+        // 这个方法由一个线程池线程执行
+        Console.WriteLine("In Status at {0}", DateTime.Now);
+        Thread.Sleep(1000);         // 模拟其他工作(1 秒)
+
+        // 返回前让 Timer 在 2 秒后再次触发
+        s_timer.Change(2000, Timeout.Infinite);
+
+        // 这个方法返回后，线程回归池中，等待下一个工作项
+    }
+}
+```
+
+如果有需要定时执行的操作，可利用 `Task` 的静态 `Delay` 方法和 C# 的 `async` 和 `await` 关键字(第 28 章讨论)来编码。下面重写了前面的代码。
+
+```C#
+internal static class DelayDemo {
+    public static void Main() {
+        Console.WriteLine("Checking status every 2 seconds");
+        Status();
+        Console.ReadLine();     // 防止进程终止
+    }
+
+    // 该方法可获取你想要的任何参数
+    private static async void Status() {
+        while (true) {
+            Console.WriteLine("Checking status at {0}", DateTime.Now);
+            // 要检查的代码放到这里...
+
+            // 在循环末尾，在不阻塞喜爱能成的前提下延迟 2 秒
+            await Task.Delay(2000);     // await 允许线程返回
+            // 2 秒之后，某个线程会在 await 之后介入并继续循环
+        }
+    }
+}
+```
+
+**计时器太多，时间太少**
+
+遗憾的是，FCL 事实上提供了几个计时器，大多数程序员都不清楚它们有什么独特之处。让我试着解释一下。
+
+* `System.Threading` 的 `Timer`  
+  这是上一节讨论的计时器。要在一个线程池线程上执行定时的(周期性发生的)后台任务，它是最好的计时器。
+
+* `System.Windows.Forms` 的 `Timer` 类  
+  构造这个类的实例，相当于告诉 Windows 将一个计时器和调用线程关联(参见 Win32 `SetTimer` 函数)。当这个计时器触发时，Windows 将一条计时器消息(`WM_TIMER`)注入线程的消息队列。线程必须执行一个消息泵来提取这些消息，并把它们派发给需要的回调方法。注意，所有这些工作都只由一个线程完成 ———— 设置计时器的线程保证就是执行回调方法的线程。还意味着计时器方法不会由多哥线程并发执行。
+
+* `System.Windows.Threading` 的 `DispatcherTimer`类  
+  这个类是 `System.Windows.Forms` 的 `Timer` 类在 Silverlight 和 WPF 应用程序中的等价物。
+  
+* `Windows.UI.Xaml` 的 `DispatcherTimer` 类  
+  这个类是 `System.Windows.Forms` 的 `Timer` 类在 Windows Store 应用中的等价物。
+
+* `System.Timers` 的 `Timer` 类  
+  这个计时器本质上是 `System.Threading` 的 `Timer` 类的包装类。计时器到期(触发)会导致 CLR 将事件放到线程池队列中。`System.Timers.Timer` 类派生自 `System.ComponentModel` 的 `Component` 类，允许在 Visual Studio 中将这些计时器对象放到设计平面(design surface)上。另外，它还公开了属性和事件，使它在 Visual Studio 的设计器中更容易使用。这个类是在好几年前，Microsoft 还没有理清线程处理和计时器的时候添加到 FCL 中的。这个类完全应该删除，强迫每个人都改为使用 `System.Threading.Timer` 类。事实上，我个人从来不用 `System.Timers.Timer` 类，建议你也不要用它，除非真的想在设计平面上添加一个计时器。
+
 ## <a name="27_9">27.9 线程池如何管理线程</a>
+
+现在讨论一下线程池代码如何管理工作者线程和 I/O 线程。但我不打算讲太多细节，因为在这么多年的时间里，随着 CLR 的每个版本的发布，其内容的实现已发生了显著变化。未来的版本还会继续变化。最好是将线程池看成一个黑盒。不要拿单个应用程序去衡量它的性能，因为它不是针对某个单独的应用程序而设计的。相反，作为一个常规用途的线程调度技术，它面向的是大量应用程序；它对某些应用程序的效果要好于对其他应用程序。目前，它的工作情况非常理想，我强烈建议你信任它，因为你很难搞出一个比 CLR 自带的更好的线程池。另外，随着时间的推移，线程池代码内部会更改它管理线程的方式，所以大多数应用程序的性能会变得越来越好。
+
+### 27.9.1 设置线程池限制  
+
+CLR 允许开发人员设置线程池要创建的最大线程数。但实践证明，线程池永远都不应该设置线程数上限，因为可能发生饥饿或死锁。假定队列中有 1000 个工作项，但这些工作项全都因为一个事件而阻塞。等第 1001 个工作项发出信号才能解除阻塞。如果设置最大 1000 个线程，第 1001 个工作项就不会执行，全部 1000 个线程会一直阻塞，用户将被迫中止应用程序，并丢失所有未保存的工作。
+
+事实上，开发人员很少人为限制自己的应用程序使用的资源。例如，你会启动自己的应用程序，并告诉系统你想限制应用程序能使用的内存量，或限制能使用的网络宽带吗？但出于某种心态，开发人员感觉好像有必要限制线程池拥有的线程数量。
+
+由于存在饥饿和死锁问题，所以 CLR 团队一直都在稳步地增加线程池默认拥有的最大线程数。目前默认值是大约 1000 个线程。这基本上可以看成是不限数量，因为一个 32 位进程最大有 2 GB 的可用地址空间。加载了一组 Win32 和 CLR DLLs，并分配了本地堆和托管堆之后，剩余约 1.5 GB的地址空间。由于每个线程都要为其用户模式栈和线程环境块(TEB)准备超过 1 MB 的内存，所以在一个 32 位进程中，最多能够有大约 1360 个线程。试图创建更多的线程会抛出 `OutOfMemoryException`。当然，64 位进程提供了 8 TB 的地址空间，所以理论上可以创建千百万个线程。但分配这么多线程纯属浪费，尤其是当理想线程数等于机器的 CPU 数(内核数)的时候。CLR 团队应该做的事情是彻底取消限制，但他们现在还不能这样做，否则预期存在线程池限制的一些应用程序会出错。
+
+`System.Threading.ThreadPool` 类提供了几个静态方法，可调用它们设置和查询线程池的线程数：`GetMaxThreads`，`SetMaxThreads`，`GetMinThreads`，`SetMinThreads` 和 `GetAvailableThreads`。强烈建议不要调用上述任何方法。限制线程池的线程数，一般都只会造成应用程序的性能变得更差，而不是更好。如果认为自己的应用程序需要几百或几千个线程，表明你的应用程序的架构和使用线程的方式已出现严重问题。本章和第 28 章会演示使用线程的正确方式。
+
+### 27.9.2 如何管理工作者线程
+
+图 27-1 展示了构成作为线程池一部分的工作者线程的各种数据结构。`ThreadPool.QueueUserWorkItem` 方法和 `Timer` 类总是将工作项放到全局队列中。工作者线程采用一个先入先出(first-in-first-out，FIFO)算法将工作项从这个队列中取出，并处理它们。由于多个工作者线程可能同时从全局队列中拿走工作项，所以所有工作者线程都竞争一个线程同步锁，以保证两个或多个线程不会获取同一个工作项。这个线程同步锁在某些应用程序中可能成为瓶颈，对伸缩性和性能造成某种程度的限制。
+
+![27_1](../resources/images/27_1.png)  
+
+图 27-1 CLR 的线程池
+
+> **重要提示** 线程池从来不保证排队中的工作项的处理顺序。这是合理的，尤其是考虑到多个线程可能同时处理工作项。但上述副作用使这个问题变得恶化了。你必须保证自己的应用程序对于工作项或 `Task` 的执行顺序不作任何预设。
+
+现在说一说使用默认 `TaskScheduler`<sup>①</sup>(查询 `TaskScheduler` 的静态 `Default` 属性获得)来调度的 `Task` 对象。非工作者线程调度一个 `Task` 时，该 `Task` 被添加到全局队列。但每个工作者线程都有自己的本地队列。工作者线程调度一个 `Task` 时，该`Task` 被添加到调用线程的本地队列。
+
+> ① 其他 `TaskScheduler` 派生对象的行为可能和我在这里描述的不同。
+
+工作者线程准备好处理工作项时，它总是先检查本地队列来查找一个 `Task`。存在一个 `Task`，工作者线程就从本地队列移除 `Task` 并处理工作项。要注意的是，工作者线程采用后入先出(LIFO)算法将任务从本地队列取出。由于工作者线程是唯一允许访问它自己的本地队列头的线程，所以无需同步锁，而且在队列中添加和删除 `Task` 的速度非常快。这个行为的副作用是 `Task` 按照和进入队列时相反的顺序执行。
+
+如果工作者线程发现它的本地队列变空了，会尝试从另一个工作者线程的本地队列“偷”一个 `Task`。 这个 `Task` 是从本地队列的尾部“偷”走的，并要求获取一个线程同步锁，这对性能有少许影响。当然，希望这种“偷盗”行为很少发生，从而很少需要获取锁。如果所有本地队列都变空，那么工作者线程会使用 FIFO 算法，从全局队列提取一个工作项(取得它的锁)。如果全局队列也为空，工作者线程会进入睡眠状态，等待事情的发生。如果睡眠了太长时间，它会自己醒来，并销毁自身，允许系统回收线程使用的资源(内核对象、栈、TEB 等)。
+
+线程池会快速创建工作者线程，使工作者线程的数量等于传给 `ThreadPool` 的 `SetMinThreads` 方法的值。如果从不调用这个方法(也建议你永远不调用这个方法)，那么默认值等于你的进程允许使用的 CPU 数量，这是由进程的 affinity mask(关联掩码)决定的。通常，你的进程允许使用机器上的所有 CPU，所以线程池创建的工作者线程数量很快就会达到机器的 CPU 数。创建了这么多(CPU 数量)的线程后，线程池会监视工作项的完成速度。如果工作项完成的时间太长(具体多长没有正式公布)，线程池会创建更多的工作者线程。如果工作项的完成速度开始变快，工作者线程会被销毁。
