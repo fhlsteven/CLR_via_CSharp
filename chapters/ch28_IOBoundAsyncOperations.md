@@ -304,9 +304,40 @@ private static Task<String> MyMethodAsync(Int32 argument) {
 
 花些时间梳理上述代码并读完所有注释，我猜你就能完全地领会编译器为你做的事情了。但是，如果将被等待的对象与状态机粘合起来还需着重解释一下。任何时候使用 `await` 操作符，编译器都会获取操作数，并尝试在它上面调用 `GetAwaiter` 方法。这可能是实例方法或扩展方法。调用 `GetAwaiter` 方法所返回的对象称为 `awaiter`(等待者)，正是它将被等待的对象与状态机粘合起来。
 
-```````
+状态机获得 awaiter 后，会查询其 `IsCompleted` 属性。如果操作已经以同步方式完成了，属性将返回 `true`，而作为一项优化措施，状态机将继续执行并调用 awaiter 的 `GetResult` 方法。该方法要么抛出异常(操作失败)，要么返回结果(操作成功)。状态机继续执行以处理结果。如果操作以异步方式完成，`IsCompleted` 将返回 `false`。状态机调用 awaiter 的 `OnCompleted` 方法并向它传递一个委托(引用状态机的 `MoveNext` 方法)。现在，状态机允许它的线程回到原地以执行其他代码。将来某个时候，封装了底层任务的 awaiter 会在完成时调用委托以执行 `MoveNext`。可根据状态机中的正确位置，使方法能从它当初离开时的位置继续。这时，代码调用 awaiter 的 `GetResult` 方法。执行将从这里继续，以便对结果进行处理。
+
+这便是异步函数的工作原理，开发人员可用它轻松地写出不阻塞的代码。
 
 ## <a name="28_4">28.4 异步函数扩展性</a>
+
+在扩展性方面，能用 `Task` 对象包装一个将来完成的操作，就可以用 `await` 操作符来等待该操作。用一个类型(`Task`)来表示各种异步操作对编码有利，因为可以实现组合操作(比如 `Task` 的 `WhenAll` 和 `WhenAny` 方法)和其他有用的操作。本章后面会演示如何用 `Task` 包装一个`CancellationToken`，在等待异步操作的同时利用超时和取消功能。
+
+我想和你分享另外一个例子。下面是我的 `TaskLogger` 类，可用它显示尚未完成的异步操作。这在调试时特别有用，尤其是当应用程序因为错误的请求或者未响应的服务器而挂起的时候。
+
+```C#
+public static class TaskLogger
+{
+    public enum TaskLogLevel { None, Pending }
+    public static TaskLogLevel logLevel { get; set; }
+
+    public sealed class TaskLogEntry
+    {
+        public Task Task { get; internal set; }
+        public String Tag { get; internal set; }
+        public DateTime LogTime { get; internal set; }
+        public String CallerMemberName { get; internal set; }
+        public String CallerFilePath { get; internal set; }
+        public Int32 CallerLineNumber { get; internal set; }
+        public override string ToString()
+        {
+            return String.Format("LogTime={0}, Tag={1}, Member={2}, File={3}{4}",
+                LogTime, Tag ?? "(none)", CallerMemberName, CallerFilePath, CallerLineNumber);
+        }
+    }
+}
+```
+
+`````
 
 ## <a name="28_5">28.5 异步函数和事件处理程序</a>
 
