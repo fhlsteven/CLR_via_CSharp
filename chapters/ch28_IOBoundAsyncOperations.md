@@ -483,13 +483,300 @@ public static void Go() {
 
 ## <a name="28_6">28.6 FCL 的异步函数</a>
 
+我个人很喜欢异步函数，它们易于学习和使用，而且获得了 FCL 的许多类型的支持。异步函数很容易分辨，因为规范要求为方法名附加 `Async` 后缀。在 FCL 中，支持 I/O 操作的许多类型都提供了 `XxxAsync` 方法<sup>②</sup>。下面是一些例子。
+
+> ② WinRT 方法遵循相同的命名规范并返回一个 `IAsyncInfo` 接口。幸好，.NET Framework 提供了能将 `IAsyncInfo` 转换为 `Task` 的扩展方法。要想进一步了解异步 WinRT API 和异步函数配合使用的问题，请参见第 25 章 “与 WinRT 组件互操作”。
+
+* `System.IO.Stream` 的所有派生类都提供了 `ReadAsync`，`WriteAsync`，`FlushAsync` 和 `CopyToAsync` 方法。
+
+* `System.IO.TextReader` 的所有派生类都提供了 `ReadAsync`，`ReadLineAsync`，`ReadToEndAsync` 和 `ReadBlockAsync` 方法。`System.IO.TextWriter` 的派生类提供了 `WriteAsync`，`WriteLineAsync` 和 `FlushAsync` 方法。
+
+* `System.Net.HttpClient` 类提供了 `GetAsync`，`GetStreamAsync`，`GetByteArrayAsync`，`PostAsync`，`PutAsync`,`DeleteAsync` 和其他许多方法。
+
+*  `System.Net.WebRequest` 的所有派生类(包括 `FileWebRequest`,`FtpWebRequest` 和 `HTTPWebRequest`)都提供了 `GetRequestStreamAsync` 和 `GetResponseAsync` 方法。
+
+* `System.Data.SqlClient.SqlCommand` 类提供了 `ExecuteDbDataReaderAsync`，`ExecuteNonQueryAsync`，`ExecuteReaderAsync`，`ExecuteScalarAsync` 和 `ExecuteXmlReaderAsync` 方法。
+
+* 生成 Web 服务代理类型的工具(比如 SvcUtil.exe)也生成 `XxxAsync` 方法。
+
+用过早起版本的 .NET Framework 的开发人员应该熟悉它提供的其他异步编程模型。有一个编程模型使用 `BeginXxx/EndXxx` 方法和 `IAsyncResult` 接口。还有一个基于事件的编程模型，它也提供了 `XxxAsync` 方法(不返回 `Task` 对象)，能在异步操作完成时调用事件处理程序。现在这两个异步编程模型已经过时，使用 `Task` 的新模型才是你的首要选择。
+
+当前，FCL 的一些类缺乏 `XxxAsync` 方法，只提供了 `BeginXxx` 和 `EndXxx` 方法。这主要是由于 Microsoft 没有时间用新方法更新这些类。Microsoft 将来会增强这些类，使其完全支持新模型。但在此之前，有一个辅助方法可将旧的 `BeginXxx` 和 `EndXxx` 方法转变成新的、基于`Task` 的模型。
+
+28.2 节展示过通过命名管道来发出请求的客户端应用程序的代码，下面是服务器端的代码。
+
+```C#
+private static async void StartServer() {
+    while (true) {
+        var pipe = new NamedPipeServerStream(c_pipeName, PipeDirection.InOut, -1,
+            PipeTransmissionMode.Message, PipeOptions.Asynchronous | PipeOptions.WriteThrough);
+
+        // 异步地接受客户端连接
+        // 注意：NamedPipServerStream 使用旧的异步编程模型(APM)
+        // 我用 TaskFactory 的 FromAsync 方法将旧的 APM 转换成新的 Task 模型
+        await Task.Factory.FromAsync(pipe.BeginWaitForConnection, pipe.EndWaitForConnection, null);
+
+        // 开始为客户端提供服务，由于是异步的，所以能立即返回
+        ServiceClientRequestAsync(pipe);
+    }
+}
+```
+
+`NamedPipeServerStream` 类定义了 `BeginWaitForConnection` 和 `EndWaitForConnection` 方法，但没有定义 `WaitForConnectionAsync` 方法。FCL 未来的版本有望添加该方法。但不是说在此之前就没有希望了。如上述代码所示，我调用 `TaskFactory` 的 `FromAsync` 方法，向它传递 `BeginXxx` 和 `EndXxx` 方法的名称。然后，`FromAsync` 内部创建一个 `Task` 对象来包装这些方法。现在就可以随同 `await` 操作符使用 `Task` 对象了<sup>①</sup>。
+
+> ① `TaskFactory` 的 `FromAsync` 方法有重载版本能接受一个 `IAsyncResult`，还有重载版本能接受对 `BeginXxx` 和 `EndXxx` 方法的委托。尽量不要使用接受 IAsyncResult 的重载版本，因为它们不高效。
+
+FCL 没有提供任何辅助方法将旧的、基于事件的编程模型改编成新的、基于 `Task` 的模型。所以只能采用硬编码的方式。以下代码演示如何用 `TaskCompletionSource` 包装使用了 “基于事件的编程模型” 的 `WebClient`，以便在异步函数中等待它。
+
+```C#
+private static async Task<String> AwaitWebClient(Uri uri) {
+    // System.Net.WebClient 类支持基于事件的异步模型
+    var wc = new System.Net.WebClient();
+
+    // 创建 TaskCompletionSource 及其基础 Task 对象
+    var tcs = new TaskCompletionSource<String>();
+
+    // 字符串下载完毕后，WebClient 对象引发 DownloadStringCompleted 事件，
+    // 从而完成 TaskCompletionSource
+    wc.DownloadStringCompleted += (s, e) => {
+        if (e.Cancelled) tcs.SetCanceled();
+        else if (e.Error != null) tcs.SetException(e.Error);
+        else tcs.SetResult(e.Result);
+    };
+
+    // 启动异步操作
+    wc.DownloadStringAsync(uri);
+
+    // 现在可以等待 TaskCompletionSource 的 Task，和往常一样处理结果
+    String result = await tcs.Task;
+    // 处理结果字符串(如果需要的话)...
+
+    return result;
+}
+```
+
 ## <a name="28_7">28.7 异步函数和异常处理</a>
+
+Windows 设备驱动程序处理异步 I/O 请求时可能出错，Windows 需要向应用程序通知这个情况。例如，通过网络收发字节时可能超时。如果数据没有及时到达，设备驱动程序希望告诉应用程序异步操作虽然完成，但存在一个错误。为此，设备驱动程序会向 CLR 的线程池 post 已完成的 IRP。一个线程池线程会完成 `Task` 对象并设置异常。你的状态机方法恢复时，`await` 操作符发现操作失败并引发该异常。
+
+第 27 章说过，`Task` 对象通常抛出一个 `AggregateException`，可查询该异常的 `InnerExceptions` 属性来查看真正发生了什么异常。但将 `await` 用于 `Task` 时，抛出的是第一个内部异常而不是 `AggregateException`。<sup>①</sup>这个设计提供了自然的编程体验。否则就必须在代码中捕捉 `AggregateException`，检查内部异常，然后要么处理异常，要么重新抛出。这未免过于烦琐。
+
+> ① 具体地说，是 `TaskAwaiter` 的 `GetResult` 方法抛出第一个内部异常而不是抛出 `AggregateException`。
+
+如果状态机出现未处理的异常，那么代表异步函数的 `Task` 对象会因为未处理的异常而完成。然后，正在等待该 `Task` 的代码会看到异常。但异步函数也可能使用了 `void` 返回类型，这时调用者就没有办法发现未处理的异常。所以，当返回 `void` 的异步函数抛出未处理的异常时，编译器生成的代码将捕捉它，并使用调用者的同步上下文(稍后讨论)重新抛出它。如果调用者通过 GUI 线程执行， GUI 线程最终将重新抛出异常。重新抛出这种异常通常造成整个进程终止。
 
 ## <a name="28_8">28.8 异步函数和其他功能</a>
 
+本节要和你分享的是和异步函数相关的其他功能。 Microsoft Visual Studio 为异步函数的调试提供了出色的支持。如果调试器在 `await` 操作符上停止，“逐过程”(F10)会在异步操作完成后，在抵达下一个语句时重新由调试器接管。在这个时候，执行代码的线程可能已经不是当初发起异步操作的线程。这个设计十分好用，能极大地简化调试。
+
+另外，如果不小心对异步函数执行“逐语句”(功能键 F11)操作，可以 “跳出”(组合键 Shift+F11)函数并返回至调用者；但必须在位于异步函数的起始大括号的时候执行这个操作。一旦越过起始大括号，除非异步函数完成，否则“跳出”(组合键 Shift+F11)操作无法中断异步函数。要在状态机运行完毕前对调用方法进行调试，在调用方法中插入断点并运行至断点(F5)即可。
+
+有的异步操作执行速度很快，几乎瞬间就能完成。在这种情况下，挂起状态机并让另一个线程立即恢复状态机就显得不太划算。更有效的做法是让状态机继续执行。幸好，编译器为 `await` 操作符生成的代码能检测到这个问题。如果异步操作在线程返回前完成，就阻止线程返回，直接由它执行下一行代码。
+
+到目前为止一切都很完美，但有时异步函数需要先执行密集的、计算限制的处理，再发起异步操作。如果通过应用程序的 GUI 线程来调用函数，UI 就会突然失去响应，好长时间才能恢复。另外，如果操作以同步方式完成，那么 UI 失去响应的时间还会变得更长。在这种情况下，可利用 `Task` 的静态 `Run` 方法从非调用线程的其他线程中执行异步函数。
+
+```C#
+// Task.Run 在 GUI 线程上调用
+Task.Run(async () => {
+    // 这里的代码在一个线程池线程上运行
+    // TODO：在这里执行密集的、计算限制的处理...
+
+    await XXXAsync();  // 发起异步操作
+    // 在这里执行更多处理...
+});
+```
+
+上述代码演示了 C# 的异步 lambda 表达式。可以看出，不能只在普通的 lambda 表达式主体中添加 `await` 操作符完事，因为编译器不知道如何将方法转换成状态机。但同时在 lambda 表达式前面添加 `async`，编译器就能将 lambda 表达式转换成状态机方法来返回一个 `Task` 或 `Task<TResult>`，并可赋给返回类型为 `Task` 或 `Task<TResult>` 的任何 `Func` 委托变量。
+
+写代码时，很容易发生调用异步函数但忘记使用 `await` 操作符的情况。以下代码进行了演示。
+
+```C#
+static async Task OuterAsyncFunction() {
+    InnerAsyncFunction();       // Oops， 忘了添加 await 操作符
+
+    // 在 InnerAsyncFunction 继续执行期间，这里的代码也继续执行
+}
+static async Task InnerAsyncFunction() { /* 这里的代码不重要 */ }
+```
+
+幸好，C#编译器会针对这种情况显示以下警告：
+
+`由于此调用不会等待，因此在此调用完成之前将会继续执行当前方法。请考虑将 “await” 运算符应用于调用结果。`
+
+这个警告大多数时候都很有用，但极少数情况下，你确实不关心 `InnerAsyncFunction` 在什么时候结束，上述代码正是你想要的结果，不希望看到警告。
+
+为了取消警告，只需将 `InnerAsyncFunction` 返回的 `Task` 赋给一个变量，然后忽略该变量。<sup>①</sup>
+
+> ① 幸好编译器不会为从不使用的局部变量显示警告。
+
+```C#
+static async Task OuterAsyncFunction() {
+    var noWarning = InnerAsyncFunction();       // 故意不添加 await 操作符
+
+    // 在 InnerAsyncFunction 继续执行期间，这里的代码也继续执行
+}
+```
+
+我个人更喜欢定义如下所示的扩展方法。
+
+```C#
+[MethodImpl(MethodImplOptions.AggressiveInlining)]  // 造成编译器优化调用
+public static void NoWarning(this Task task) { /* 这里没有代码 */ }
+```
+
+然后像下面这样使用它：
+
+```C#
+static async Task OuterAsyncFunction() {
+    InnerAsyncFunction().NoWarning();   // 故意不添加 await 操作符
+
+    // 在 InnerAsyncFunction 继续执行期间，这里的代码也继续执行
+}
+```
+
+异步 I/O 操作最好的一个地方是可以同时发起许多这样的操作，让它们并行执行，从而显著提升应用程序的性能。以下代码启动我的命名管道服务器，然后向它发起大量的客户端请求。
+
+```C#
+public static async Task Go() {
+    // 启动服务器并立即返回，因为它异步地等待客户端请求
+    StartServer();  // 返回 void，所以编译器会发出警告
+
+    // 发出大量异步客户端请求；保存每个客户端的 Task<String>
+    List<Task<String>> requests = new List<Task<String>>(10000);
+    for (Int32 n = 0; n < requests.Capacity; n++)
+        requests.Add(IssueClientRequestAsync("localhost", "Request #" + n));
+
+    // 异步地等待所有客户端请求完成
+    // 注意：如果 1 个以上的任务抛出异常，WhenAll 重新抛出最后一个抛出的异常
+    String[] responses = await Task.WhenAll(requests);
+
+    // 处理所有响应
+    for (Int32 n = 0; n < responses.Length; n++) 
+        Console.WriteLine(responses[n]);
+}
+```
+
+上述代码启动命名管道服务器来监听客户端请求，然后，`for` 循环以最快速度发起 10000 个客户端请求。每个 `IssueClientRequestAsync` 调用都返回一个 `Task<String>` 对象，这些对象全部添加到一个集合中。现在，命名管道服务器使用线程池线程以最快的速度处理这些请求，机器上的所有 CPU 都将保持忙碌状态。<sup>①</sup>每处理完一个请求，该请求的 `Task<String>` 对象都会完成，并从服务器返回字符串响应。
+
+> ① 我观察到一个有趣的现象。我在一台 8 核电脑上测试代码，所有 CPU 的利用率都达到 100%，这是理所当然的。由于所有 CPU 都非常忙，所以电脑变更吵！处理结束后，CPU 利用率下降，风扇重新变得安静了。我感觉可以根据风扇噪声来验证代码是否正常工作。
+
+在上述代码中，我希望等待所有客户端请求都获得响应后再处理结果。为此，我调用了 `Task` 的静态 `WhenAll` 方法。该方法内部创建一个 `Task<String[]>` 对象，它在列表中的所有 `Task` 对象都完成后才完成。然后，我等待 `Task<String[]>` 对象，使状态机在所有任务完成后继续执行。所有任务完成后，我遍历所有响应并进行处理(调用 `Console.WriteLine`)。
+
+如果希望收到一个响应就处理一个，而不是在全部完成后再处理，那么用 `Task` 的静态 `WhenAny` 方法可以轻松地实现，下面是修改后的代码。
+
+```C#
+public static async Task Go() {
+    // 启动服务器并立即返回，因为它异步地等待客户端请求
+    StartServer();
+
+    // 发起大量异步客户端请求；保存每个客户端的 Task<String>
+    List<Task<String>> requests = new List<Task<String>>(10000);
+    for (Int32 n = 0; n < requests.Capacity; n++) 
+         requests.Add(IssueClientRequestAsync("localhost", "Request #" + n));
+
+    // 每个任务完成都继续
+    while (requests.Count > 0) {
+        // 顺序处理每个完成的响应
+        Task<String> response = await Task.WhneAny(requests);
+        requests.Remove(response);      // 从集合中删除完成的任务
+
+        // 处理一个响应
+        Console.WriteLine(response.Result);
+    }
+}
+```
+
+上述代码创建 `while` 循环，针对每个客户端请求都迭代一次。循环内部等待 `Task` 的 `WhenAny` 方法，该方法一次返回一个 `Task<String>` 对象，代表由服务器响应的一个客户端请求。获得这个 `Task<String>` 对象后，就把它从集合中删除，然后查询它的结果以进行处理(把它传经 `Console.WriteLine`)。
+
 ## <a name="28_9">28.9 应用程序及其线程处理模型</a>
 
+.NET Framework 支持几种不同的应用程序模型，而每种模型都可能引入了它自己的线程处理模型。控制台应用程序和 Windows 服务(实际也是控制台应用程序；只是看不见控制台而已)没有引入任何线程处理模型；换言之，任何线程可在任何时候做它想做的任何事情。
+
+但 GUI 应用程序(包括 Windows 窗体、WPF、Silverlight 和 Windows Store 应用程序)引入了一个线程处理模型。在这个模型中，UI 元素只能由创建它的线程更新。在 GUI 线程中，经常都需要生成一个异步操作，使 GUI 线程不至于阻塞并停止响应用户输入(比如鼠标、按键、手写笔和触控事件)。但当异步操作完成时，是由一个线程池线程完成 `Task` 对象并恢复状态机。
+
+对于某些应用程序模型，这样做无可非议，甚至可以说正好符合开发人员的意愿，因为它非常高效。但对于另一些应用程序模型(比如 GUI 应用程序)，这个做法会造成问题，因为一旦通过线程池线程更新 UI 元素就会抛出异常。线程池线程必须以某种方式告诉 GUI 线程更新 UI 元素。
+
+ASP.NET 应用程序允许任何线程做它想做的任何事情。线程池线程开始处理一个客户端的请求时，可以对客户端的语言文化(`System.Globalization.CultureInfo`)做出假定，从而允许 Web 服务器对返回的数字、日期和时间进行该语言文化特有的格式化处理。<sup>①</sup>此外， Web 服务器还可对客户端的身份标识(`System.Security.Principal.IPrincipal`)做出假定，确保只能访问客户端有权访问的资源。线程池线程生成一个异步操作后，它可能由另一个线程池线程完成，该线程将处理异步操作的结果。代表原始客户端执行工作时，语言文化和身份标识信息需要“流向”新的线程池线程。这样一来，代表客户端执行的任何额外的工作才能使用客户端的语言文化和身份标识信息。
+
+> ① 欲知详情，请访问 *[http://msdn.microsoft.com/zh-cn/library/bz9tc508.aspx](http://msdn.microsoft.com/zh-cn/library/bz9tc508.aspx)*。注意，帮助文档将 culture 翻译成 “区域性”。 ———— 译注
+
+幸好 FCL 定义了一个名 `System.Threading.SynchronizationContext` 的基类，它解决了所有这些问题。简单地说，`SynchronizationContext` 派生对象将应用程序模型连接到它的线程处理模型。FCL 定义了几个 `SynchronizationContext` 派生类，但你一般不直接和这些类打交道：事实上，它们中的许多都没有公开或记录到文档。
+
+应用程序开发人员通常不需要了解关于 `SynchronizationContext` 类的任何事情。等待一个 `Task` 时会获取调用线程的 `SynchronizationContext` 对象。线程池线程完成 `Task` 后，会使用该 `SynchronizationContext` 对象，确保为应用程序模型使用正确的线程处理模型。所以，当 GUI 线程等待一个 `Task` 时，`await` 操作符后面的代码保证在 GUI 线程上执行，使代码能更新 UI 元素。<sup>①</sup>对于 ASP.NET 应用程序，`await` 后面的代码保证在关联了客户端语言文化和身份标识信息的线程池线程上执行。
+
+> ① 在内部，各种 `SynchronizationContext` 派生类使用像 `System.Windows.Forms.Control`，`BeginInvoke`，`System.Windows.Threading.Dispatcher.BeginInvoke` 和 `Windows.UI.Core.CoreDispatcher.RunAsync` 这样的方法让 GUI 线程恢复状态机。
+
+让状态机使用应用程序模型的线程处理模型来恢复，这在大多数时候都很有用，也很方便。但偶尔也会带来问题。下面是造成 WPF 应用程序死锁的一个例子。
+
+```C#
+private sealed class MyWpfWindow : Window {
+    public MyWpfWindow() { Title = "WPF Window"; }
+
+    protected override void OnActivated(EventArgs e) {
+        // 查询 Result 属性阻止 GUI 线程返回；
+        // 线程在等待结果期间阻塞
+        String http = GetHttp().Result;     // 以同步方式获取字符串
+
+        base.OnActivated(e);
+    }
+
+    private async Task<String> GetHttp() {
+        // 发出 HTTP 请求，让线程从 GetHttp 返回
+        HttpResponseMessage msg = await new HttpClient().GetAsync("http://Wintellect.com/");
+        // 这里永远执行不到；GUI 线程在等待这个方法结束，
+        // 但这个方法结束不了，因为 GUI 线程在等待它结束 --> 死锁！
+
+        return await msg.Content.ReadAsStringAsync();
+    }
+}
+```
+
+类库开发人员为了写高性能的代码来应对各种应用程序模型，尤其需要注意 `SynchronizationContext` 类。由于许多类库代码都要求不依赖于特定的应用程序模型，所以要避免因为使用 `SynchronizationContext` 对象而产生的额外开销。此外，类库开发人员要竭尽全力帮助应用程序开发人员防止死锁。为了解决这两方面的问题，`Task` 和 `Task<TResult>` 类提供了一个 `ConfigureAwait` 方法，它的签名如下所示。
+
+```C#
+// 定义这个方法的 Task
+public ConfiguredTaskAwaitable ConfigureAwait(Boolean continueOnCapturedContext);
+
+// 定义这个方法的 Task<TResult>
+public ConfiguredTaskAwaitable<TResult> configureAwait(Boolean continueOnCapturedContext);
+```
+
+向方法传递 `true` 相当于根本没有调用方法。但如果传递 `false`，`await` 操作符就不查询调用线程的 `SynchronizationContext` 对象。当线程池线程结束 `Task` 时会直接完成它，`await` 操作符后面的代码通过线程池线程执行。
+
+虽然我的 `GetHttp` 方法不是类库代码，但在添加了对 `ConfigureAwait` 的调用后，死锁问题就不翼而飞了。下面是修改过的 `GetHttp` 方法。
+
+```C#
+private async Task<String> GetHttp() {
+    // 发出 HTTP 请求，让线程从 GetHttp 返回
+    HttPResponseMessage msg = await new HttpClient().GetAsync("http://Wintellect.com/").ConfigureAwait(false);
+    // 这里能执行到了，因为线程池线程可以执行这里的代码，
+    // 而非被迫由 GUI 线程执行
+
+    return await msg.Content.ReadAsStringAsync().ConfigureAwait(false);
+}
+```
+
+如上述代码所示，必须将 `ConfigureAwait(false)` 应用于等待的每个 `Task` 对象。这是由于异步操作可能同步完成，而且在发生这个情况时，调用线程直接继续执行，不会返回至它的调用者；你根本不知道哪个操作要求忽略 `SynchronizationContext` 对象，所以只能要求所有操作都忽略它。这还意味着类库代码不能依赖于任何特定的应用程序模型。另外，也可像下面这样重写 `GetHttp` 方法，用一个线程池线程执行所有操作。
+
+```C#
+private Task<String> GetHttp() {
+    return Task.Run(async () => {
+        // 运行一个无 SynchronizationContext 的线程池线程
+        HttPResponseMessage msg = await new HttpClient().GetAsync("http://Wintellect.com/");
+        // 这里的代码真的能执行，因为某个线程池线程能执行这里的代码
+
+        return await msg.Content.ReadAsStringAsync();
+    });
+}
+```
+
+在这个版本中，注意，`GetHttp` 不再是异步函数；我从方法签名中删除了 `async` 关键字，因为方法中没有了 `await` 操作符。但是，传给 `Task.Run` 的lambda 表达式是异步函数。
+
 ## <a name="28_10">28.10 以异步方式实现服务器</a>
+
+根据我多年来和开发人员的交流经验，发现很少有人知道 .NET Framework 其实内建了对伸缩性很好的一些异步服务器的支持。本书限制篇幅无法一一解释，但可以列出 MSDN 文档中值得参考的地方。
+
+* 要构建异步 ASP.NET Web 窗体，在 .aspx 文件中添加 `Async="true"`网页指令，并参考 `System.Web.UI.Page` 的 `RegisterAsyncTask` 方法。
 
 ## <a name="28_11">28.11 取消 I/O 操作</a>
 
