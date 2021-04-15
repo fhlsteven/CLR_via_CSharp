@@ -315,31 +315,169 @@ private static Task<String> MyMethodAsync(Int32 argument) {
 我想和你分享另外一个例子。下面是我的 `TaskLogger` 类，可用它显示尚未完成的异步操作。这在调试时特别有用，尤其是当应用程序因为错误的请求或者未响应的服务器而挂起的时候。
 
 ```C#
-public static class TaskLogger
-{
+public static class TaskLogger {
     public enum TaskLogLevel { None, Pending }
     public static TaskLogLevel logLevel { get; set; }
 
-    public sealed class TaskLogEntry
-    {
+    public sealed class TaskLogEntry {
         public Task Task { get; internal set; }
         public String Tag { get; internal set; }
         public DateTime LogTime { get; internal set; }
         public String CallerMemberName { get; internal set; }
         public String CallerFilePath { get; internal set; }
         public Int32 CallerLineNumber { get; internal set; }
-        public override string ToString()
-        {
+        public override string ToString() {
             return String.Format("LogTime={0}, Tag={1}, Member={2}, File={3}{4}",
                 LogTime, Tag ?? "(none)", CallerMemberName, CallerFilePath, CallerLineNumber);
         }
     }
+
+    private static readonly ConcurrentDictionary<Task, TaskLogEntry> s_log =
+        new ConcurrentDictionary<Task, TaskLogEntry>();
+    public static IEnumerable<TaskLogEntry> GetLogEntries() { return s_log.Values; }
+
+    public static Task<TResult> Log<TResult>(this Task<TResult> task, String tag = null,
+        [CallerMemberName] String callerMemberName = null,
+        [CallerFilePath] String callerFilePath = null,
+        [CallerLineNumber] Int32 callerLineNumber = -1) {
+        return (Task<TResult>)
+            Log((Task)task, tag, callerMemberName, callerFilePath, callerLineNumber);
+    }
+
+    public static Task Log(this Task task, String tag = null,
+        [CallerMemberName] String callerMemeberName = null,
+        [CallerFilePath] String callerFilePath = null,
+        [CallerLineNumber] Int32 callerLineNumber = -1) {
+        if (logLevel == TaskLogLevel.None) return task;
+        var logEntry = new TaskLogEntry {
+            Task = task,
+            LogTime = DateTime.Now,
+            Tag = tag,
+            CallerMemberName = callerMemeberName,
+            CallerFilePath = callerFilePath,
+            CallerLineNumber = callerLineNumber
+        };
+        s_log[task] = logEntry;
+        task.ContinueWith(t => { TaskLogEntry entry; s_log.TryRemove(t, out entry); }, TaskContinuationOptions.ExecuteSynchronously);
+        return task;
+    }
 }
 ```
 
-`````
+以下代码演示了如何使用该类。
+
+```C#
+public static async Task Go() {
+#if DEBUG
+    // 使用 TaskLogger 会影响内存和性能，所以只在调试生成中启用它
+    TaskLogger.logLevel = TaskLogger.TaskLogLevel.Pending;
+#endif
+
+    // 初始化为 3 个任务；为了测试 TaskLogger，我们显式控制其持续时间
+    var tasks = new List<Task> { 
+        Task.Delay(2000).Log("2s op"),
+        Task.Delay(5000).Log("5s op"),
+        Task.Delay(6000).Log("6s op")
+    };
+
+    try {
+        // 等待全部任务，但在 3 秒后取消：只有一个任务能按时完成
+        // 注意：WithCancellation 扩展方法将在本章稍后进行描述
+        await Task.WhenAll(tasks).
+            WithCancellation(new CancellationTokenSource(3000).Token);
+    }
+    catch (OperationCanceledException) { }
+
+    // 查询 logger 哪些任务尚未完成，按照从等待时间最长到最短的顺序排序
+    foreach (var op in TaskLogger.GetLogEntries().OrderBy(tle => tle.LogTime))
+        Console.WriteLine(op);
+}
+```
+
+在我的机器上生成并运行上述代码得到以下结果。
+
+```cmd
+LogTime=2021-04-17 10:29:42, Tag=6s op, Member=Go, File=C:\Users\Steven\source\repos\TestCLRVia\TestCLRVia\TestClass.cs40
+LogTime=2021-04-17 10:29:42, Tag=5s op, Member=Go, File=C:\Users\Steven\source\repos\TestCLRVia\TestCLRVia\TestClass.cs39
+```
+
+除了增强使用 `Task` 时的灵活性，异步函数另一个对扩展性有利的地方在于编译器可以在 `await` 的任何操作数上调用 `GetAwaiter`。所以操作数不一定是 `Task` 对象。可以是任意类型，只要提供了一个可以调用的 `GetAwaiter` 方法。下例展示了我自己的 `awaiter`，在异步方法的状态机和被引发的事件之间，它扮演了“粘合剂”的角色。
+
+```C#
+public sealed class EventAwaiter<TEventArgs> : INotifyCompletion {
+    private ConcurrentQueue<TEventArgs> m_events = new ConcurrentQueue<TEventArgs>();
+    private Action m_continuation;
+
+    #region 状态机调用的成员
+    // 状态机先调用这个来获得 awaiter；我们自己返回自己
+    public EventAwaiter<TEventArgs> GetAwaiter() { return this; }
+
+    // 告诉状态机是否发生了任何事情
+    public Boolean IsCompleted { get { return m_events.Count > 0; } }
+
+    // 状态机告诉我们以后要调用什么方法：我们把它保存起来
+    public void OnCompleted(Action continuation) {
+        Volatile.Write(ref m_continuation, continuation);
+    }
+
+    // 状态机查询结果；这是 await 操作符的结果
+    public TEventArgs GetResult() {
+        TEventArgs e;
+        m_events.TryDequeue(out e);
+        return e;
+    }
+    #endregion
+
+    // 如果都引发了事件，多个线程可能同时调用
+    public void EventRaised(Object sender, TEventArgs eventArgs) {
+        m_events.Enqueue(eventArgs);    // 保存 EventArgs 以便从 GetResult / await 返回
+
+        // 如果有一个等待进行的延续任务，该线程会运行它
+        Action continuation = Interlocked.Exchange(ref m_continuation, null);
+        if (continuation != null) continuation();   // 恢复状态机
+    }
+}
+```
+
+以下方法使用我的 `EventAwaiter` 类在事件发生的时候从 `await` 操作符返回。在本例中，一旦 AppDomain 中的任何线程抛出异常，状态机就会继续。
+
+```C#
+public static async void ShowExceptions() {
+    var eventAwaiter = new EventAwaiter<FirstChanceExceptionEventArgs>();
+    AppDomain.CurrentDomain.FirstChanceException += eventAwaiter.EventRaised;
+    while (true) {
+        Console.WriteLine("AppDomain exception: {0}", 
+            (await eventAwaiter).Exception.GetType());
+    }
+}
+```
+
+最后用一些代码演示了所有这一切是如何工作的。
+
+```C#
+public static void Go() {
+    ShowExceptions();
+
+    for (Int32 x = 0; x < 3; x++) {
+        try {
+            switch (x) {
+                case 0: throw new InvalidOperationException();
+                case 1: throw new ObjectDisposedException("");
+                case 2: throw new ArgumentOutOfRangeException();
+            }
+        }
+        catch { }
+    }
+}
+```
 
 ## <a name="28_5">28.5 异步函数和事件处理程序</a>
+
+异步函数的返回类型一般是 `Task` 或 `Task<TResult>`，它们代表函数的状态机完成。但异步函数是可以返回 `void` 的。实现异步事件处理程序时，C# 编译器允许你利用这个特殊情况简化编码。几乎所有事件处理程序都遵循以下方法签名：
+
+`void EventHandlerCallback(Object sender, EventArgs e);`
+
+但
 
 ## <a name="28_6">28.6 FCL 的异步函数</a>
 
