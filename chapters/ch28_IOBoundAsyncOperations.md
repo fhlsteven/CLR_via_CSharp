@@ -778,8 +778,76 @@ private Task<String> GetHttp() {
 
 * 要构建异步 ASP.NET Web 窗体，在 .aspx 文件中添加 `Async="true"`网页指令，并参考 `System.Web.UI.Page` 的 `RegisterAsyncTask` 方法。
 
+* 要构建异步 ASP.NET MVC 控制器，使你的控制器类从 `System.Web.Mvc.AsyncController` 派生，让操作方法返回一个 `Task<ActionResult>` 即可。
+
+* 要构建异步 ASP.NET 处理程序，使你的类从 `System.Web.HttpTaskAsyncHandler` 派生，重写其抽象 `ProcessRequestAsync` 方法。
+
+* 要构建异步 WCF 服务，将服务作为异步函数实现，让它返回 `Task` 或 `Task<TResult>`。
+
 ## <a name="28_11">28.11 取消 I/O 操作</a>
 
+Windows 一般没有提供取消未完成 I/O 操作的途径。这是许多开发人员都想要的功能，实现起来却很困难。毕竟，如果向服务器请求了 1000 个字节，然后决定不再需要这些字节，那么其实没有办法告诉服务器忘掉你的请求。在这种情况下，只能让字节照常返回，再将它们丢弃。此外，这里还会发生竞态条件————取消请求的请求可能正好在服务器发送响应的时候到来。这时应该怎么办？所以，要在代码中处理这种潜在的竞态条件，决定是丢弃还是使用数据。
+
+为此，我建议实现一个 `WithCancellation` 扩展方法来扩展 `Task<TResult>`(需要类似的重载版本来扩展 `Task`)，如下所示：
+
+```C#
+private struct Void { } // 因为没有非泛型的 TaskCompletionSource 类
+
+private static async Task<TResult> WithCancellation<TResult>(this Task<TResult> originalTask,
+    CancellationToken ct) {
+    // 创建在 CancellationToken 被取消时完成的一个 Task
+    var cancelTask = new TaskCompletionSource<Void>();
+
+    // 一旦 CancellationToken 被取消，就完成 Task
+    using (ct.Register(
+        t => ((TaskCompletionSource<Void>)t).TrySetResult(new Void()), cancelTask)) {
+
+        // 创建在原始 Task 或 CancellationToken Task完成时都完成的一个 Task
+        Task any = await Task.WhenAny(originalTask, cancelTask.Task);
+
+        // 任何 Task 因为 CancellationToken 而完成，就抛出 OperationCanceledException
+        if (any == cancelTask.Task) ct.ThrowIfCancellationRequested();
+    }
+
+    // 等待原始任务(以同步方式)：若任务失败，等待它将抛出第一个内部异常，
+    // 而不是抛出 AggregateException
+    return await originalTask;
+}
+```
+
+现在可以像下面这样调用该扩展方法。
+
+```C#
+public static async Task Go() {
+    // 创建一个 CancellationTokenSource，它在 # 毫秒后取消自己
+    var cts = new CancellationTokenSource(5000);   // 更快取消需调用 cts.Cancel()
+    var ct = cts.Token;
+
+    try {
+        // 我用 Task.Delay 进行测试；把它替换成返回一个 Task 的其他方法
+        await Task.Delay(1000).WithCancellation(ct);
+        Console.WriteLine("Task completed");
+    }
+    catch (OperationCanceledException) {
+        Console.WriteLine("Task cancelled");
+    }
+}
+```
+
 ## <a name="28_12">28.12 有的 I/O 操作必须同步进行</a>
+
+Win32 API 提供了许多 I/O 函数。遗憾的是，有的方法不允许以异步方式执行 I/O。例如，Win32 `CreateFile` 方法(由 `FileStream` 的构造器调用)总是以同步方式执行。试图在网络服务器上创建或打开文件，可能要花数秒时间等待 `CreateFile` 方法返回 ———— 再次期间，调用线程一直处于空闲状态。理想情况下，注重性能和伸缩性的应用程序应该调用一个允许以异步方式创建或打开文件的 Win32 函数，使线程不至于傻乎乎地等着服务器响应。遗憾的是，Win32 没有提供一个允许这样做且功能和 `CreateFile` 相同的函数。因此，FCL 不能以异步方式高效地打开文件。另外，Windows 也没有提供函数以异步方式访问注册表、访问事件日志、获取目录的文件/子目录或者更改文件/目录的属于等等。
+
+下例说明某些时候这真的会造成问题。假定要写一个简单的 UI 允许用户输入文件路径，并提供自己完成功能(类似于通过 “打开” 对话框)。控件必须用单独的线程枚举目录并在其中查找文件，因为 Windows 没有提供任何现成的函数来异步地枚举文件。当用户继续在 UI 控件中输入时，必须使用更多的线程，并忽略之前创建的任何线程的结果。从 Windows Vista 起，Microsoft 引入了一个名为 `CancelSynchronousIO` 的 Win32 函数。它允许一个线程取消正在由另一个线程执行的同步 I/O 操作。FCL 没有公开该函数，但要在用托管代码实现的桌面应用程序中利用它，可以 P/Invoke 它，本章下一节将展示它的 P/Invoke 签名。
+
+我向强调的一个重点是，虽然许多人认为同步 API 更易使用(许多时候确实如此)，但某些时候同步 API 会使局面变得更难。
+
+考虑到同步 I/O 操作的各种问题，在设计 Windows Runtime 的时候，Windows 团队决定公开以异步方式执行 I/O 的所有方法。所以，现在可以用一个 Windows Runtime API 来异步地打开文件了，详情参见 `Windows.Storage.StorageFile` 的 `OpenAsync` 方法。事实上， Windows Runtime 没有提供以同步方式执行 I/O 操作的任何 API。幸好，可以使用 C# 的异步函数功能简化调用这些 API 时的编码。
+
+### `FileStream` 特有的问题
+
+创建 `FileStream` 对象时，可通过 `FileOptions.Asynchronous` 标志指定以同步还是异步方式进行通信。这等价于调用 Win32 `CreateFile` 函数并传递 `FILE_FLAG_OVERLAPPED` 标志。如果不指定这个标志，Windows 以同步方式执行所有文件操作。当然，仍然可以调用 `FileStream` 的 `ReadAsync` 方法。对于你的应用程序，操作表面上异步执行，但 `FileStream` 类是在内部用另一个线程模拟异步行为。这个额外的线程纯属浪费，而且会影响到性能。
+
+另一方面，可在创建 `FileStream` 对象时指定 `FileOptions.Asynchronous` 标志。然后，可以调用 `FileStream` 的 `Read` 方法执行一个同步操作。在内部，`FileStream` 类会开始一个异步操作，然后立即使调用线程进入睡眠状态，直至操作完成才会唤醒，从而模拟同步行为。这同样效率低下。但相较于不指定 `FileOPtions.Asynchronous` 标志来构建一个 `FileStream` 并调用 `ReadAsync`，它的效率还是要高上那么一点点的。
 
 ## <a name="28_13">28.13 I/O 请求优先级</a>
