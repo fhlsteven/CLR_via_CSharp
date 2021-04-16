@@ -850,4 +850,10 @@ Win32 API 提供了许多 I/O 函数。遗憾的是，有的方法不允许以�
 
 另一方面，可在创建 `FileStream` 对象时指定 `FileOptions.Asynchronous` 标志。然后，可以调用 `FileStream` 的 `Read` 方法执行一个同步操作。在内部，`FileStream` 类会开始一个异步操作，然后立即使调用线程进入睡眠状态，直至操作完成才会唤醒，从而模拟同步行为。这同样效率低下。但相较于不指定 `FileOPtions.Asynchronous` 标志来构建一个 `FileStream` 并调用 `ReadAsync`，它的效率还是要高上那么一点点的。
 
+总之，使用 `FileStream` 时必须先想好是同步还是异步执行文件 I/O，并指定(或不指定) `FileOptions.Asynchronous` 标志来指明自己的选择。如果指定了该标志，就总是调用 `ReadAsync`。 如果没有指定这个标志，就总是调用 `Read`。这样可以获得最佳的性能。如果想先对 `FileStream` 执行一些同步操作，再执行一些异步操作，那么更高效的做法是使用 `FileOptions.Asynchronous` 标志来构造它。另外，也可针对同一个文件创建两个 `FileStream` 对象；打开一个 `FileStream` 进行异步 I/O，打开另一个 `FileStream` 进行同步 I/O。注意，`System.IO.File` 类提供了辅助方法(`Create`，`Open` 和 `OpenWrite`)来创建并返回 `FileStream` 对象。但所有这些方法都没有在内部指定 `FileOptions.Asynchronous` 标志，所以为了实现响应灵敏的、可伸缩的应用程序，应避免使用这些方法。
+
+还要注意，NTFS 文件系统设备驱动程序总是以同步方式执行一些操作，不管具体如何打开文件。详情参见 *[http://support.microsoft.com/default.aspx?scid=kb%3Ben-us%3B156932](http://support.microsoft.com/default.aspx?scid=kb%3Ben-us%3B156932)*。
+
 ## <a name="28_13">28.13 I/O 请求优先级</a>
+
+第 26 章“线程基础”介绍了线程优先级对线程调度方式的影响。然而，线程还要执行 I/O 请求以便从各种硬件设备中读写数据。如果一个低优先级线程获得了 CPU 时间，它可以在非常短的时间里轻易地将成百上千的 I/O 请求放入队列。由于 I/O 请求一般需要时间来执行，所以一个低优先级线程可能挂起高优先级线程，使后者不能快速完成工作，从而严重影响系统的总体响应能力。正是由于这个原因，当系统执行一些耗时的低优先级服务时(比如磁盘碎片整理程序、病毒扫描程序、内容索引程序等)，机器的响应能力可能会变得非常差。<sup>①</sup>
