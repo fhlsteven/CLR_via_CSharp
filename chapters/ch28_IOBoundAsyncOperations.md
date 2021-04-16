@@ -857,3 +857,81 @@ Win32 API 提供了许多 I/O 函数。遗憾的是，有的方法不允许以�
 ## <a name="28_13">28.13 I/O 请求优先级</a>
 
 第 26 章“线程基础”介绍了线程优先级对线程调度方式的影响。然而，线程还要执行 I/O 请求以便从各种硬件设备中读写数据。如果一个低优先级线程获得了 CPU 时间，它可以在非常短的时间里轻易地将成百上千的 I/O 请求放入队列。由于 I/O 请求一般需要时间来执行，所以一个低优先级线程可能挂起高优先级线程，使后者不能快速完成工作，从而严重影响系统的总体响应能力。正是由于这个原因，当系统执行一些耗时的低优先级服务时(比如磁盘碎片整理程序、病毒扫描程序、内容索引程序等)，机器的响应能力可能会变得非常差。<sup>①</sup>
+
+> ① Windows SuperFetch 功能就利用了低优先级 I/O 请求。
+
+Windows 允许线程在发出 I/O 请求时指定优先级。欲知 I/O 优先级的详情，请参考以下网址的白皮书：*[http://www.microsoft.com/whdc/driver/priorityio.mspx](http://www.microsoft.com/whdc/driver/priorityio.mspx)*。遗憾的是，FCL 还没有包含这个功能；但未来的版本有望添加。如果现在就想使用这个功能，可以采取 P/Invoke 本机 Win32 函数的方式。以下是 P/Invoke 代码：
+
+```C#
+internal static class ThreadIO {
+    public static BackgroundProcessingDisposer BeginBackgroundProcessing(Boolean process = false) {
+        ChangeBackgroundProcessing(process, true);
+        return new BackgroundProcessingDisposer(process);
+    }
+
+    public static void EndBackgroundProcessing(Boolean process = false) {
+        ChangeBackgroundProcessing(process, false);
+    }
+
+    private static void ChangeBackgroundProcessing(Boolean process, Boolean start) {
+        Boolean ok = process
+            ? SetPriorityClass(GetCurrentWin32ProcessHandle(),
+                start ? ProcessBackgroundMode.Start : ProcessBackgroundMode.End)
+            : SetThreadPriority(GetCurrentWin32ThreadHandle(),
+                start ? ThreadBackgroundgMode.Start : ThreadBackgroundgMode.End);
+        if (!ok) throw new Win32Exception();
+    }
+
+    // 这个结果使 C# 的 using 语句能终止后台处理模式
+    public struct BackgroundProcessingDisposer : IDisposable {
+        private readonly Boolean m_process;
+        public BackgroundProcessingDisposer(Boolean process) { m_process = process; }
+        public void Dispose() { EndBackgroundProcessing(m_process); }
+    }
+
+    // 参见 Win32 的 THREAD_MODE_BACKGROUND_BEGIN 和 THREAD_MODE_BACKGROUND_END
+    private enum ThreadBackgroundgMode { Start = 0x10000, End = 0x20000 }
+
+    // 参见 Win32 的 PROCESS_MODE_BACKGROUND_BEGIN 和 PROCESS_MODE_BACKGROUND_END
+    private enum ProcessBackgroundMode { Start = 0x100000, End = 0x200000 }
+
+    [DllImport("Kernel32", EntryPoint = "GetCurrentProcess", ExactSpelling = true)]
+    private static extern SafeWaitHandle GetCurrentWin32ProcessHandle();
+
+    [DllImport("Kernel32", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern Boolean SetPriorityClass(
+        SafeWaitHandle hprocess, ProcessBackgroundMode mode);
+
+    [DllImport("Kernel32", EntryPoint = "GetCurrentThread", ExactSpelling = true)]
+    private static extern SafeWaitHandle GetCurrentWin32ThreadHandle();
+
+    [DllImport("Kernel32", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern Boolean SetThreadPriority(
+        SafeWaitHandle hthread, ThreadBackgroundgMode mode);
+
+    // http://msdn.microsoft.com/en-us/library/aa480216.aspx
+    [DllImport("Kernel32", SetLastError = true, EntryPoint = "CancelSynchronousIo")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern Boolean CancelSynchronousIO(SafeWaitHandle hThread);
+}
+```
+
+以下代码展示了如何使用它：
+
+```C#
+public static void Main () {
+    using (ThreadIO.BeginBackgroundProcessing()) {
+        // 这里执行低优先级 I/O 请求(例如： 调用 ReadAsync/WriteAsync)
+    }
+}
+```
+
+要调用 `ThreadIO` 的 `BeginBackgroundProcessing` 方法，告诉 Windows 你的线程要发出低优先级 I/O 请求。注意，这同时会降低线程的 CPU 调度优先级。可调用 `EndBackgroundProcessing`，或者在 `BeginBackgroundProcessing` 返回的值上调用 `Dispose`(如以上 C# 的 `using` 语句所示)，使线程恢复为发出普通优先级的 I/O 请求(以及普通的 CPU 调度优先级)。线程只能影响它自己的后台处理模式；Windows 不允许线程更改另一个线程的后台处理模式。
+
+如果希望一个进程中的所有线程都发出低优先级 I/O 请求和进行低优先级的 CPU 调度，可调用 `BeginBackgroundProcessing`，为它的 `process` 参数传递 `true` 值。一个进程只能影响它自己的后台处理模式；Windows 不允许一个线程更改另一个进程的后台处理模式。
+
+> 重要提示 作为开发人员，是你的责任使用这些新的后台优先级增强前台应用程序的响应能力，从而避免优先级发生反转。<sup>①</sup>在存在大量普通优先级 I/O 操作的情况下，以后台优先级运行运行的线程可能延迟数秒才能过得到它的 I/O 请求结果。如果一个低优先级线程获取了一个线程同步锁，造成普通优先级线程等待，普通优先级线程可能一直等待后台优先级线程，直至低优先级 I/O 请求完成为止。你的后台优先级线程甚至不需要提交自己的 I/O 请求，就可能造成上述问题。所以，应尽量避免(甚至完全杜绝)在普通优先级和后台优先级线程之间使用共享的同步对象，避免普通优先级的线程因为后台优先级线程拥有的锁而阻塞，从而发生优先级反转。
+
+>> ① 高优先级进程被低优先级进程阻塞(因为低优先级的线程拿着一个共享的资源)，造成它等待的时间变得长，这就是所谓的优先级反转(Priority Inversion)。 ———— 译注
