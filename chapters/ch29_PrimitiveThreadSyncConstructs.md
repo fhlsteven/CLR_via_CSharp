@@ -570,6 +570,420 @@ public static void SpinWait(Int32 iterations);
 
 许多人在查看 `Interlocked` 的方法时，都好奇 **Microsoft** 为什么不创建一组更丰富的 `Interlocked` 方法，使它们适用于更广泛的情形。例如，如果 `Interlocked` 类能提供 `Multiple`，`Divide`，`Minimum`，`Maximum`，`And`，`Or`，`Xor`等方法，那么不是更好吗？虽然 `Interlocked` 类没有提供这些方法，但一个已知的模式允许使用 `Interlocked.CompareExchange` 方法以原子方式在一个 `Int32` 上执行任何操作。事实上，由于 `Interlocked.ComoareExchange` 提供了其他重载版本，能操作 `Int64`，`Single`，`Double`，`Object` 和泛型引用类型，所以该模式适合所有这些类型。
 
+该模型类似于在修改数据库记录时使用的乐观并发模式<sup>①</sup>。下例使用该模式创建一个原子 `Maximum` 方法。
 
+> ① 乐观并发控制(又名“乐观锁”，Optimistic Concurrency Control，缩写“OCC”)是一种并发控制的方法。它假设多用户并发的事务在处理时不会彼此互相影响，各事务能够在不产生锁的情况下处理各自影响的那部分数据。在提交数据更新之前，每个事务会先检查在该事务读取数据后，有没有其他事务又修改了该数据。如果其他事务有更新的话，正在提交的事务会进行回滚。乐观事务控制最早是由孔祥重(H.T.Kung)教授提出。乐观并发控制多数用于数据争用不大、冲突较少的环境中，这种环境中，偶尔回滚事务的成本会低于读取数据时锁定数据的成本，因此可以获得比其他并发控制方法更高的吞吐量。 ———— 维基百科
+
+```C#
+public static Int32 Maximum(ref Int32 target, Int32 value) {
+    Int32 currentVal = target, startVal, desiredVal;
+
+    // 不要在循环中访问目标(target)，除非是想要改变它时另一个线程也在动它
+    do {
+        // 记录这一次循环迭代的起始值(startVal)
+        startVal = currentVal;
+
+        // 基于 startVal 和 value 计算 desiredVal
+        desiredVal = Math.Max(startVal, value);
+
+        // 注意：线程在这里可能被 “抢占”，所以以下代码不是原子性的：
+        // if (target == startVal) target = desiredVal;
+
+        // 而应该使用以下原子性的 CompareExchange 方法，它
+        // 返回在 target 在(可能)被方法修改之前的值
+        currentVal = Interlocked.CompareExchange(ref target, desiredVal, startVal);
+
+        // 如果 target 的值在这一次循环迭代中被其他线程改变，就重复
+    } while (startVal != currentVal);
+
+    // 在这个线程尝试设置它之前返回最大值
+    return desiredVal;
+}
+```
+
+现在解释一下实际发生的事情。进入方法后，`currentVal` 被初始化为方法开始执行时的 `target` 值。然后，在循环内部，`startVal` 被初始化为同一个值。可用 `startVal` 执行你希望的任何操作。这个操作可以非常复杂，可以包含成千上万行代码。但最终要得到一个结果，并将结果放到 `desiredVal` 中。本例判断 `startVal` 和 `value` 哪个最大。
+
+现在，当这个操作进行时，其他线程可能更改 `target`。虽然几率很小，但仍是有可能发生的。如果真的发生，`desiredVal` 的值就是基于存储在`startVal` 中的旧值而获得的，而非基于 `target` 的新值。这时就不应更改 `target`。我们用 `Interlocked.ComapreExchange` 方法确保在没有其他线程更改 `target` 的前提下将 `target` 的值更改为 `desiredVal`。该方法验证 `target` 值和 `startVal` 值匹配(`startVal` 代表操作开始前的 `target` 值)。如果 `target` 值没有改变，`CompareExchange` 就把它更改为 `desiredVal` 中的新值。如果 `target` 的值被(另一个线程)改变了，`CompareExchange` 就不更改 `target`.
+
+`CompareExchange` 在调用的同时会返回 `target` 中的值<sup>①</sup>，我将该值存储到 `currentVal` 中。然后比较 `startVal` 和 `currentVal`。两个值相等，表明没有其他线程更改 `target`，`target`现在包含 `desiredVal` 中的值，`while` 循环不再继续，方法返回。相反，如果 `startVal` 不等于 `currentVal`，表明有其他线程更改了`target`，`target` 没有变成 `desiredVal` 中的值，所以 `while` 循环继续下一次迭代，再次尝试相同的操作，这一次用 `currentVal` 中的新值来反映其他线程的更改。
+
+> ① 更准确地说，是返回 `target`(第 1 个参数)的原始值。`CompareExchange` 方法比较第 1 个和第 3 个参数，相等就将用第 2 个参数的值替换第 1 个参数的值。与此同时，方法返回第 1 个参数的原始值。———— 译注
+
+我个人在自己的大量代码中用的都是这个模式。甚至专门写了一个泛型方法 `Morph` 来封装这个模式：<sup>②</sup>
+
+> ② `Morph` 方法由于调用了 `morpher` 回调方法，所以肯定会招致一定的性能惩罚。要想获得最佳性能，只能以内联或嵌入(inline) 方式执行操作，就像 `Maximum` 的例子一样。
+
+```C#
+delegate Int32 Morpher<TResult, TArgument>(Int32 startValue, TArgument argument,
+    out TResult morphResult);
+
+static TResult Morph<TResult, TArgument>(ref Int32 target, TArgument argument,
+    Morpher<TResult, TArgument> morpher) {
+
+    TResult morphResult;
+    Int32 currentVal = target, startVal, desiredVal;
+    do {
+        startVal = currentVal;
+        desiredVal = morpher(startVal, argument, out morphResult);
+        currentVal = Interlocked.CompareExchange(ref target, desiredVal, startVal);
+    } while (startVal != currentVal);
+    return morphResult;
+}
+```
 
 ## <a name="29_4">29.4 内核模式构造</a>
+
+Windows 提供了几个内核模式的构造来同步线程。内核模式的构造比用户模式的构造慢得多，一个原因是它们要求 Windows 操作系统自身的配合，另一个原因是在内核对象上调用的每个方法都造成调用线程从托管代码转换为本机(native)用户模式代码，再转换为本机(native)内核模式代码。然后，还要朝相反的方向一路返回。这些转换需要大量 CPU 时间；经常执行会对应用程序的总体性能造成负面影响。
+
+但内核模式的构造具备基元用户模式构造所不具备的优点。
+
+* 内核模式的构造检测到在一个资源上的竞争时，Windows 会阻塞输掉的线程，使它不占用一个 CPU “自旋”(spinning)，无谓地浪费处理器资源。
+
+* 内核模式的构造可实现本机(native)和托管(managed)线程相互之间的同步。
+
+* 内核模式的构造可同步在同一台机器的不同进程中运行的线程。
+
+* 内核模式对的构造可应用安全性设置，防止未经授权的账户访问它们。
+
+* 线程可一直阻塞，直到集合中的所有内核模式构造都可用，或直到集合中的任何内核模式构造可用。
+
+* 在内核模式的构造上阻塞的线程可指定超时值；指定时间内访问不到希望的资源，线程就可以解除阻塞并执行其他任务。
+
+事件和信号量是两种基元内核模式线程同步构造。至于其他内核模式构造，比如互斥体，则是在这两个基计构造上构建的。<sup>①</sup>欲知 Windows 内核模式构造的详情，请参考我和 Christophe Nasarre 合著的 《Windows 核心编程(第 5 版)》。
+
+> ① 在文档中，semaphores 翻译成“信号量”，mutex 翻译成“互斥体”。本书采用了文档的译法。 ———— 译注
+
+`System.Threading` 命名空间提供了一个名为 `WaitHandle` 抽象基类。`WaitHandle` 类是一个很简单的类，它唯一的作用就是包装一个 Windows 内核对象句柄。FCL 提供了几个从 `WaitHandle` 派生的类。所有类都在 `System.Threading` 命名空间中定义。类层次结构如下所示：
+
+```doc
+WaitHandle
+    EventWaitHandle
+        AutoResetEvent
+        ManualResetEvent
+    Semaphore
+    Mutex 
+```
+
+`WaitHandle` 基类内部有一个 `SafeWaitHandle` 字段，它容纳了一个 Win32 内核对象句柄。这个字段是在构造一个具体的 `WaitHandle` 派生类时初始化的。除此之外，`WaitHandle` 类公开了由所有派生类继承的方法。在一个内核模式的构造上调用的每个方法都代表一个完整的内存栅栏<sup>②</sup>。下面是 `WaitHandle` 的一些有意思的公共方法(未列出某些方法的某些重载版本)：
+
+> ② 之所以用栅栏这个词，是表明掉调用这个方法之前的任何变量写入都必须在这个方法调用之前发生；而这个调用之后的任何变量读取都必须在这个调用之后发生。————译注
+
+```C#
+public abstract class WaitHandle : MarshalByRefObject, IDisposable {
+    // WaitOne 内部调用 Win32 WaitForSingleObjectEx 函数
+    public virtual Boolean WaitOne();
+    public virtual Boolean WaitOne(Int32 millisecondsTimeout);
+    public virtual Boolean WaitOne(TimeSpan timeout);
+
+    // WaitAll 内部调用 Win32 WaitForMultipleObjectsEx 函数
+    public static Boolean WaitAll(WaitHandle[] waitHandles);
+    public static Boolean WaitAll(WaitHandle[] waitHandles, Int32 millisecondsTimeout);
+    public static Boolean WaitAll(WaitHandle[] waitHandles, TimeSpan timeout);
+
+    // WaitAny 内部调用 Win32 WaitForMultipleObjectsEx 函数
+    public static Int32 WaitAny(WaitHandle[] waitHandles);
+    public static Int32 WaitAny(WaitHandle[] waitHandles, Int32 millisecondsTimeout); 
+    public static Int32 WaitAny(WaitHandle[] waitHandles, TimeSpan timeout);
+    public const Int32 WaitTimeout = 258; // 超时就从 WaitAny 返回这个
+
+    // Dispose 内部调用 Win32 CloseHandle 函数 – 自己不要调用
+    public void Dispose();
+}
+```
+
+这些方法有几点需要注意。
+
+* 可以调用 `WaitHandle` 的 `WaitOne` 方法让调用线程等待底层内核对象收到信号。这个方法在内部调用 Win32 `WaitForSingleObjectEx`函数。如果对象收到信号，返回的 `Boolean` 是 `true`；超时就返回 `false`。
+
+* 可以调用 `WaitHandle` 的静态 `WaitAll` 方法，让调用线程等待 `WaitHandle[]` 中指定的所有内核对象都收到信号。如果所有对象都收到信号，返回的 `Boolean` 是 `true`；超时则返回 `false`。这个方法在内部调用 Win32 `WaitForMultipleObjectsEx` 函数，为`bWaitAll` 参数传递`TRUE`。
+
+* 可以调用 `WaitHandle` 的静态 `WaitAny` 方法让调用线程等待 `WaitHandle[]` 中指定的任何内核对象收到信号。返回的 `Int32` 是与收到信号的内核对象对应的数组元素索引；如果在等待期间没有对象收到信号，则返回 `WaitHandle.WaitTimeout`。这个方法在内部调用 Win32 `WaitForMultipleObjectsEx` 函数，为 `bWaitALl` 参数传递 `FALSE`。
+
+* 再传给 `WaitAny` 和 `WaitAll` 方法的数组中，包含的元素数不能超过 64 个，否则方法会抛出一个 `System.NotSupportedException`。
+
+* 可以调用 `WaitHandle` 的 `Dispose` 方法来关闭底层内核对象句柄。这个方法在内部调用 Win32 `CloseHandle` 函数。只有确定没有别的线程要使用内核对象才能显式调用 `Dispose`。 你需要写代码并进行测试，这是一个巨大的负担。所以我强烈反对显式调用 `Dispose`；相反，让垃圾回收器(GC)去完成清理工作。GC 知道什么时候没有线程使用对象，会自动进行清理。从某个角度看，GC 是在帮你进行线程同步！
+
+> 注意 在某些情况下，当一个 COM 单线程套间线程<sup>①</sup>阻塞时，线程可能在内部醒来以 pump 消息。例如，阻塞的线程会醒来处理发自另一个线程的 Windows 消息。这个设计是为了支持 COM 互操作性。对于大多数应用程序，这都不是一个问题 ———— 事实上，反而是一件好事。然而，如果你的代码在处理消息期间获得另一个线程同步锁，就可能发生死锁。如第 30 章所述，所有混合锁都在内部调用这些方法。所以，使用混合锁存在相同的利与弊。
+
+不接受超时参数的那些版本的 `WaitOne` 和 `WaitAll` 方法应返回 `void` 而不是 `Boolean`。原因是隐含的超时时间是无限长(`System.Threading.Timeout.Infinite`)，所以它们只会返回 `true`。调用任何这些方法时都不需要检查返回值。
+
+如前所述，`AutoResetEvent`，`ManualResetEvent`，`Semaphore` 和 `Mutex` 类都派生自 `WaitHandle`，因此它们继承了 `WaitHandle` 的方法和行为。但这些类还引入了一些自己的方法，下面将进行解释。
+
+首先，所有这些类的构造器都在内部调用 Win32 `CreateEvent`(为 `BManualReset` 参数传递 `FALSE` 或 `TRUE`)、`CreateSemaphore`或`CreateMutex` 函数。从所有这些调用返回的句柄值都保存在 `WaitHandle` 基类内部定义的一个私有 `SafeWaitHandle` 字段中。
+
+其次，`EventWaitHandle`，`Semaphore` 和 `Mutex` 类都提供了静态 `OpenExisting` 方法，它们在内部调用 Win32 `OpenEvent`，`OpenSemaphore` 或 `OpenMutex` 函数，并传递一个 `String` 实参(标识现有的一个具名内核对象)。所有函数返回的句柄值都保存到从 `OpenExisting` 方法返回的一个新构造的对象中。如果指定名称的内核对象不存在，就抛出一个 `WaitHandleCannotBeOpenedException` 异常。
+
+内核模式构建的一个常见用途是创建在任何时刻只允许它的一个实例运行的应用程序。这种单实例应用程序的例子包括 Microsoft Office Outlook，Windows Live Messenger，Windows Media Player 和 Windows Media Center。下面展示了如何实现一个单实例应用程序：
+
+```C#
+using System;
+using System.Threading;
+
+public static class Program {
+    public static void Main() {
+        Boolean createdNew;
+
+        // 尝试创建一个具有指定名称的内核对象
+        using (new Semaphore(0, 1, "SomeUniqueStringIdentifyingMyApp", out createdNew)) {
+            if (createdNew) {
+                // 这个线程创建了内核对象，所以肯定没有这个应用程序
+                // 的其他实例正在运行。在这里运行应用程序的其余部分...
+            } else {
+                // 这个线程打开了一个具有相同字符串名称的、现有的内核对象；
+                // 表明肯定正在运行这个应用程序的另一个实例。
+                // 这里没什么可以做的事情，所以从 Main 返回，终止应用程序
+                // 的这个额外的实例。
+            }
+        }
+    }
+}
+```
+
+上述代码使用的是 `Semaphore`，但换成 `EventWaitHandle` 或 `Mutex` 一样可以，因为我并没有真正使用对象提供的线程同步行为。但我利用了在创建任何种类的内核对象时由 Windows 内核提供的一些线程同步行为。下面解释一下代码是如何工作的。假定这个进程的两个实例同时启动。每个进程都有自己的线程，两个线程都尝试创建具有相同字符串名称(本例是 "`SomeUniqueStringIdentifyingMyApp`")的一个`Semaphore`。Windows 内核确保只有一个线程实际地创建具有指定名称的内核对象；创建对象的线程会将它的 `createdNew` 变量设为 `true`。
+
+对于第二个线程，Windows 发现具有指定名称的内核对象已经存在了。因此，不允许第二个线程创建另一个同名的内核对象。不过，如果这个线程继续运行的话，它能访问和第一个进程的线程所访问的一样的内核对象。不同进程中的线程就是这样通过内核对象来通信的。但在本例中，第二个进程的线程看到它的 `createdNew` 变量设为 `false`，所以知道有进程的另一个实例正在运行，所以进程的第二个实例立即退出。
+
+### 29.4.1 `Event` 构造
+
+事件(event)其实只是由内核维护的 `Boolean` 变量。事件为 `false`，在事件上等待的线程就阻塞；事件为 `true`，就解除阻塞。有两种事件，即自动重置事件和手动重置事件。当一个自动重置事件为 `true` 时，它只唤醒一个阻塞的线程，因为在解除第一个线程的阻塞后，内核将事件*自动重置*回`false`，造成其余线程继续阻塞。而当一个手动重置事件为 `true` 时，它解除正在等待它的所有线程的阻塞，因为内核不将事件自动重置回 `false`；现在，你的代码必须将事件*手动重置*回`false`。下面是与事件相关的类：
+
+```C#
+public class EventWaitHandle : WaitHandle {
+    public Boolean Set();       // 将 Boolean 设为 true；总是返回 true
+    public Boolean Reset();     // 将 Boolean 设为 fasle；总是返回 false
+}
+
+public sealed class AutoResetEvent : EventWaitHandle {
+    public AutoResetEvent(Boolean initialState);
+}
+
+public sealed class ManualResetEvent : EventWaitHandle {
+    public ManualResetEvent(Boolean initialState);
+}
+```
+
+可用自动重置事件轻松创建线程同步锁，它的行为和前面展示的 `SimpleSpinLock` 类相似：
+
+```C#
+internal sealed class SimpleWaitLock : IDisposable {
+    private readonly AutoResetEvent m_available;
+
+    public SimpleWaitLock() {
+        m_available = new AutoResetEvent(true);     // 最开始可自由使用
+    }
+
+    public void Enter() {
+        // 在内核中阻塞 ①，直到资源可用
+        m_available.WaitOne();
+    }
+
+    public void Leave() {
+        // 让另一个线程访问资源
+        m_available.Set();
+    }
+
+    public void Dispose() {
+        m_available.Dispose();
+    }
+}
+```
+
+> ① 正是因为发生竞争时，没有竞争赢的线程会阻塞，所以这种方法能最有效地节省资源。 ———— 译注
+
+可采取和使用 `SimpleSpinLock` 时完全一样的方式使用这个 `SimpleWaitLock`。事实上，外部行为是完全相同的；不过，两个锁的性能截然不同。锁上面灭有竞争的时候，`SimpleWaitLock` 比 `SimpleSpinLock` 慢得多，因为对 `SimpleWaitLock` 的 `Enter` 和 `Leave` 方法的每一个调用都强迫调用线程从托管代码转换为内核代码，再转换回来————这是不好的地方。但在存在竞争的时候，输掉的线程会被内核阻塞，不会在那里“自旋”，从而浪费 CPU 时间————这是好的地方。还要注意，构造 `AutoResetEvent` 对象并在它上面调用 `Dispose` 也会造成从托管向内核的转换，对性能造成负面影响。这些调用一般很少发生，所以一般不必过于关心它们。
+
+为了更好地理解性能上的差异，我写了一些代码：
+
+```C#
+public static void Main() {
+    Int32 x = 0;
+    const Int32 iterations = 10000000;  // 1000万
+
+    // x 递增 1000万次，要花多长时间？
+    Stopwatch sw = Stopwatch.StartNew();
+    for (Int32 i = 0; i < iterations; i++) {
+        x++;
+    }
+    Console.WriteLine("Incrementing x: {0:N0}", sw.ElapsedMilliseconds);
+
+    // x 递增 1000万次，加上调用一个什么都不做的方法的开销，要花多长时间？
+    sw.Restart();
+    for (Int32 i = 0; i < iterations; i++) {
+        M(); x++; M();
+    }
+    Console.WriteLine("Incrementing x in M: {0:N0}", sw.ElapsedMilliseconds);
+
+    // x 递增 1000 万次，加上调用一个无竞争的 SpinLock 的开销，要花多长时间？
+    SpinLock sl = new SpinLock(false);
+    sw.Restart();
+    for (int i = 0; i < iterations; i++) {
+        Boolean taken = false; sl.Enter(ref taken); x++; sl.Exit();
+    }
+    Console.WriteLine("Incrementing x in SpinLock: {0:N0}", sw.ElapsedMilliseconds);
+
+    // x 递增 1000 万次，加上调用一个无竞争的 SimpleWaitLock 的开销，要花多长时间？
+    using(SimpleWaitLock swl = new SimpleWaitLock()) {
+        sw.Restart();
+        for (int i = 0; i < iterations; i++) {
+            swl.Enter(); x++; swl.Leave();
+        }
+        Console.WriteLine("Incrementing x in SimpleWaitLock: {0:N0}", sw.ElapsedMilliseconds);
+    }
+}
+
+[MethodImpl(MethodImplOptions.NoInlining)]
+private static void M() { /* 这个方法什么都不做，直接返回 */ }
+```
+
+在我的机器上运行上述代码，得到以下输出：
+
+```cmd
+Incrementing x: 8                       最快
+Incrementing x in M: 69                 慢约 9 倍
+Incrementing x in SpinLock: 164         慢约 21 倍
+Incrementing x in SimpleWaitLock: 8854  慢约 1107 倍
+```
+
+我的 MAC 本上的执行结果：
+
+```cmd
+Incrementing x: 20
+Incrementing x in M: 51
+Incrementing x in SpinLock: 236
+Incrementing x in SimpleWaitLock: 5,989
+```
+
+由此可以看到，单出递增 `x` 只需 8 毫秒。递增前后多调用一个方法，就要多花约 9 倍的时间。然后，在用户模式的构造中执行递增，代码变慢了 21 倍(164/8)。最后，如果使用内核模式的构造，程序更是慢的可怕，慢了大约 1107 倍(8864/8)！所以，线程同步能避免就尽量避免。如果一定要进行线程同步，就尽量使用用户模式的构造。内核模式的构造要尽量避免。
+
+### 29.4.2 `Semaphore` 构造
+
+信号量(semaphore)其实就是由内核维护的 `Int32` 变量。信号量为 0 时，在信号量上等待的线程会阻塞；信号量大于 0 时解除阻塞。在信号量上等待的线程解除阻塞时，内核自动从信号量的计数中减 1。信号量还关联了一个最大 `Int32` 值，当前技术绝不允许超过最大计数。下面展示了 `Semaphore` 类的样子：
+
+```C#
+public sealed class Semaphore : WaitHandle {
+    public Semaphore(Int32 initialCount, Int32 maximumCount);
+    public Int32 Release();         // 调用 Release(1); 返回上一个计数
+    public Int32 Release(Int32 releaseCount);   // 返回上一个计数
+}
+```
+
+下面总结一下这三种内核模式基元的行为。
+
+* 多个线程在一个自动重置事件上等待时，设置事件只导致一个线程被解除阻塞。
+
+* 多个线程在一个手动重置事件上等待时，设置事件导致所有线程被解除阻塞。
+
+* 多个线程在一个信号量上等待时，释放信号量导致 `releaseCount` 个线程被解除阻塞(`releaseCount` 是传给 `Semaphore` 的 `Release`方法的实参)。
+
+因此，自动重置事件在行为上和最大计数为 1 的信号量非常相似。两者的区别在于，可以在一个自动重置事件上连续多次调用 `Set`，同时仍然只有一个线程解除阻塞。相反，在一个信号量上连续多次调用 `Release`，会使它的内部计数一直递增，这可能解除大量线程的阻塞。顺便说一句，如果在一个信号量上多次调用 `Release`，会导致它的计数超过最大计数，这时 `Release` 会抛出一个 `SemaphoreFullException`。
+
+可像下面这样用信号量重新实现 `SimpleWaitLock`，允许多个线程并发访问一个资源(如果所有线程以只读方式访问资源，就是安全的)：
+
+```C#
+internal sealed class SimpleWaitLock : IDisposable {
+    private Semaphore m_available;
+
+    public SimpleWaitLock(Int32 maxConcurrent) {
+        m_available = new Semaphore(maxConcurrent, maxConcurrent);
+    }
+
+    public void Enter() {
+        // 在内核中阻塞直到资源可用
+        m_available.WaitOne();
+    }
+
+    public void Leave() {
+        // 让其他线程访问资源
+        m_available.Release();
+    }
+
+    public void Dispose() { m_available.Close(); }
+}
+```
+
+### 29.4.3 `Mutex` 构造
+
+互斥体(mutex)代表一个互斥的锁。它的工作方式和 `AutoResetEvent` 或者计数为 1 的 `Semaphore` 相似，三者都是一次只释放一个正在等待的线程。下面展示了 `Mutex` 类的样子：
+
+```C#
+public sealed class Mutex : WaitHandle {
+    public Mutex();
+    public void ReleaseMutex();
+}
+```
+
+互斥体有一些额外的逻辑，这造成它们比其他构造更复杂。首先，`Mutex` 对象会查询调用线程的 `Int32` ID，记录是哪个线程获得了它。一个线程调用`ReleaseMutex` 时，`Mutex` 确保调用线程就是获取 `Mutex` 的那个线程。如若不然，`Mutex` 对象的状态就不会改变，而 `ReleaseMutex` 会抛出一个 `System.ApplicationException`。另外，拥有 `Mutex` 的线程因为任何原因而终止，在 `Mutex` 上等待的某个线程会因为抛出 `System.Threading.AbandonedMutexException` 异常而被唤醒。该异常通常会成为未处理的异常，从而终止整个进程。这是好事，因为线程在获取了一个 `Mutex` 之后，可能在更新完 `Mutex` 所保护的数据之前终止。如果其他线程捕捉了 `AbandonedMutexException`，就可能视图访问损坏的数据，造成无法预料的结果和安全隐患。
+
+其次， `Mutex` 对象维护着一个递归计数(recursion count)，指出拥有该 `Mutex` 的线程拥有了它多少次。如果一个线程当前拥有一个 `Mutex`，而后该线程再次在 `Mutex` 上等待，计数就会递增，这个线程允许继续进行。线程调用 `ReleaseMutex` 将导致计数递减。只有计数变成 0，另一个线程才能成为该 `Mutex` 的所有者。
+
+大多数人都不喜欢这个额外的逻辑。这些“功能”是有代价的。`Mutex` 对象需要更多的内存来容纳额外的线程 ID 和计数信息。更要紧的是，`Mutex` 代码必须维护这些信息，使锁变得更慢。如果应用程序需要(或希望)这些额外的功能，那么应用程序的代码可以自己实现；代码不一定要放到 `Mutex` 对象中。因此，许多人都会避免使用 `Mutex` 对象。
+
+通常，当一个方法获取了一个锁，然后调用也需要锁的另一个方法，就需要一个递归锁。如以下代码所示：
+
+```C#
+internal class SomeClass : IDisposable {
+    private readonly Mutex m_lock = new Mutex();
+
+    public void Method1() {
+        m_lock.WaitOne();
+        // 随便做什么事情...
+        Method2(); // Method2 递归地获取锁
+        m_lock.ReleaseMutex();
+    }
+
+    public void Method2() {
+        m_lock.WaitOne();
+        // 随便做什么事情...
+        m_lock.ReleaseMutex();
+    }
+
+    public void Dispose() { m_lock.Dispose(); }
+} 
+```
+
+在上述代码中，使用一个 `SomeClass` 对象的代码可以调用 `Method1`，它获取 `Mutex`，执行一些线程安全的操作，然后调用 `Method2`，它也执行一些线程安全的操作。由于 `Mutex` 对象支持递归，所以线程会获取两次锁，然后释放它两次。在此之后，另一个线程才能拥有这个 `Mutex`。如果 `SomeClass` 使用一个 `AutoResetEvent` 而不是 `Mutex`，线程在调用 `Method2` 的 `WaitOne` 方法时会阻塞。
+
+如果需要递归锁，可以使用一个 `AutoResetEvent` 来简单地创建一个：
+
+```C#
+internal sealed class RecursiveAutoResetEvent : IDisposable {
+    private AutoResetEvent m_lock = new AutoResetEvent(true);
+    private Int32 m_owningThreadId = 0;
+    private Int32 m_recursionCount = 0;
+
+    public void Enter() {
+        // 获取调用线程的唯一 Int32 ID
+        Int32 currentThreadId = Thread.CurrentThread.ManagedThreadId;
+
+        // 如果调用线程拥有锁，就递增递归计数
+        if (m_owningThreadId == currentThreadId) {
+            m_recursionCount++;
+            return;
+        }
+
+        // 调用线程不拥有锁，等待它
+        m_lock.WaitOne();
+        
+        // 调用线程现在拥有了锁，初始化拥有线程的 ID 和递归计数
+        m_owningThreadId = currentThreadId;
+        m_recursionCount = 1;
+    }
+
+    public void Leave() {
+        // 如果调用线程不拥有锁，就出错了
+        if (m_owningThreadId != Thread.CurrentThread.ManagedThreadId)
+        throw new InvalidOperationException();
+
+        // 从递归计数中减1
+        if (--m_recursionCount == 0) {
+            // 如果递归计数为 0，表明没有线程拥有锁
+            m_owningThreadId = 0;
+            m_lock.Set(); // 唤醒一个正在等待的线程(如果有的话)
+        }
+    }
+
+    public void Dispose() { m_lock.Dispose(); }
+} 
+```
+
+虽然 `RecursiveAutoResetEvent` 类的行为和 `Mutex` 类完全一样，但在一个线程试图递归地获取锁时，它的性能会好得多，因为现在跟踪线程所有权和递归的都是托管代码。只有在第一次获取 `AutoResetEvent`，或者最后把它放弃给其他线程时，线程才需要从托管代码转换为内核代码。

@@ -61,4 +61,4 @@ md文件上传到语雀了 那个看书也可以的 我觉得挺好使的 [Click
 [第 27 章 计算限制的异步操作](./chapters/ch27_ComputeBoundAsync.md)  
 [第 28 章 I/O 限制的异步操作](./chapters/ch28_IOBoundAsyncOperations.md)  
 [第 29 章 基元线程同步构造](./chapters/ch29_PrimitiveThreadSyncConstructs.md)  
-[第 30 章 混合线程同步构造]  
+[第 30 章 混合线程同步构造](./chapters/ch30_hybridThreadSyncConst.md)  
