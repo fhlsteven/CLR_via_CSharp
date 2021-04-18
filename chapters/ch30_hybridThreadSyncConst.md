@@ -134,7 +134,155 @@ internal sealed class AnotherHybridLock : IDisposable {
 }
 ```
 
+可以看出，为锁添加了额外的行为之后，会增大它拥有的字段数量，进而增大内存消耗。代码还变得更复杂了，而且这些代码必须执行，造成锁的性能的下降。29.4.1 节“Event构造”比较了各种情况下对一个 `Int32` 进行递增的性能，这些情况分别是：无任何锁，使用基元用户模式构造，以及使用内核模式构造。这里重复了哪些性能测试的结果，并添加了使用 `SimpleHybridlock` 和 `AnotherHybridLock` 的结果。结果从快到慢依次是：
+
+```cmd
+Incrementing x: 8                           最快
+Incrementing x in M: 69                     慢约 9 倍
+Incrementing x in SpinLock: 164             慢约 21 倍
+Incrementing x in SimpleHybridlock: 164     慢约 21 倍(类似于 SpinLock)
+Incrementing x in AnotherHybridLock: 230    慢约 29 倍(因为所有权/递归)
+Incrementing x in SimpleWaitLock: 8854      慢约 1107 倍
+```
+
+注意，`AnotherHybridLock` 的性能不如 `SimpleHybridlock`。这是因为需要额外的逻辑和错误检查来管理线程所有权和递归行为。如你所见，在锁中添加的每一个行为都会影响它的性能。
+
 ## <a name="30_3">30.3 FCL 中的混合结构</a>
+
+FCL 自带了许多混合构造，它们通过一些别致的逻辑将你的线程保持在用户模式，从而增应用程序的性能。有的混合构造直到首次有线程在一个构造上发生竞争时，才会创建内核模式的构造。如果线程一直不在构造说上发生竞争，应用程序就可避免因为创建对象而产生的性能损失，同时避免为对象分配内存。许多构造还支持使用一个 `Cancellation Token`(参见第 27 章“计算限制的异步操作”)，使一个线程强迫解除可能正在构造上等待的其他线程的阻塞。本节将向你介绍这些混合构造。
+
+### 30.3.1 `ManualResetEventSlim`类和 `SemaphoreSlim`类
+
+先来看看 `System.Threading.ManualResetEventSlim` 和 `System.Threading.SemaphoreSlim` 这两个类。<sup>①</sup>这两个构造的工作方式和对应的内核模式构造完全一致，只是它们都在用户模式中“自旋”，而且都推迟到发生第一次竞争时，才创建内核模式的构造。它们的 `Wait` 方法允许传递一个超时值和一个 `CancellationToken`。下面展示了这些类(未列出部分方法的重载版本)：
+
+> ①  虽然没有一个 `AutoResetEventSlim` 类，但许多时候都可以构造一个 `SemaphoreSlim` 对象，并将 `maxCount` 设为 1.
+
+```C#
+public class ManualResetEventSlim : IDisposable {
+    public ManualResetEventSlim(Boolean initialState, Int32 spinCount);
+    public void Dispose();
+    public void Reset();
+    public void Set();
+    public Boolean Wait(Int32 millisecondsTimeout, CancellationToken cancellationToken);
+
+    public Boolean IsSet { get; }
+    public Int32 SpinCount { get; }
+    public WaitHandle WaitHandle { get; }
+}
+
+public class SemaphoreSlim : IDisposable {
+    public SemaphoreSlim(Int32 initialCount, Int32 maxCount);
+    public void Dispose();
+    public Int32 Release(Int32 releaseCount);
+    public Boolean Wait(Int32 millisecondsTimeout, CancellationToken cancellationToken);
+
+    // 该特殊的方法用于 async 和 await(参见第 28 章)
+    public Task<Boolean> WaitAsync(Int32 millisecondsTimeout, CancellationToken cancellationToken);
+    public Int32 CurrentCount { get; }
+    public WaitHandle AvailableWaitHandle { get; }
+}
+```
+
+### 30.3.2 `Monitor`类和同步块
+
+或许最常用的混合型线程同步构造就是 `Monitor` 类，它提供了支持自旋、线程所有权和递归和互斥锁。之所以最常用，是因为它资格最老，C# 有内建的关键字支持它，JIT 编译器对它知之甚详，而且 CLR 自己也在代表你的应用程序使用它。但正如稍后就要讲到的那样，这个构造存在许多问题，用它很容易造成代码中出现 bug。我先解释这个构造，然后指出问题以及解决问题的方法。
+
+堆中的每个对象都可关联一个名为 **同步块** 的数据结构。同步块包含字段，这些字段和本章前面展示的 `AnotherHybridLock` 类的字段相似。具体地说，它对内核对象、拥有线程(owning thread)的 ID、递归计数(recursion count)以及等待线程(waiting thread)计数提供了相应的字段。`Monitor` 是静态类，它的方法接收对任何堆对象的引用。这些方法对指定对象的同步块中的字段进行操作。以下是 `Monitor` 类最常用的方法：
+
+```C#
+public static class Monitor {
+    public static void Enter(Object obj);
+    public static void Exit(Object obj);
+
+    // 还可指定尝试进入锁时的超时值(不常用):
+    public static Boolean TryEnter(Object obj, Int32 millisecondsTimeout);
+
+    // 稍后会讨论 lockTaken 实参
+    public static void Enter(Object obj, ref Boolean lockTaken);
+    public static void TryEnter(Object obj, Int32 millisecondsTimeout, ref Boolean lockTaken);
+}
+```
+
+显然，为堆中每个对象都关联一个同步块数据结构显得很浪费，尤其是考虑到大多数对象的同步块都从不使用。为节省内存，CLR 团队采用一种更经济的方式提供刚才描述的功能。它的工作原理是：CLR 初始化时在堆中分配一个同步块数组。本书第 4 章说过，每当一个对象在堆中创建的时候，都有两个额外的开销字段与它关联。第一个“类型对象指针”，包含类型的“类型对象”的内存地址。第二个是“同步块索引”，包含同步块数组中的一个整数索引。
+
+一个对象在构造时，它的同步块索引初始化为 -1，表明不引用任何同步块。然后，调用 `Monitor.Enter` 时，CLR 在数组中找到一个空白同步块，并设置对象的同步块索引，让它引用该同步块。换言之，同步块和对象是动态关联的。调用 `Exit` 时，会检查是否有其他任何线程正在等待使用对象的同步块。如果没有线程在等待它，同步块就自由了，`Exit` 将对象的同步块索引设回 `-1`，自由的同步块将来可以和另一个对象关联。
+
+图 30-1 展示了堆中的对象、它们的同步块索引以及 CLR 的同步块数组元素之间的关系。Object-A，Object-B 和 Object-C 都将它们的类型对象指针成员设为引用 Type-T(一个类型对象)。这意味着三个对象全都具有相同的类型。如第 4 章所述，类型对象本身也是堆中的一个对象。和其他所有对象一样，类型对象有两个开销成员：同步块索引和类型对象指针。这意味着同步块可以和类型对象关联，而且可以将一个类型对象引用传给 `Monitor` 的方法。顺便说一句，如有必要，同步块数组能创建更多的同步块。所以，同时同步大量对象时，不必担心系统会用光同步块。
+
+![30_1](../resources/images/30_1.png)  
+
+图 30-1 堆中的对象(包括类型对象)可使其中同步块索引引用 CLR 同步块数组中的记录项
+
+以下代码演示了 `Monitor` 类原本的使用方式：
+
+```C#
+internal sealed class Transaction {
+    private DateTime m_timeOfLastTrans;
+
+    public void PerformTransaction() {
+        Monitor.Enter(this);
+        // 以下代码拥有对数据的独占访问权...
+        m_timeOfLastTrans = DateTime.Now;
+        Monitor.Exit(this);
+    }
+
+    public DateTime LastTransaction {
+        get {
+            Monitor.Enter(this);
+            // 以下代码拥有对数据的独占访问权...
+            DateTime temp = m_timeOfLastTrans;
+            Monitor.Exit(this);
+            return temp;
+        }
+    }
+}
+```
+
+表面看很简单，但实际存在问题。现在的问题是，每个对象的同步块索引都隐式为公共的。以下代码演示了这可能造成的影响。
+
+```C#
+public static void SomeMethod() {
+    var t = new Transaction();
+    Monitor.Enter(t); // 这个线程获取对象的公共锁
+
+    // 让一个线程池线程显示 LastTransaction 时间
+    // 注意：线程线程会阻塞，直到 SomeMethod 调用了 Monitor.Exit！
+    ThreadPool.QueueUserWorkItem(o => Console.WriteLine(t.LastTransaction));
+
+    // 这里执行其他一些代码...
+    Monitor.Exit(t);
+}
+```
+
+在上述代码中，执行 `SomeMethod` 的线程调用 `Monitor.Enter`，获取由 `Transaction` 对象公开的锁。线程池线程查询 `LastTransaction` 属性时，这个属性也调用 `Monitor.Enter` 来获取同一个锁，造成线程池线程阻塞，直到执行 `SomeMethod` 的线程调用`Monitor.Exit`。有调试器可发现线程池线程在 `LastTransaction` 属性内部阻塞。但很难判断是另外哪个线程拥有锁。即使真的弄清楚了是哪个线程拥有锁，还必须弄清楚是什么代码造成它取得锁，这就更难了。更糟的是，即使历经千辛万苦，终于搞清楚了是什么带按摩造成线程取得锁，最后却发现那些代码不在你的控制范围之内，或者无法修改它们来修正问题。因此，我的建议是始终坚持使用私有锁。下面展示了如何修正 `Transaction` 类：
+
+```C#
+internal sealed class Transaction {
+    private readonly Object m_lock = new Object(); // 现在每个 Transaction 对象都有私有锁
+    private DateTime m_timeOfLastTrans;
+
+    public void PerformTransaction() {
+        Monitor.Enter(m_lock);  // 进入私有锁
+        // 以下代码拥有对数据的独占访问权...
+        m_timeOfLastTrans = DateTime.Now;
+        Monitor.Exit(m_lock);  // 退出私有锁
+    }
+
+    public DateTime LastTransaction {
+        get {
+            Monitor.Enter(m_lock);  // 进入私有锁
+            // 以下代码拥有对数据的独占访问权...
+            DateTime temp = m_timeOfLastTrans;
+            Monitor.Exit(m_lock);   // 退出私有锁
+            return temp;
+        }
+    }
+}
+```
+
+如果 `Transaction` 的成员是静态的，只需将 `m_lock` 字段也变成静态字段，即可确保静态成员的线程安全性。
+
+通过以上讨论，````````````
 
 ## <a name="30_4">30.4 著名的双检锁技术</a>
 
