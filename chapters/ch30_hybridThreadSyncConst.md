@@ -629,17 +629,218 @@ internal sealed class Singleton {
 
     // 私有构造器防止这个类外部的任何代码创建一个实例
     private Singleton() {
-        // Code to initialize the one Singleton object goes here...
+        // 将初始化单实例对象的代码放在这里...
     }
     // 以下公共静态方法返回单实例对象 (如有必要就创建它)
     public static Singleton GetSingleton() { return s_value; }
 }
 ```
 
-由于代码首次访问类的成员时，
+由于代码首次访问类的成员时，CLR 会自动调用类型的类构造器，所以首次有一个线程查询 `Singleton` 的 `GetSingleton` 方法时，CLR 就会自动调用类构造器，从而创建一个对象实例。此外，CLR 已保证了对类构造器的调用是线程安全的。我已在 8.3 节“类型构造器”对此进行了解释。这种方式对的缺点在于，首次访问类的任何成员都会调用类型构造器。所以，如果 `Singleton` 类型定义了其他静态成员，就会在访问其他任何静态成员时创建 `Singleton` 对象。有人通过定义嵌套类来解决这个问题。
+
+下面展示了生成 `Singleton` 对象的第三种方式：
+
+```C#
+internal sealed class Singleton {
+    private static Singleton s_value = null;
+
+    // 私有构造器防止这个类外部的任何代码创建实例
+    private Singleton() {
+        // 将初始化单实例对象的代码放在这里...
+    }
+
+    // 以下公共静态方法返回单实例对象 (如有必要就创建它)
+    public static Singleton GetSingleton() {
+        if (s_value != null) return s_value;
+
+        // 创建一个新的单实例对象，并把它固定下来(如果另一个线程还没有固定它的话)
+        Singleton temp = new Singleton();
+        Interlocked.CompareExchange(ref s_value, temp, null);
+
+        // 如果这线程竞争失败，新建的第二个单实例对象会被垃圾回收
+        return s_value; // 返回对单实例对象的引用
+    } 
+}
+```
+
+如果多个线程同时调用 `GetSingleton`，这个版本可能创建两个(或更多)`Singleton` 对象。然而，对 `Interlocked.CompareExchange` 的调用确保只有一个引用才会发布到 `s_value` 字段中。没有通过这个字段固定下来的任何对象<sup>①</sup>会在以后被垃圾回收。由在大多数应用程序都很少发生多个线程同时调用 `GetSingleton` 的情况，所以不太可能同时创建多个 `Singleton` 对象。
+
+> ① 称为不可达对象。 ———— 译注
+
+虽然可能创建多个 `Singleton` 对象，但上述代码由多方面的优势。首先，它的速度非常快。其次，它永不阻塞线程。相反，如果一个线程池线程在一个 `Monitor` 或者其他任何内核模式的线程同步构造上阻塞，线程池就会创建另一个线程来保持 CPU 的“饱和”。因此，会分配并初始化更多的内存，而且所有 DLL 都会收到一个线程连接通知。使用 `CompareExchange` 则永远不会发生这种情况。当然，只有在构造器没有副作用的时候才能使用这个技术。
+
+FCL 有两个类型封装了本书描述的模式。下面是泛型 `Syste.Lazy` 类(有的方法没有列出)：
+
+```C#
+public class Lazy<T> {
+    public Lazy(Func<T> valueFactory, LazyThreadSafetyMode mode);
+    public Boolean IsValueCreated { get; }
+    public T Value { get; }
+}
+```
+
+以下代码演示了它是如何工作的：
+
+```C#
+public static void Main() {
+    // 创建一个“延迟初始化”包装器，它将 DateTime 的获取包装起来
+    Lazy<String> s = new Lazy<String>(() => 
+        DateTime.Now.ToLongTimeString(), true);
+
+    Console.WriteLine(s.IsValueCreated);    // 还没有查询 Value，所以返回 false
+    Console.WriteLine(s.Value);             // 现在调用委托
+    Console.WriteLine(s.IsValueCreated);    // 已经查询了 Value，所以返回 true
+    Thread.Sleep(10000);                    // 等待 10 秒，再次显示时间
+    Console.WriteLine(s.Value);             // 委托没有调用；显示相同结果
+}
+```
+
+在我的机器上运行，得到以下结果：
+
+```cmd
+False
+2:40:42 PM
+True
+2:40:42 PM  ←   注意，10秒之后，时间未发生改变 
+```
+
+上述代码构造 `Lazy` 类的实例，并向它传递某个 `LazyThreadSafetyMode` 标志。下面总结了这些标志：
+
+```C#
+public enum LazyThreadSafetyMode {
+    None,                       // 完全没有用线程安全支持 (适合 GUI 应用程序)
+    ExecutionAndPublication,    // 使用双检锁技术
+    PublicationOnly             // 使用 Interlocked.CompareExchange 技术
+} 
+```
+
+内存有限可能不想创建 `Lazy` 类的实例。这时可调用 `System.Threading.LazyInitializer` 类的静态方法。下面展示了这个类：
+
+```C#
+public static class LazyInitializer {
+    // 这两个方法在内部使用了 Interlocked.CompareExchange:
+    public static T EnsureInitialized<T>(ref T target) where T : class;
+    public static T EnsureInitialized<T>(ref T target, Func<T> valueFactory) where T : class;
+
+    // 这两个方法在内部将同步锁(syncLock)传给 Monitor 的 Enter 和 Exit方法
+    public static T EnsureInitialized<T>(ref T target, ref Boolean initialized,
+        ref Object syncLock);
+    public static T EnsureInitialized<T>(ref T target, ref Boolean initialized,
+        ref Object syncLock, Func<T> valueFactory);
+}
+```
+
+另外，为 `EnsureInitialized` 方法的 `syncLock` 参数显式指定同步对象，可以用同一个锁保护多个初始化函数和字段。下面展示了如何使用这个类的方法：
+
+```C#
+public static void Main() {
+    String name = null;
+    // 由于 name 是 null，所以委托执行并初始化 name
+    LazyInitializer.EnsureInitialized(ref name, () => "Jeffrey");
+    Console.WriteLine(name); // 显示 "Jeffrey"
+                                
+    // 由于 name 已经不为 null, 所以委托不运行：name 不改变
+    LazyInitializer.EnsureInitialized(ref name, () => "Richter");
+    Console.WriteLine(name); // 还是显示 "Jeffrey"
+}
+```
 
 ## <a name="30_5">30.5 条件变量模式</a>
 
+假定一个线程希望在一个复合条件为 `true` 时执行一段代码。一个选项是让线程连续“自旋”，反复测试条件。但这会浪费 CPU 时间，也不可能对构成复合条件的多个变量进行原子性的测试。幸好，有一个模式允许线程根据一个复合条件来同步它们的操作，而且不会浪费资源。这个模式称为条件变量(condition variable)模式，我们通过 `Monitor` 类中定义的以下方法来使用该模式：
+
+```C#
+public static class Monitor {
+    public static Boolean Wait(Object obj);
+    public static Boolean Wait(Object obj, Int32 millisecondsTimeout);
+
+    public static void Pulse(Object obj);
+    public static void PulseAll(Object obj);
+} 
+```
+
+下面展示了这个模式：
+
+```C#
+internal sealed class ConditionVariablePattern {
+    private readonly Object m_lock = new Object();
+    private Boolean m_condition = false;
+
+    public void Thread1() {
+        Monitor.Enter(m_lock);      // 获取一个互斥锁
+                               
+        // 在锁中，“原子性”地测试复合条件
+        while (!m_condition) {
+            // 条件不满足，就等待另一个线程更改条件
+            Monitor.Wait(m_lock);   // 临时释放锁，使其他线程能获取它
+        }
+
+        // 条件满足，处理数据...
+
+        Monitor.Exit(m_lock);       // 永久释放锁
+    }
+
+    public void Thread2() {
+        Monitor.Enter(m_lock);      // 获取一个互斥锁
+                               
+        // 处理数据并修改条件...
+        m_condition = true;
+
+        // Monitor.Pulse(m_lock);   // 锁释放之后唤醒一个正在等待的线程
+        Monitor.PulseAll(m_lock);   // 锁释放之后唤醒所有正在等待的线程
+
+        Monitor.Exit(m_lock);       // 释放锁
+    }
+}
+```
+
+在上述代码中，执行 `Thread1` 方法的线程进入一个互斥锁，然后对一个条件进行测试。在这里，我只是检查一个 `Boolean` 字段，但它可以是任意复合条件。例如，可以检查是不是三月的一个星期二，同时一个特定的集合对象是否包含 10 个元素。如果条件为 `false`，你希望线程在条件上 “自旋”。但自旋会浪费 CPU 时间，所以线程不是自旋，而是调用 `Wait`。`Wait` 释放锁，使另一个线程能获得它并阻塞调用线程。
+
+`Thread2` 方法展示了第二个线程执行的代码。它调用 `Enter` 来获取锁的所有权，处理一些数据，造成一些状态的改变，再调用 `Plus` 或 `PlusAll`，从而解除一个线程因为调用 `Wait` 而进入的阻塞状态。注意，`Plus` 只解除等待最久的线程(如果有的话)的阻塞，而 `PlusAll` 解除所有正在等待的线程(如果有的话)的阻塞。但所有未阻塞的线程还没有醒来。执行 `Thread2` 的线程必须调用 `Monitor.Exit`，允许锁由另一个线程拥有。另外，如果调用的是 `PlusAll`，其他线程不会同时解除阻塞。调用 `Wait` 的线程解除阻塞后，它成为锁的所有者。由于这是一个互斥锁。所以一次只能有一个线程拥有它。其他线程只有在锁的所有者调用了 `Wait` 或 `Exit` 之后才能得到它。
+
+执行 `Thread1` 的线程醒来时，它进行下一次循环迭代，再次对条件进行测试。如果条件仍为 `false`，它就再次调用 `Wait`。如果条件为 `true`，它就处理数据，并最终调用 `Exit`。这样就会将锁释放，使其他线程能得到它。这个模式的妙处在于，可以使用简单的同步逻辑(只是一个锁)来测试构成一个复合条件的几个变量，而且多个正在等待的线程可以全部解除阻塞，而不会造成任何逻辑错误。唯一的缺点就是解除线程的阻塞可能浪费一些 CPU 时间。
+
+下面展示了一个线程安全的队列，它允许多个线程在其中对数据项(item)进行入队和出队操作。注意，除非有了一个可供处理的数据项，否则试图出队一个数据项的线程会一直阻塞。
+
+```C#
+internal sealed class SynchronizedQueue<T> {
+    private readonly Object m_lock = new Object();
+    private readonly Queue<T> m_queue = new Queue<T>();
+
+    public void Enqueue(T item) {       // 入队
+        Monitor.Enter(m_lock);
+
+        // 一个数据项入队后，就唤醒任何/所有正在等待的线程
+        m_queue.Enqueue(item);
+        Monitor.PulseAll(m_lock);
+        Monitor.Exit(m_lock);
+    }
+
+    public T Dequeue() {                // 出队
+        Monitor.Enter(m_lock);
+        
+        // 队列为空(这是条件)就一直循环
+        while (m_queue.Count == 0)
+            Monitor.Wait(m_lock);
+
+        // 使一个数据项出队，返回它供处理
+        T item = m_queue.Dequeue();
+        Monitor.Exit(m_lock);
+        return item;
+    }
+}
+```
+
 ## <a name="30_6">30.6 异步的同步构造</a>
+
+任何使用了内核模式基元的线程同步构造，我都不是特别喜欢。因为所有这些基元都会阻塞一个线程的运行。创建线程的代价很大。创建了不用，这于情于理都说不通。下面这个例子能很好地说明这个问题。
+
+假定客户端向网站发出请求。客户端请求到达时，一个线程池线程开始处理客户端请求。假定这个客户端想以线程安全的方式修改服务器中的数据，所以它请求一个 reader-writer 锁来进行写入(这使线程成为一个 writer 线程)。假定这个锁被长时间占有。在锁被占有期间，另一个客户端请求到达了，所以线程池为这个请求创建新线程。然后，线程阻塞，尝试获取 reader-writer 锁来进行读取(这使线程成为一个 reader 线程)。事实上，随着越来越多的客户端请求到达，线程池会创建越来越多的线程，所有这些线程都傻傻地在锁上面阻塞。服务器把它的所有时间都花在创建线程上面，而目的仅仅是让它们停止运行！这样的服务器完全没有伸缩性可言。
+
+更糟的是，当 writer 线程释放锁时，所有 reader 线程都同时解除阻塞并开始执行。现在，又变成了大量线程试图在相对数量很少的 CPU 上运行。所以，Windows 开始在线程之间不停地进行上下文切换。由于上下文切换产生了大量开销，所以真正的工作反正没有得到很快的处理。
+
+观察本章介绍的所有构造，你会发现这些构造向要解决的许多问题其实最好都是用第 27 章讨论的 `Task` 类来完成。拿 `Barrier` 类来说：可以生成几个 `Task` 对象来处理一个阶段。然后，当所有这些任务完成后，可以用另外一个或多个 `Task` 对象继续。和本章展示的大量构造相比，任务具有下述许多优势。
+
+* 任务使用
 
 ## <a name="30_7">30.7 并发集合类</a>
