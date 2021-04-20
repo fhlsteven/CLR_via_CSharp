@@ -841,6 +841,350 @@ internal sealed class SynchronizedQueue<T> {
 
 观察本章介绍的所有构造，你会发现这些构造向要解决的许多问题其实最好都是用第 27 章讨论的 `Task` 类来完成。拿 `Barrier` 类来说：可以生成几个 `Task` 对象来处理一个阶段。然后，当所有这些任务完成后，可以用另外一个或多个 `Task` 对象继续。和本章展示的大量构造相比，任务具有下述许多优势。
 
-* 任务使用
+* 任务使用的内存比线程少得多，创建和销毁所需的时间也少得多。
+
+* 线程池根据可用 CPU 数量自动伸缩任务规模。
+
+* 每个任务完成一个阶段后，运行任务的线程回到线程池，在哪里能接受新任务。
+
+* 每个任务完成一个阶段后，运行任务的线程回到线程池，在哪里能接受新任务。
+
+* 线程池是站在整个进程的高度观察任务。所以，它能更好地调度这些任务，减少进程中的线程数，并减少上下文切换。
+
+锁很流行，但长时间拥有会带来巨大的伸缩性问题。如果代码能通过异步的同步构造指出它想要一个锁，那么会非常有用。在这种情况下，如果线程得不到锁，可直接返回并执行其他工作，而不必在那里傻傻地阻塞。以后当锁可用时，代码可恢复执行并访问锁所保护的资源。我当年在为客户解决一个重大的伸缩性问题时有了这个思路，并与 2009 年将专利权卖给了 Microsoft，专利号是 7603502.
+
+`SemaphoreSlim` 类通过 `WaitAsync` 方法实现了这个思路，下面是该方法的最复杂的重载版本的签名。
+
+`public Task<Boolean> WaitAsync(Int32 millisecondsTimeout, CancellationToken cancellationToken);`
+
+可用它异步地同步对一个资源的访问(不阻塞任何线程)。
+
+```C#
+private static async Task AccessResourceViaAsyncSynchronization(SemaphoreSlim asyncLock) 
+{
+    // TODO: 执行你想要的任何代码...
+
+    await asyncLock.WaitAsync(); // 请求获得锁来获得对资源的独占访问
+    // 执行到这里，表明没有别的线程正在访问资源
+    // TODO: 独占地访问资源...
+
+    // 资源访问完毕就放弃锁，使其他代码能访问资源
+    asyncLock.Release();
+
+    // TODO: 执行你想要的任何代码...
+} 
+```
+
+`SemaphoreSlim` 的 `WaitAsync`方法很有用，但它提供的是信号量语义。一般创建最大计数为 1 的`SemaphoreSlim`，从而对`SemaphoreSlim`保护的资源进行互斥访问。所以，这和使用 `Monitor` 时的行为相似，只是 `SemaphoreSlim` 不支持线程所有权和递归语义(这是好事)。
+
+但 reader-writer 语义呢？.NET Framework 提供了 `ConcurrentExclusiveSchedulerPair` 类。
+
+```C#
+public class ConcurrentExclusiveSchedulerPair {
+    public ConcurrentExclusiveSchedulerPair();
+
+    public TaskScheduler ExclusiveScheduler { get; }
+    public TaskScheduler ConcurrentScheduler { get; } 
+
+    // 未列出其他方法...
+} 
+```
+
+这个类的实例带有两个 `TaskScheduler` 对象，它们在代用任务时负责提供 reader/writer 语义。只要当前没有运行使用 `ConcurrentScheduler` 调度的任务，使用 `ExclusiveScheduler` 调度的任何任务将独占式地运行(一次只能运行一个)。另外，只要当前没有运行使用 `ExclusiveScheduler` 调度的任务，使用 `ConcurrentScheduler` 调度的任务就可同时运行(一次运行多个)。以下代码演示了该类的使用。
+
+```C#
+public static void ConcurrentExclusiveSchedulerDemo() {
+    var cesp = new ConcurrentExclusiveSchedulerPair();
+    var tfExclusive = new TaskFactory(cesp.ExclusiveScheduler);
+    var tfConcurrent = new TaskFactory(cesp.ConcurrentScheduler);
+
+    for (Int32  operation = 0; operation < 5; operation++) {
+        var exclusive = operation < 2; // 出于演示的目的，我建立了 2 个独占和 3 个并发
+
+        (exclusive ? tfExclusive : tfConcurrent).StartNew(() => {
+            Console.WriteLine("{0} access", exclusive ? "exclusive" : "concurrent");
+            // TODO: 在这里进行独占写入或并发读取操作...
+        });
+    }
+}
+```
+
+遗憾的是，.NET Framework 没有提供具有 reader-writer 语义的异步锁。但我构建了这样的一个类，称为 `AsyncOneManyLock`。它的用法和 `SemaphoreSlim` 一样。下面是一个例子。
+
+```C#
+private static async Task AccessResourceViaAsyncSynchronization(AsyncOneManyLock asyncLock) {
+    // TODO: 执行你想要的任何代码...
+
+    // 为想要的并发访问传递 OneManyMode.Exclusive 或 OneManyMode.Shared
+    await asyncLock.AcquireAsync(OneManyMode.Shared); // 要求共享访问
+    // 如果执行到这里，表明没有其他线程在向资源写入；可能有其他线程在读取
+    // TODO: 从资源读取...
+    
+    // 资源访问完毕就放弃锁，使其他代码能访问资源
+    asyncLock.Release();
+
+    // TODO: 执行你想要的任何代码...
+} 
+```
+
+下面展示了 `AsyncOneManyLock` 类。
+
+
+```C#
+public enum OneManyMode { Exclusive, Shared }
+
+public sealed class AsyncOneManyLock {
+    #region 锁的代码
+    private SpinLock m_lock = new SpinLock(true); // 自旋锁不要用 readonly
+    private void Lock() { Boolean taken = false; m_lock.Enter(ref taken); }
+    private void Unlock() { m_lock.Exit(); }
+    #endregion
+
+    #region 锁的状态和辅助方法
+    private Int32 m_state = 0;
+    private Boolean IsFree { get { return m_state == 0; } }
+    private Boolean IsOwnedByWriter { get { return m_state == -1; } }
+    private Boolean IsOwnedByReaders { get { return m_state > 0; } }
+    private Int32 AddReaders(Int32 count) { return m_state += count; }
+    private Int32 SubtractReader() { return --m_state; }
+    private void MakeWriter() { m_state = -1; }
+    private void MakeFree() { m_state = 0; }
+    #endregion
+
+    // 目的是在非竞态条件时增强性能和减少内存消耗
+    private readonly Task m_noContentionAccessGranter;
+
+    // 每个等待的 writer 都通过它们在这里排队的 TaskCompletionSource 来唤醒
+    private readonly Queue<TaskCompletionSource<Object>> m_qWaitingWriters =
+        new Queue<TaskCompletionSource<Object>>();
+
+    // 一个 TaskCompletionSource 收到信号，所有等待的 reader 都唤醒
+    private TaskCompletionSource<Object> m_waitingReadersSignal =
+        new TaskCompletionSource<Object>();
+    private Int32 m_numWaitingReaders = 0;
+
+    public AsyncOneManyLock() {
+        m_noContentionAccessGranter = Task.FromResult<Object>(null);
+    }
+
+    public Task WaitAsync(OneManyMode mode) {
+        Task accressGranter = m_noContentionAccessGranter; // 假定无竞争
+
+        Lock();
+        switch (mode) {
+            case OneManyMode.Exclusive:
+                if (IsFree) {
+                    MakeWriter(); // 无竞争
+                } else {
+                    // 有竞争：新的 writer 任务进入队列，并返回它使 writer 等待
+                    var tcs = new TaskCompletionSource<Object>();
+                    m_qWaitingWriters.Enqueue(tcs);
+                    accressGranter = tcs.Task;
+                }
+                break;
+
+            case OneManyMode.Shared:
+                if (IsFree || (IsOwnedByReaders && m_qWaitingWriters.Count == 0)) {
+                    AddReaders(1); // 无竞争
+                } else { // 有竞争
+                    // 竞争：递增等待的 reader 数量，并返回 reader 任务使 reader 等待
+                    m_numWaitingReaders++;
+                    accressGranter = m_waitingReadersSignal.Task.ContinueWith(t => t.Result);
+                }
+                break;
+        }
+        Unlock();
+
+        return accressGranter;
+    }
+
+    public void Release() {
+        TaskCompletionSource<Object> accessGranter = null; // 假定没有代码被释放
+
+        Lock();
+        if (IsOwnedByWriter) MakeFree(); // 一个 writer 离开
+        else SubtractReader(); // 一个 reader 离开
+
+        if (IsFree) {
+            // 如果自由，唤醒 1 个等待的 writer 或所有等待的 readers
+            if (m_qWaitingWriters.Count > 0) {
+                MakeWriter();
+                accessGranter = m_qWaitingWriters.Dequeue();
+            } else if (m_numWaitingReaders > 0) {
+                AddReaders(m_numWaitingReaders);
+                m_numWaitingReaders = 0;
+                accessGranter = m_waitingReadersSignal;
+
+                // 为将来需要等待的 readers 创建一个新的 TCS
+                m_waitingReadersSignal = new TaskCompletionSource<Object>();
+            }
+        }
+        Unlock();
+
+        // 唤醒锁外面的 writer/reader，减少竞争机率以提高性能
+        if (accessGranter != null) accessGranter.SetResult(null);
+    }
+}
+```
+
+如同我说过的一样，上述代码永远不会阻塞线程。原因是我在内部没有使用任何内核构造。这里确实使用了一个 `SpinLock`，它在内部使用了用户模式的构造。但第 29 章讨论自旋锁的时候说过，只有执行时间很短的代码段才可以用自旋锁来保护。查看我的 `WaitAsync` 方法，会发现我用锁保护的只是一些整数计算和比较，以及构造一个 `TaskCompletionSource` 并把它添加到对列的动作，这花不了多少时间，所以能保证锁只是短时间被占有。
+
+类似地，查看我的 `Release` 方法，会发现做的事情不外乎一些整数计算、一个比较以及将一个 `TaskCompletionSource` 出队或者构造一个 `TaskCompletionSource`。这同样花不了多少时间。使用一个 `SpinLock` 来保护对 `Queue` 的访问，我感觉非常自在。线程在使用这种锁时永远不会阻塞，使我能构建响应灵敏的、可伸缩的软件。
 
 ## <a name="30_7">30.7 并发集合类</a>
+
+FCL 自带 4 个线程安全的集合类，全部在 `System.Collections.Concurrent` 命名空间中定义。它们是 `ConcurrentQueue`，`ConcurrentStack`，`ConcurrentDictionary` 和 `ConcurrentBag`。以下是它们最常用的一些成员。
+
+```C#
+// 以先入先出(FIFO)的顺序处理数据项
+public class ConcurrentQueue<T> : IProducerConsumerCollection<T>,
+    IEnumerable<T>, ICollection, IEnumerable {
+
+    public ConcurrentQueue();
+    public void Enqueue(T item);
+    public Boolean TryDequeue(out T result);
+    public Int32 Count { get; }
+    public IEnumerator<T> GetEnumerator();
+}
+
+// 以后入先出(LIFO)的方式处理数据项
+public class ConcurrentStack<T> : IProducerConsumerCollection<T>,
+    IEnumerable<T>, ICollection, IEnumerable {
+
+    public ConcurrentStack();
+    public void Push(T item);
+    public Boolean TryPop(out T result);
+    public Int32 Count { get; }
+    public IEnumerator<T> GetEnumerator();
+}
+
+// 一个无序数据项集合，允许重复
+public class ConcurrentBag<T> : IProducerConsumerCollection<T>,
+    IEnumerable<T>, ICollection, IEnumerable {
+
+    public ConcurrentBag();
+    public void Add(T item);
+    public Boolean TryTake(out T result);
+    public Int32 Count { get; }
+    public IEnumerator<T> GetEnumerator();
+}
+
+// 一个无序 key/value 集合
+public class ConcurrentDictionary<TKey, TValue> : IDictionary<TKey, TValue>,
+    ICollection<KeyValuePair<TKey, TValue>>, IEnumerable<KeyValuePair<TKey, TValue>>,
+    IDictionary, ICollection, IEnumerable {
+
+    public ConcurrentDictionary();
+    public Boolean TryAdd(TKey key, TValue value);
+    public Boolean TryGetValue(TKey key, out TValue value);
+    public TValue this[TKey key] { get; set; }
+    public Boolean TryUpdate(TKey key, TValue newValue, TValue comparisonValue);
+    public Boolean TryRemove(TKey key, out TValue value);
+    public TValue AddOrUpdate(TKey key, TValue addValue, 
+        Func<TKey, TValue> updateValueFactory);
+    public TValue GetOrAdd(TKey key, TValue value);
+    public Int32 Count { get; }
+    public IEnumerator<KeyValuePair<TKey, TValue>> GetEnumerator();
+}
+```
+
+所有这些集合类都是 “非阻塞” 的。换言之，如果一个线程试图提取一个不存在的元素(数据项)，线程会立即返回；线程不会阻塞在那里，等着一个元素的出现。正是由于这个原因，所以如果获取了一个数据项，像 `TryDequeue`，`TryPop`，`TryTake` 和 `TryGetValue` 这样的方法全都返回`true`；否则返回 `false`。
+
+一个集合“非阻塞”，并不意味着它就就不需要锁了。`ConcurrentDictionary` 类在内部使用了 `Monitor`。 但是，对集合中的项进行操作时，锁只被占有极短的时间。`ConcurrentQueue` 和 `ConcurrentStack` 确实不需要锁；它们两个在内部都使用 `Interlocked` 的方法来操纵集合。一个 `ConcurrentBag` 对象(一个 bag)由大量迷你集合对象构成，每个线程一个。线程将一个项添加到 bag 中时，就用 `Interlocked` 的方法将这个项添加到调用线程的迷你集合中。一个线程试图从 bag 中提取一个元素时，bag 就检查调用线程的迷你集合，试图从中取出数据项。如果数据项在那里，就用一个 `Interlocked` 方法提取这个项。如果不在，就在内部获取一个 `Monitor`，以便从另一个线程的迷你集合提取一个项。这称为一个线程从另一个线程“窃取”一个数据项。
+
+注意，所有并发集合类都提供了 `GetEnumerator` 方法，它一般用于 C# 的 `foreach` 语句，但也可用于 LINQ。对于 `ConcurrentStack`，`ConcurrentQueue`和`ConcurrentBag`类，`GetEnumerator`方法获取集合内容的一个“快照”，并从这个快照返回元素；实际集合的内容可能在使用快照枚举时发生改变。`ConcurrentDictionary` 的 `GetEnumerator` 方法不获取它的内容的快照。因此，在枚举字典期间，字典的内容可能改变；这一点务必注意。还要注意的是，`Count` 属性返回的是查询时集合中的元素数量。如果其他线程同时正在集合中增删元素，这个计数可能马上就变得不正确了。
+
+`ConcurrentStack`，`ConcurrentQueue` 和 `ConcurrentBag` 这三个并发集合类都实现了 `IProducerConsumerCollection` 接口。接口定义如下：
+
+```C#
+public interface IProducerConsumerCollection<T> : IEnumerable<T>, ICollection, IEnumerable {
+    Boolean TryAdd(T item);
+    Boolean TryTake(out T item);
+    T[] ToArray();
+    void CopyTo(T[] array, Int32 index);
+} 
+```
+
+实现了这个接口的任何类都能转变成一个阻塞集合。如果集合已满，那么负责生产(添加)数据项的线程会阻塞；如果集合已空，那么负责消费(移除)数据项的线程会阻塞。当然，我会尽量不使用这种阻塞集合，因为它们生命的全部意义就是阻塞线程。要将非阻塞的集合转变成阻塞集合，需要构造一个 `System.Collecitons.Concurrent.BlockingCollection` 类，向它的构造器传递对非阻塞集合的引用。`BlockingCollection` 类看起来像下面这样(有的方法未列出)：
+
+```C#
+public class BlockingCollection<T> : IEnumerable<T>, ICollection, IEnumerable, IDisposable {
+    public BlockingCollection(IProducerConsumerCollection<T> collection,
+        Int32 boundedCapacity);
+
+    public void Add(T item);
+    public Boolean TryAdd(T item, Int32 msTimeout, CancellationToken cancellationToken);
+    public void CompleteAdding();
+
+    public T Take();
+    public Boolean TryTake(out T item, Int32 msTimeout, CancellationToken cancellationToken);
+
+    public Int32 BoundedCapacity { get; }
+    public Int32 Count { get; }
+    public Boolean IsAddingCompleted { get; } // 如果调用了 CompleteAdding ，则为 true
+    public Boolean IsCompleted { get; } // 如果 IsAddingComplete 为 true，而且 Count==0，则返回 true
+
+    public IEnumerable<T> GetConsumingEnumerable(CancellationToken cancellationToken);
+
+    public void CopyTo(T[] array, int index);
+    public T[] ToArray();
+    public void Dispose();
+}
+```
+
+构造一个 `BlockingCollection` 时，`boundedCapacity` 参数指出你想在集合中最多容纳多少个数据项。在基础集合已满的时候，如果一个线程调用`Add`，生产线程就会阻塞。如果愿意，生产线程可调用 `TryAdd`，传递一个超时值(以毫秒为单位)和/或一个 `CancellationToken`，使线程一直阻塞，直到数据项成功添加、超时到期或者 `CancellationToken` 被取消(对 `CancellationToken` 类的讨论请参见第 27 章)。
+
+`BlockingCollection` 类实现了 `IDisposable` 接口。调用 `Dispose` 时，这个 `Dispose` 会调用基础集合的 `Dispose`。它还会对类内部用于阻塞生产者和消费者的两个 `SemaphoreSlim` 对象进行清理。
+
+生产者不再向集合添加更多的项时，生产者应调用 `CompleteAdding` 方法。这会向消费者发出信号，让它们知道不会再生产更多的项了。具体地说，这会造成正在使用 `GetConsumingEnumerable` 的一个 `foreach` 循环终止。下例演示了如何设置一个生产者/消费者环境，以及如何在完成数据项的添加之后发出通知：
+
+```C#
+public static void Main() {
+    var bl = new BlockingCollection<Int32>(new ConcurrentQueue<Int32>());
+
+    // 由一个线程池线程执行“消费”
+    ThreadPool.QueueUserWorkItem(ConsumeItems, bl);
+
+    // 在集合中添加 5 个数据项
+    for (Int32 item = 0; item < 5; item++) {
+        Console.WriteLine("Producing: " + item);
+        bl.Add(item);
+    }
+
+    // 告诉消费线程(可能有多个这样的线程)，不会在集合中添加更多的项了
+    bl.CompleteAdding();
+
+    Console.ReadLine(); // 这一行代码是出于测试的目的(防止 Main 返回)
+}
+
+private static void ConsumeItems(Object o) {
+    var bl = (BlockingCollection<Int32>) o;
+    // 阻塞，直到出现一个数据项。出现后就处理它
+    foreach (var item in bl.GetConsumingEnumerable()) {
+        Console.WriteLine("Consuming: " + item);
+    }
+
+    // 集合空白，没有更多的项进入其中
+    Console.WriteLine("All items have been consumed");
+} 
+```
+
+在我自己的机器上执行上述代码，得到以下输出：
+
+```cmd
+Producing: 0
+Producing: 1
+Producing: 2
+Producing: 3
+Producing: 4
+Consuming: 0
+Consuming: 1
+Consuming: 2
+Consuming: 3
+Consuming: 4
+All items have been consumed 
+```
+
+你自己执行上述代码时，“Producing” 和 “Consuming” 行可能交错出现。但 “All times have been consumed” 这一行必然最后出现。
+
+`BlockingCollection` 类还提供了静态 `AddToAny`，`TryAddToAny`，`TakeFromAny` 和 `TryTakeFromAny` 方法。所有这些方法都获取一个`BlockingCollection<T>[]`，以及一个数据项、一个超时值以及一个 `CancellationToken`。`(Try)AddToAny` 方法遍历数组中的所有集合，直到发现因为容量还没有到达(还没有满)，而能够接受数据项的一个集合。`(Try)TakeFromAny` 方法则遍历数组中的所有集合，直到发现一个能从中移除一个数据项的集合。
