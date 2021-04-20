@@ -92,6 +92,44 @@ internal static class QuickStart {
 
 序列化对象图只需调用格式化器的 `Serialize` 方法，并向它传递两样东西：对流对象的引用，以及对想要序列化的对象图的引用。流对象标识了序列化好的字节应放到哪里，它可以是从 `System.IO.Stream` 抽象基类派生的任何类型的对象。也就是说，对象图可序列化成一个 `MemoryStream`，`FileStream` 或者 `NetworkStream`等。
 
+`Serialize` 的第二个参数是一个对象引用。这个对象可以是任何东西，可以是一个 `Int32`，`String`，`DateTime`，`Exception`，`List<String>` 或者 `Dictionary<Int32, DateTime>`等。`objectGraph` 参数引用的对象可引用其他对象。例如，`objectGraph` 可引用一个集合，而这个集合引用了一组对象。这些对象还可继续引用其他对象，调用格式化器的 `Serialize` 方法时，对象图中的所有对象都被序列化到流中。
+
+格式化器参考对每个对象的类型进行描述的元数据，从而了解如何序列化完整的对象图。序列化时，`Serialize` 方法利用反射来查看每个对象的类型中都有哪些实例字段。在这些字段中，任何一个引用了其他对象，格式化器的 `Serialize` 方法就知道那些对象也要进行序列化。
+
+格式化器的算法非常智能。它们知道如何确保对象图中的每个对象都只序列化一次。换言之，如果对象图中的两个对象相互引用，格式化器会检测到这一点，每个对象都只序列化一次，避免发生死循环。
+
+在上述代码的 `SerializeToMemory` 方法中，当格式化器的 `Serialize` 方法返回后，`MemoryStream` 直接返回给调用者。应用程序可以按照自己希望的任何方式利用这个字节数组的内容。例如，可以把它保存到文件中、复制到剪贴板或者通过网络发送等。
+
+`DeserializeFromMemory` 方法将流反序列化为对象图。该方法比用于序列化对象图的方法还要简单。在代码中，我构建了一个 `BinaryFormatter` ，然后调用它的 `Deserialize` 方法。这个方法获取流作为参数，返回对反序列化好的对象图中的根对象的一个引用。
+
+在内部，格式化器的 `Deserialize` 方法检查流的内容，构造流中所有对象的实例，并初始化所有这些对象中的字段，使它们具有与当初序列化时相同的值。通常要将 `Deserialize` 方法返回的对象引用转型为应用程序期待的类型。
+
+> 注意 下面是一个有趣而实用的方法，它利用序列化创建对象的深拷贝(或者说克隆体)：
+
+```C#
+private static Object DeepClone(Object original) {
+    // 构造临时内存流
+    using (MemoryStream stream = new MemoryStream()) {
+
+        // 构造序列化格式化器来执行所有实际工作
+        BinaryFormatter formatter = new BinaryFormatter();
+
+        // 值一行在本章 24.6 节“流上下文” 解释
+        formatter.Context = new StreamingContext(StreamingContextStates.Clone);
+
+        // 将对象图序列化到内存流中
+        formatter.Serialize(stream, original);
+
+        // 反序列化前，定位到内存流的起始位置
+        stream.Position = 0;
+        
+        // 将对象图反序列化成一组新对象，
+        // 向调用者返回对象图(深拷贝)的根
+        return formatter.Deserialize(stream);
+    }
+} 
+```
+
 ## <a name="24_2">24.2 使类型可序列化</a>
 
 ## <a name="24_3">24.3 控制序列化和反序列化</a>
