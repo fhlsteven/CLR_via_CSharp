@@ -375,9 +375,32 @@ public class MyType {
    `public static Object GetUninitializedObject(Type type);`  
    这个方法为一个新对象分配内存，但不为对象调用构造器。然而，对象的所有字节都被初始为 `null` 或 `0`。
 
-3. 
+3. 格式化器现在构造并初始化一个 `MemberInfo` 数组，具体做法和前面一样，都是调用 `FormatterServices` 的 `GetSerializableMembers` 方法。这个方法返回序列化好、现在需要反序列化的一组字段。
+
+4. 格式化器根据流中包含的数据创建并初始化一个 `Object` 数组。
+
+5. 将新分配对象、`MemberInfo` 数组以及并行 `Object` 数组(其中包含字段值)的引用传给 `FormatterServices` 的静态方法 `PopulateObjectMembers`：  
+  `public static Object PopulateObjectMembers(Object obj, MemberInfo[] members, Object[] data);`  
+   这个方法遍历数组，将每个字段初始化成对应的值。到此为止，对象就算是被彻底反序列化了。
 
 ## <a name="24_5">24.5 控制序列化/反序列化的数据</a>
+
+本章前面讨论过，控制序列化和反序列化过程的最佳方式就是使用 `OnSerializing`，`OnSerialized`，`OnDeserializing`，`OnDeserialized`，`NonSerialized` 和 `OptionalField` 等特性。然而，在一些极少见的情况下，这些特性不能提供你想要的全部控制。此外，格式化器内部使用的是反射，而反射的速度是比较慢的，这会增大序列化和反序列化对象所花的时间，为了对序列化/反序列化的数据进行完全的控制，并避免使用反射，你的类型可实现`System.Runtime.Serialization.ISerializable`接口，它的定义如下：
+
+```C#
+public interface ISerializable {
+    void GetObjectData(SerializationInfo info, StreamingContext context);
+}
+```
+
+这个接口只有一个方法，即 `GetObjectData`。但实现这个接口的大多数类型还实现了一个特殊的构造器，我稍后会详细描述它。
+
+> 重要提示 `ISerializable` 接口最大的问题在于，一旦类型实现了它，所有派生类型也必须实现它，而且派生类型必须保证调用基类的 `GetObjectData` 方法和特殊构造器。此外，一旦类型实现了该接口，便永远不能删除它，否则会失去与派生类型的兼容性。所以，密封类实现 `ISerializable` 接口是最让人放心的。使用本章前面描述的各种定制特性，`ISerializable` 接口的所有问题都可以避免。
+
+> 重要提示 `ISerializable` 接口和特殊构造器旨在由格式化器使用。但其他代码可能调用 `GetObjectData` 来返回敏感数据。另外，其他代码可能构造对象，并传入损坏的数据。因此，建议向 `GetObjectData` 方法和特殊构造器应用以下特性：
+  `[SecurityPermissionAttribute(SecurityAction.Demand, SerializationFormatter = true)]`
+
+格式化器序列化对象图时会检查每个对象。如果发现一个对象的类型实现了 `ISerializable` 接口，就会忽略所有定制特性，改为构造新的 `System.Runtime.Serialization.SerializationInfo` 对象。该对象包含了要以对象序列化的值的集合。
 
 ## <a name="24_6">24.6 流上下文</a>
 
