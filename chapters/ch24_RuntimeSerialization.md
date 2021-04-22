@@ -402,6 +402,78 @@ public interface ISerializable {
 
 格式化器序列化对象图时会检查每个对象。如果发现一个对象的类型实现了 `ISerializable` 接口，就会忽略所有定制特性，改为构造新的 `System.Runtime.Serialization.SerializationInfo` 对象。该对象包含了要以对象序列化的值的集合。
 
+构造 `SerializationInfo` 对象时，格式化器要传递两个参数：`Type` 和 `System.Runtime.Serialization.IFormatterConverter`。`Type`参数标识要序列化的对象。唯一性地标识一个类型需要两个部分的信息：类型的字符串名称及其程序集标识(包括程序集名、版本、语言文化和公钥)。构造好的 `SerializationInfo` 对象包含类型的全名(通过在内部查询 `Type` 的 `FullName`属性)，这个字符串会存储到一个私有字段中，如果你想获取类型的全名，可查询 `SerializationInfo` 的 `FullTypeName` 属性。类似地，构造器获取类型的定义程序集(通过在内部查询 `Type` 的 `Module` 属性，再查询 `Module` 的 `Assembly` 属性，再查询 `Assembly` 的 `FullName`属性)，这样个字符串会存储在一个私有字段中。如果你想获取程序集的标识，可查询 `SerializationInfo` 的 `AssemblyName` 属性。
+
+> 注意 虽然可以设置一个 `SerializationInfo` 的 `FullTypeName` 和 `AssemblyName` 属性，但不建议这样做。如果想要更改被序列化的类型，建议调用 `SerializationInfo` 的 `SetType` 方法，传递对目标 `Type` 对象的引用。调用 `SetType` 可确保类型的全名和定义程序集被正确设置。本章后面的 24.7 节“类型序列化为不同类型以及对象反序列化为不同对象”将展示调用 `SetType` 的一个例子。
+
+构造好并初始化好 `SerializationInfo` 对象后，格式化器调用类型的 `GetObjectData` 方法，向它传递对 `SerializationInfo` 对象的引用。`GetObjectData` 方法决定需要哪些信息来序列化对象，并将这些信息添加到 `SerializationInfo` 对象中。`GetObjectData` 调用 `SerializationInfo` 类型提供的 `AddValue` 方法的众多重载版本之一指定要序列化的信息。针对要添加的每个数据，都要调用一次 `AddValue`。
+
+以下代码展示了 `Dictionary<TKey, TValue>` 类型如何实现 `ISerializable` 和 `IDeserializationCallback` 接口来控制其对象的序列化和反序列化。
+
+```C#
+[Serializable]
+public class Dictionary<TKey, TValue> : ISerializable, IDeserializationCallback {
+    // 私有字段放在这里(未列出)
+    private SerializationInfo m_siInfo; // 只用于反序列化
+
+    // 用于控制反序列化的特殊构造器(这是 ISerializable 需要的)
+    [SecurityPermissionAttribute(SecurityAction.Demand, SerializationFormatter = true)]
+    protected Dictionary(SerializationInfo info, StreamingContext context) {
+        // 反序列化期间，为 OnDeserialization 保存 SerializationInfo
+        m_siInfo = info;
+    }
+
+    // 用于控制序列化的方法
+    [SecurityCritical]
+    public virtual void GetObjectData(SerializationInfo info, StreamingContext context) {
+
+        info.AddValue("Version", m_version);
+        info.AddValue("Comparer", m_comparer, typeof(IEqualityComparer<TKey>));
+        info.AddValue("HashSize", (m_ buckets == null) ? 0 : m_buckets.Length);
+        if (m_buckets != null) {
+            KeyValuePair<TKey, TValue>[] array = new KeyValuePair<TKey, TValue>[Count];
+            CopyTo(array, 0);
+            info.AddValue("KeyValuePairs", array, typeof(KeyValuePair<TKey, TValue>[]));
+        }
+    }
+
+    // 所有 key/value 对象都反序列化好之后调用的方法
+    public virtual void IDeserializationCallback.OnDeserialization(Object sender) {
+        if (m_siInfo == null) return; // 从不设置，直接返回
+
+        Int32 num = m_siInfo.GetInt32("Version");
+        Int32 num2 = m_siInfo.GetInt32("HashSize");
+        m_comparer = (IEqualityComparer<TKey>)
+            m_siInfo.GetValue("Comparer", typeof(IEqualityComparer<TKey>));
+        if (num2 != 0) {
+            m_buckets = new Int32[num2];
+            for (Int32 i = 0; i < m_buckets.Length; i++) m_buckets[i] = -1;
+            m_entries = new Entry<TKey, TValue>[num2];
+            m_freeList = -1;
+            KeyValuePair<TKey, TValue>[] pairArray = (KeyValuePair<TKey, TValue>[])
+                m_siInfo.GetValue("KeyValuePairs", typeof(KeyValuePair<TKey, TValue>[]));
+            if (pairArray == null)
+                ThrowHelper.ThrowSerializationException(
+                    ExceptionResource.Serialization_MissingKeys);
+
+            for (Int32 j = 0; j < pairArray.Length; j++) {
+                if (pairArray[j].Key == null)
+                    ThrowHelper.ThrowSerializationException(
+                    ExceptionResource.Serialization_NullKey);
+
+                Insert(pairArray[j].Key, pairArray[j].Value, true);
+            }
+        } else { m_buckets = null; }
+        m_version = num;
+        m_siInfo = null;
+    }
+}
+```
+
+每个 `AddValue` 方法都获取一个 `String` 名称好一些数据。数据一般是简单的值类型，比如 `Boolean`，`Char`，`Byte`，`SByte`，`Int16`，`Int32`，`UInt32`，`Int64`，`UInt64`，`Single`，`Double`，`Decimal` 或者 `DateTime`。然而，还可以在调用 `AddValue` 时向它传递对一个 `Object`(比如一个`String`)的引用。`GetObjectData` 添加好所有必要的序列化信息之后，会返回至格式化器。
+
+> 注意 务必调用 `AddValue` 方法的某个重载版本为自己的类型添加序列化信息。如果一个字段的类型实现了 `ISerializable` 接口，就不要在字段上调用 `GetObjectData`。相反，调用 `AddValue` 来添加字段；格式化器会注意到字段的类型实现了 `ISerializable`，会帮你调用 `GetObjectData`。如果自己在字段对象上调用 `GetObjectData`，格式化器便不知道在对流进行反序列化时创建新对象。
+
 ## <a name="24_6">24.6 流上下文</a>
 
 ## <a name="24_7">24.7 将类型序列化为不同的类型以及将对象反序列化为不同的对象</a>
