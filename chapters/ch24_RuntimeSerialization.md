@@ -728,6 +728,60 @@ internal sealed class UniversalToLocalTimeSerializationSurrogate : ISerializatio
 
 `GetObjectData` 方法在这里的工作方式与 `ISerializable` 接口的 `GetObjectData` 方法差不多。唯一的区别在于，`ISerializationSurrogate` 的 `GetObjectData` 方法要获取一个额外的参数————对要序列化的”真实”对象的引用。在上述 `GetObjectData` 方法中，这个对象转型为 `DateTime`，值从本地时间转换为世界时，并将一个字符串(使用通用完整日期/时间模式来格式化)添加到 `SerializationInfo` 集合。
 
-`SetObjectData` 方法用于反序列化一个 `DateTime` 对象。调用这个方法时要向它传递一个 `SerializationInfo` 对象引用。
+`SetObjectData` 方法用于反序列化一个 `DateTime` 对象。调用这个方法时要向它传递一个 `SerializationInfo` 对象引用。`SetObjectData` 从这个集合中获取字符串形式的日期，把它解析成通用完整日期/时间模式的字符串，然后将结果 `DateTime` 对象从世界时转换成计算机的本地时间。
+
+传给 `SetObjectData` 第一个参数的 `Object` 有点儿奇怪。在调用 `SetObjectData` 之前，格式化器分配(通过 `FormatterServices` 的静态方法 `GetUninitializedObject`)要代理的那个类型的实例。实例的字段全是 `0/null`，而且没有在对象上调用构造器。`SetObjectData` 内部的代码为了初始化这个实例的字段，可以使用传入的 `SerializationInfo` 中的值，并让 `SetObjectData` 返回 `null`。另外，`SetObjectData`可以创建一个完全不同的对象，甚至创建不同类型的变量，并返回对新对象的引用。在这种情况下，格式化器会忽略对传给 `SetObjectData` 的对象的任何改变。
+
+在我的例子中，`UniversalToLocalTimeSerializationSurrogate` 类扮演了 `DateTime` 类型的代理的角色。`DateTime` 是值类型，所以 `obj` 参数引用了一个 `DateTime` 的已装箱实例。大多数值类型中的字段都无法更改(值类型本来就设计成“不可变”)，所以我的 `SetObjectData` 方法会忽略`obj`参数，并返回一个新的 `DateTime`对象，其中已装好了期望的值。
+
+此时，那肯定会问，序列化/反序列化一个 `DateTime` 对象时，格式化器怎么知道要用这个 `ISerializationSurrogate` 类型呢？以下代码对 `UniversalToLocalTimeSerializationSurrogate` 类进行了测试：
+
+```C#
+private static void SerializationSurrogateDemo() {
+    using (var stream = new MemoryStream()) {
+        // 1. 构造所需的格式化器
+        IFormatter formatter = new SoapFormatter();
+
+        // 2. 构造一个 SurrogateSelector (代理选择器)对象
+        SurrogateSelector ss = new SurrogateSelector();
+
+        // 3. 告诉代理选择器为 DateTime 对象使用我们的代理
+        ss.AddSurrogate(typeof(DateTime), formatter.Context,
+            new UniversalToLocalTimeSerializationSurrogate());            
+        // 注意： AddSurrogate 可多次调用来登记多个代理
+
+        // 4. 告诉格式化器使用代理选择器
+        formatter.SurrogateSelector = ss; 
+
+        // 创建一个 DateTime 来代表机器上的本地时间，并序列化它        
+        DateTime localTimeBeforeSerialize = DateTime.Now;
+        formatter.Serialize(stream, localTimeBeforeSerialize);
+
+        // stream 将 Universal 时间作为一个字符串显示，证明能正常工作
+        stream.Position = 0;
+        Console.WriteLine(new StreamReader(stream).ReadToEnd());
+
+        // 反序列化 Universal 时间字符串，并且把它转换成本地 DateTime
+        stream.Position = 0;
+        DateTime localTimeAfterDeserialize = (DateTime)formatter.Deserialize(stream);
+
+        // 证明它正确工作
+        Console.WriteLine("LocalTimeBeforeSerialize ={0}", localTimeBeforeSerialize);
+        Console.WriteLine("LocalTimeAfterDeserialize={0}", localTimeAfterDeserialize);
+    }
+} 
+```
+
+步骤 1 到步骤 4 执行完毕后，格式化器就准备好使用已登记的代理类型。调用格式化器的 `Serialize` 方法时，会在 `SurrogateSelector` 维护的集合(一个哈希表)中查找(要序列化的)每个对象的类型。如果发现一个匹配，就调用 `ISerializationSurrogate` 对象的 `GetObjectData` 方法来获取应该写入流的信息。
+
+格式化器的 `Deserialize` 方法在调用时，会在格式化器的 `SurrogateSelector` 中查找要反序列化的对象的类型。如果发现一个匹配，就调用`ISerializationSurrogate` 对象的 `SetObjectData` 方法来设置要反序列化的对象中的字段。
+
+`SurrogateSelector` 对象在内部维护了一个私有哈希表。调用 `AddSurrogate` 时，`Type` 和 `StreamingContext` 构成了哈希表的键(key)，对应的值(value)就是 `ISerializationSurrogate` 对象。如果已经存在和要添加的 `Type/StreamingContext` 相同的一个键，`AddSurrogate` 会抛出一个 `ArgumentException`。通过在键中包含一个 `StreamingContext`，可以登记一个代理类型对象，它知道如何将 `DateTime` 对象序列化/反序列化到一个文件中；再登记一个不同的代理对象，它知道如何将 `DateTime` 对象序列化、反序列化到一个不同的进程中。
+
+> 注意 `BinaryFormatter` 类有一个 bug，会造成代理无法序列化循环引用的对象，为了解决这个问题，需要将对自己的 `ISerializationSurrogate` 对象的引用传给 `FormatterServices` 的静态 `GetSurrogateForCyclicalReference` 方法。该方法返回一个 `ISerializationSurrogate` 对象。然后，可以将对这个对象的引用传给 `SurrogateSelector` 的 `AddSurrogate` 方法。但要注意，使用 `GetSurrogateForCyclicalReference` 方法时，代理的 `SetObjectData` 方法必须修改 `SetObjectData` 的 `obj` 参数所引用的对象中的值，而且最后要向调用方法返回 `null` 或 `obj`。在本书的配套资源中，有一个例子展示了如何修改 `UniversalToLocalTimeSerializationSurrogate` 类和 `SerializationSurrogateDemo` 方法来支持循环引用。
+
+### 代理选择器链
+
+多个 `SurrogateSelector` 对象可链接到一起。例如，可以让一个 `SurrogateSelector` 对象维护
 
 ## <a name="24_9">24.9 反序列化对象时重写程序集和/或类型</a>
