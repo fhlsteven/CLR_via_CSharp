@@ -782,6 +782,29 @@ private static void SerializationSurrogateDemo() {
 
 ### 代理选择器链
 
-多个 `SurrogateSelector` 对象可链接到一起。例如，可以让一个 `SurrogateSelector` 对象维护
+多个 `SurrogateSelector` 对象可链接到一起。例如，可以让一个 `SurrogateSelector` 对象维护一组序列化代理，这些序列化代理(surrogate)用于将类型序列化成带代理(proxy)<sup>①</sup>，以便通过网络传送，或者跨越不同的 AppDomain 传送。还可以让另一个 `SurrogateSelector` 对象维护一组序列化代理，这些序列化代理用于将版本 1 的类型转换成版本 2 的类型。
+
+> ① 两个“代理”是不同的概念。`surrogate` 对象的负责序列化，而 `proxy` 对象负责跨越 `AppDomain` 边界访问对象(参见 22.2.1 节“跨越 `AppDomain` 边界访问对象”)。 ———— 译注
+
+如果有多个希望格式化器使用的 `SurrogateSelector` 对象，必须把它们链接到一个链表中。`SurrogateSelector` 类型实现了 `ISurrogateSelector` 接口，该接口定义了三个方法。这些方法全部跟链接有关。下面展示了 `ISurrogateSelector` 接口是如何定义的：
+
+```C#
+public interface ISurrogateSelector {
+    void ChainSelector(ISurrogateSelector selector);
+    ISurrogateSelector GetNextSelector();
+    ISerializationSurrogate GetSurrogate(Type type, StreamingContext context,
+        out ISurrogateSelector selector);
+}
+```
+
+`ChainSelector` 方法紧接在当前操作的 `ISurrogateSelector` 对象(`this` 对象)之后插入一个 `ISurrogateSelector` 对象。`GetNextSelector` 方法返回对链表中的下一个 `ISurrogateSelector` 对象的引用；如果当前操作的对象是链尾，就返回 `null`。
+
+`GetSurrogate` 方法在 `this` 所代表的 `ISurrogateSelector` 对象中查找一对 `Type/StreamingContext`。如果没有找到 `Type/StreamingContext` 对，就访问链中的下一个 `ISurrogateSelector` 对象，依次类推。如果找到一个匹配项，`GetSurrogate` 将返回一个 `ISerializationSurrogate` 对象，该对象负责对找到的类型进行序列化/反序列化。除此之外，`GetSurrogate`还会返回包含匹配项的 `ISurrogateSelector` 对象；一般都用不着这个对象，所以一般会将其忽略。如果链中所有 `ISurrogateSelector` 对象都不包含匹配的一对 `Type/StreamingContext`，`GetSurrogate` 将返回 `null`。
+
+> 注意 FCL定义了一个 `ISurrogateSelector` 接口，还定义了一个实现了该接口的 `SurrogateSelector` 类型。然而，只有在一些非常罕见的情况下，才需要定义自己的类型来实现 `ISurrogateSelector` 接口。实现 `ISurrogateSelector` 接口的唯一原因就是将类型映射到另一个类型时需要更大的灵活性。例如，你可能希望以一种特殊方式序列化从一个特定基类继承的所有类型。`System.Runtime.Remoting.Messaging.RemotingSurrogateSelector` 类就是一个很好的例子。出于远程访问(remoting)目的而序列化对象时，CLR 使用 `RemotingSurrogateSelector` 来格式化对象。这个代理选择器(surrogate selector)以一种特殊方式序列化从 `System.MarshalByRefObject` 派生的所有对象，确保反序列化会造成在客户端创建代理对象(proxy object)。
 
 ## <a name="24_9">24.9 反序列化对象时重写程序集和/或类型</a>
+
+序列化对象时，格式化器输出类型及其定义程序集的全名。反序列化对象时，格式化器根据这个信息确定要为对象构造并初始化什么类型。前面讨论了如何利用 `ISerializationSurrogate` 接口来接管特定类型的序列化和反序列化工作。实现了 `ISerializationSurrogate` 接口的类型与特定程序集中的特定类型关联。
+
+但有的时候，`ISerializationSurrogate` 机制的灵活性显得有点不足。在下面列举的情形中，有必要将对象反序列化成和序列化时不同的类型。
