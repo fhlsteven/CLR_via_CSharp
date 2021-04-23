@@ -498,7 +498,7 @@ public class Dictionary<TKey, TValue> : ISerializable, IDeserializationCallback 
 
 > 如果你的类型必须访问提取的对象中的成员(比如调用方法)，建议你的类型提供一个应用了 `OnDeserialized` 特性的方法，或者让类型实现 `IDeserializationCallback` 接口的 `OnDeserialization` 方法(就像前面的 `Dictionary` 示例中那样)。调用该方法时，所有对象的字段都已设置好。然而，对于多个对象来说，它们的 `OnDeserialized` 或 `OnDeserialization` 方法的调用顺序是没有保障的。所以，虽然字段可能已初始化，但你仍然不知道被引用的对象是否已完全反序列化好(如果那个被引用的对象也提供了一个 `OnDeserialized` 方法或者实现了 `IDeserializationCallback`)。
 
-### 要实现 `ISerializable` 但基类型没有实现该怎么？
+### 要实现 `ISerializable` 但基类型没有实现该怎么办？
 
 前面讲过，`ISerializable` 接口的功能非常强大，允许类型完全控制如何对类型的实例进行序列化和反序列化。但这个能力是有代价的：现在，该类型还要负责它的基类型的所有字段的序列化。如果基类型也实现了 `ISerializable` 接口，那么对基类型的字段进行序列化是很容易的。调用基类型的 `GetObjectData` 方法即可。
 
