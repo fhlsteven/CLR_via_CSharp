@@ -580,7 +580,7 @@ internal sealed class Derived : Base, ISerializable {
 
 |标志名称|标志值|说明|
 |---|---|---|
-|`CrossProcess`|0x001|来源或目的地是同一台机器的不同进程|
+|`CrossProcess`|0x0001|来源或目的地是同一台机器的不同进程|
 |`CrossMachines`|0x0002|来源或目的地在不同机器上|
 |`File`|0x0004|来源或目的地是文件。不保证反序列化数据的是同一个进程|
 |`Persistence`|0x0008|来源或目的地是存储(store)，比如数据库或文件。不保证反序列化数据的是同一个进程|
