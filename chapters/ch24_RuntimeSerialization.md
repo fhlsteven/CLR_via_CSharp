@@ -808,3 +808,37 @@ public interface ISurrogateSelector {
 序列化对象时，格式化器输出类型及其定义程序集的全名。反序列化对象时，格式化器根据这个信息确定要为对象构造并初始化什么类型。前面讨论了如何利用 `ISerializationSurrogate` 接口来接管特定类型的序列化和反序列化工作。实现了 `ISerializationSurrogate` 接口的类型与特定程序集中的特定类型关联。
 
 但有的时候，`ISerializationSurrogate` 机制的灵活性显得有点不足。在下面列举的情形中，有必要将对象反序列化成和序列化时不同的类型。
+
+* 开发人员可能想把一个类型的实现从一个程序集移动到另一个程序集。例如，程序集版本号的变化造成新程序集有别于原始程序集。
+
+* 服务器对象序列化到发送客户端的流中。客户端处理流时，可以将对象反序列化成完全不同的类型，该类型的代码知道如何向服务器的对象发出远程方法调用。
+
+* 开发人员创建了类型的新版本，想把已序列化的对象反序列化成类型的新版本。
+
+利用 `System.Runtime.Serialization.SerializationBinder` 类，可以非常简单地将一个对象反序列化成不同类型。为此，要先定义自己的类型，让它从抽象类 `SerializationBinder` 派生。在下面的代码中，假定你的版本 1.0.0.0 的程序集定义了名为 `Ver1` 的类，并假定程序集的新版本定义了 `Ver1ToVer2SerializationBinder` 类，还定义了名为 `Ver2` 的类：
+
+```C#
+internal sealed class Ver1ToVer2SerializationBinder : SerializationBinder {
+    public override Type BindToType(String assemblyName, String typeName) {
+        // 将任何 Ver1 对象从版本 1.0.0.0 反序列化成一个 Ver2 对象
+
+        // 计算定义 Ver1 类型的程序集名称
+        AssemblyName assemVer1 = Assembly.GetExecutingAssembly().GetName();
+        assemVer1.Version = new Version(1, 0, 0, 0);
+
+        // 如果从 v1.0.0.0 反序列化 Ver1 对象，就把它转变成一个 Ver2 对象
+        if (assemblyName == assemVer1.ToString() && typeName == "Ver1")
+            return typeof(Ver2);
+
+        // 否则，就只返回请求的同一个类型
+        return Type.GetType(String.Format("{0}, {1}", typeName, assemblyName));
+    }
+} 
+```
+
+现在，在构造好格式化器之后，构造 `Ver1ToVer2SerializationBinder` 的实例，并设置格式化器的可读/可写属性 `Binder`，让它引用绑定器(binder)对象。设置好 `Binder` 属性后，调用格式化器的 `Deserialize` 方法。在反序列化期间，格式化器发现已设置了一个绑定器。每个对象要反序列化时，格式化器都调用绑定器的 `BindToType` 方法，向它传递程序集名称以及格式化器想要反序列化的类型。然后，`BindToType` 判断实际应该构建什么类型，并返回这个类型。
+
+> 注意 `SerializationBinder` 类还可重写 `BindToName` 方法，从而序列化对象时更改程序集/类型信息，这个方法看起来像下面这样：  
+`public virtual void BindToName(Type serializedType, out string assemblyName, out string typeName)`
+
+> 序列化期间，格式化器调用这个方法，传递它想要序列化的类型。然后，你可以通过两个 out 参数返回真正想要序列化的程序集和类型。如果两个 out 参数返回 `null` 和 `null`(默认实现就是这样的)，就不执行任何更改。

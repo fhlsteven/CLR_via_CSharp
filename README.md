@@ -52,7 +52,7 @@ md文件上传到语雀了 那个看书也可以的 我觉得挺好使的 [Click
 [第 22 章 CLR 寄宿和 AppDomain](./chapters/ch22_CLRHostingAndAppDomain.md)  
 [第 23 章 程序集加载和反射](./chapters/ch23_AssemblyLoaingReflection.md)  
 [第 24 章 运行时序列化](./chapters/ch24_RuntimeSerialization.md)  
-[第 25 章 与 WinRT 组件互操作]
+[第 25 章 与 WinRT 组件互操作](./chapters/ch25_WinRTComponents.md)
 
 ---
 第五部分 线程处理
