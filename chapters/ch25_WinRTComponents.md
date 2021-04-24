@@ -129,4 +129,241 @@ WinRT 类型系统在功能上不如CLR 类型系统丰富。下面总结了 Win
 
 ## <a name="25_2">25.2 框架投射</a>
 
+在 CLR 不能将一个 WinRT 类型隐式投射给 .NET Framework 开发人员的时候，开发人员就必须显式使用框架投射。主要有三种需要进行框架投射的技术：异步编程、WinRT流和 .NET Framework 流之间的互操作以及需要在 CLR 和 WinRT API 之间传输数据块的时候。后续的小节将分别讨论这三种框架投射。由于许多应用程序都要使用这些技术，所以有必要很好地理解和高效地使用它们。
+
+### 25.2.1 从 .NET 代码中调用异步 WinRT API
+
+线程以同步方式执行 I/O 操作时，线程可能阻塞不确定的时间。GUI 线程等待一个同步 I/O 操作时，应用程序 UI 会停止响应用户的输入，比如触摸、鼠标和手写笔事件，造成用户对应用程序感到厌烦。为了防止应用程序出现不响应的情况，执行 I/O 操作的 WinRT 组件通过异步 API 公开其功能。事实上，凡是 CPU 计算时间可能超过 50 毫秒的功能，WinRT 组件都通过异步 API 来公开该功能。本书第 V 部分“线程处理”将详细讨论如何构建响应灵敏的应用程序。
+
+由于如此多的 WinRT API 都是异步的，所以为了高效地使用它们，你需要理解如何通过 C#与它们互操作。例如以下代码：
+
+```C#
+public void WinRTAsyncIntro() {
+  IAsyncOperation<StorageFile> asyncOp = KnownFolders.MusicLibrary.GetFileAsync("Song.mp3");
+  asyncOp.Completed = OpCompleted;
+  // 可选：在以后某个时间调用 asyncOp.Cancel()
+}
+
+// 注意：回调方法通过 GUI 或线程池线程执行
+private void OpCompleted(IAsyncOperation<StorageFile> asyncOp, AsyncStatus status) {
+  switch (status) {
+    case AsyncStatus.Completed: // 处理结果
+      StorageFile file = asyncOp.GetResults(); /* Completed... */ break;
+
+    case AsyncStatus.Canceled: // 处理取消
+      /* Canceled... */ break;
+
+    case AsyncStatus.Error: // 处理异常
+      Exception exception = asyncOp.ErrorCode; /* Error... */ break;
+  }
+  asyncOp.Close();
+}
+```
+
+`WinRTAsyncIntro` 方法调用 WinRT `GetFileAsync` 方法在用户的音乐中查找文件。执行异步操作的所有 WinRT API 名称都要以`Async` 结尾，而且都要返回类型实现了 WinRT `IAsyncXxx` 接口的对象；本例使用的接口是 `IAsyncOperation<TResult>`，其中 `TResult` 是 WinRT `StorageFile` 类型。我将对该对象的引用放到名为 `asyncOp` 的变量中，代表等待进行的异步操作。代码必须通过某种方式接收操作完成通知。为此，必须实现一个回调方法(本例是 `OpCompleted`)，创建对它的委托，并将委托赋给 `asyncOp` 的 `Completed` 属性。现在，一旦操作结束，就会由某个线程(不一定是 GUI 线程)调用回调方法。如果操作在将委托赋给 `Completed` 属性之前便结束了，系统会尽快安排对回调方法的调用。换言之，这里发生了竞态条件(race condition)，但实现 `IAsyncXxx` 接口的对象帮你解决了竞态，确保代码能正常工作。
+
+就像 `WinRTAsyncIntro` 方法最后的注释所说的，要取消正在等待进行的操作，可选择调用所有 `IAsyncXxx` 接口都有提供的 `Cancel` 方法。所有异步操作结束都是因为三个原因之一：操作成功完成，操作被显式取消，或者操作出错。异步操作因为上述任何原因而结束时，系统都会调用回调方法，向其传递和原始 `XxxAsync` 方法返回的一样的对象引用，同时传递一个 `AsyncStatus`。在 `OpCompleted` 方法中，我检查 `status` 参数，分别处理成功完成、显式取消和出错的情况<sup>①</sup>。还要注意，处理好操作因为各种原因而结束的情况之后，应该调用 `IAsyncXxx` 接口对象的 `Close` 方法进行清理。
+
+> ① `IAsyncInfo` 接口提供了一个 `Status` 属性，其中包含的值和传给回调方法的 `status` 参数的值是一样的。但由于参数以传值方式传递，所以访问参数的速度比查询 `IAsyncInfo` 的 `Status` 属性快(查询属性要求通过一个 RCW 来调用 WinRT API)。
+
+图 25-2 展示了各种 WinRT `IAsyncXxx` 接口。主要的 4 个接口都从 `IAsyncInfo` 接口派生。其中，两个 `IAsyncAction` 接口使你知道操作在什么时候结束，但这些操作没有返回值(`GetReults` 的返回类型是 `void`)。而两个 `IAsyncOperation` 接口不仅使你知道操作在什么时候结束，还能获取它们的返回值(`GetResults` 方法具有泛型 `TResult` 返回类型)。
+
+![25_2](../resources/images/25_2.png)  
+
+图 25-2 和执行异步 I/O 与计算操作有关的 WinRT 接口
+
+两个 `IAsyncXxxWithProgress` 接口允许代码接收异步操作期间的定期进度更新。大多数异步操作都不提供进度更新，但有的会(比如后台下载和上传)。接收定时进度更新要求定义另一个回调方法，创建引用它的委托，并将委托赋给 `IAsyncXxxWithProgress` 对象的 `Progress` 属性。回调方法被调用时，会向其传递类型与泛型 `TProgress` 类型匹配的实参。
+
+.NET Framework 使用 `System.Threading.Tasks` 命名空间的类型来简化异步操作。我将在第 27 章“计算限制的异步操作”解释这些类型以及如何用它们执行计算操作，在第 28 章“I/O 限制的异步操作”解释如何用它们执行 I/O 操作。除此之外，C# 提供了 `async` 和 `await` 关键字，允许使用顺序编程模型来执行异步操作，从而大幅简化了编码。
+
+以下代码重写了之前的 `WinRTAsyncIntro` 方法。这个版本利用了 .NET Framework 提供的一些扩展方法，将 WinRT 异步编程模型转变成更方便的 C# 编程模型。
+
+```C#
+using System; // 为了使用 WindowsRuntimeSystemExtensions 中的扩展方法，
+              // 这些扩展方法称为框架投射扩展方法
+.
+.
+.
+public async void WinRTAsyncIntro() {
+  try {
+    StorageFile file = await KnownFolders.MusicLibrary.GetFileAsync("Song.mp3");
+    /* Completed... */
+  }
+  catch (OperationCanceledException) { /* Canceled... */ }
+  catch (SomeOtherException ex) { /* Error... */ }
+} 
+```
+
+C# 的 `await` 操作符导致编译器在 `GetFileAsync` 方法返回的 `IAsyncOperation<StorageFile>` 接口上查找 `GetAwaiter` 方法。该接口没有提供 `GetAwaiter` 方法，所以编译器查找扩展方法。幸好，.NET Framework 团队在 System.Runtime.WindowsRuntime.dll 中提供了能在任何一个 WinRT `IAsyncXxx` 接口上调用的大量扩展方法。
+
+```C#
+namespace System { 
+  public static class WindowsRuntimeSystemExtensions {
+    public static TaskAwaiter GetAwaiter(this IAsyncAction source);
+    public static TaskAwaiter GetAwaiter<TProgress>(this IAsyncActionWithProgress<TProgress> source);
+    public static TaskAwaiter<TResult> GetAwaiter<TResult>(this IAsyncOperation<TResult> source);
+    public static TaskAwaiter<TResult> GetAwaiter<TResult, TProgress>(
+      this IAsyncOperationWithProgress<TResult, TProgress> source);
+ }
+```
+
+所有这些方法都在内部构造一个 `TaskCompletionSource`，并告诉 `IAsyncXxx` 对象在异步操作结束后调用一个回调方法来设置 `TaskCompletionSource` 的最终状态。这些扩展方法返回的 `TaskAwaiter` 对象才是 C# 最终所等待的。异步操作结束后，`TaskAwaiter` 对象通过与原始线程关联的 `SynchronizationContext`(第 28 章讨论)确保代码继续执行。然后，线程执行 C# 编译器生成的代码。这些代码查询 `TaskCompletionSource` 的 `Task` 的 `Result` 属性来返回结果(本例是一个 `StorageFile`)，在取消的情况下抛出 `OperationCanceledException`，或在出错的情况下抛出其他异常。要了解这些方法的内部工作过程，请参考本节末尾的代码。
+
+刚才展示的只是调用异步 WinRT API 并发现其结果的一般情况。我展示了如何知道发生了取消，但没有展示如何真正地取消操作，也没有展示如何处理进度更新。为了正确处理取消和进度更新，不要让编译器自动调用某个 `GetAwaiter` 扩展方法，而要显式调用同样在 `WindowsRuntimeSystemExtensions` 类中定义的某个 `AsTask` 扩展方法。
+
+```C#
+namespace System {
+  public static class WindowsRuntimeSystemExtensions {
+    public static Task AsTask<TProgress>(this IAsyncActionWithProgress<TProgress> source,
+      CancellationToken cancellationToken, IProgress<TProgress> progress);
+
+    public static Task<TResult> AsTask<TResult, TProgress>(
+      this IAsyncOperationWithProgress<TResult, TProgress> source,
+      CancellationToken cancellationToken, IProgress<TProgress> progress);
+    //未显示更简单的重载
+  }
+} 
+```
+
+现在就可以对程序进行最后的完善了。下面展示了如何调用异步 WinRT API，并在需要的时候正确使用取消和进度更新功能。
+
+```C#
+using System;           // 为了 WindowsRuntimeSystemExtensions 的 AsTask
+using System.Threading; // 为了 CancellationTokenSource
+internal sealed class MyClass {
+  private CancellationTokenSource m_cts = new CancellationTokenSource();
+
+  // 注意：如果由 GUI 线程调用，所有代码都通过 GUI 线程执行
+  private async void MappingWinRTAsyncToDotNet(WinRTType someWinRTObj) {
+    try {
+      // 假定 XxxAsync 返回 IAsyncOperationWithProgress<IBuffer, UInt32>
+      IBuffer result = await someWinRTObj.XxxAsync(...)
+        .AsTask(m_cts.Token, new Progress<UInt32>(ProgressReport));
+      /* Completed... */
+    }
+    catch (OperationCanceledException) { /* Canceled... */ }
+    catch (SomeOtherException) { /* Error... */ }
+  }
+
+  private void ProgressReport(UInt32 progress) { /* Update progress... */ }
+
+  public void Cancel() { m_cts.Cancel(); } // 以后某个时间调用
+} 
+```
+
+有的读者想知道这些 `AsTask` 方法内部如何将一个 WinRT `IAsyncXxx` 转换成最终可以等待一个 .NET Framework `Task`。以下代码展示了最复杂的 `AsTask` 方法在内部如何实现。当然，更简单的重载实现起来更简单。
+
+```C#
+public static Task<TResult> AsTask<TResult, TProgress>(
+  this IAsyncOperationWithProgress<TResult, TProgress> asyncOp,
+  CancellationToken ct = default(CancellationToken),
+  IProgress<TProgress> progress = null) {
+
+  // 在 CancellationTokenSource 取消时取消异步操作
+  ct.Register(() => asyncOp.Cancel());
+
+  // 在异步操作报告进度时，报告给进度回调
+  asyncOp.Progress = (asyncInfo, p) => progress.Report(p);
+
+  // 这个 TaskCompletionSource 监视异步操作结束
+  var tcs = new TaskCompletionSource<TResult>();
+
+  // 在异步操作结束时通知 TaskCompletionSource ①
+  // 届时，正在等待 TaskCompletionSource 的代码重新获取控制权
+  asyncOp.Completed = (asyncOp2, asyncStatus) => {
+    switch (asyncStatus) {
+      case AsyncStatus.Completed: tcs.SetResult(asyncOp2.GetResults()); break;
+      case AsyncStatus.Canceled: tcs.SetCanceled(); break;
+      case AsyncStatus.Error: tcs.SetException(asyncOp2.ErrorCode); break;
+    }
+  };
+
+  // 调用代码等待这个返回的 Task 时，它调用 GetAwaiter，后者
+  // 用一个 SynchronizationContext 包装 Task，确保异步操作
+  // 在 SynchronizationContext 对象的上下文中结束
+  return tcs.Task;
+} 
+```
+
+> ① 或者说向这个 `TaskCompletionSource` 发信号。 ———— 译注
+
+
+### 25.2.2 WinRT 流和 .NET 流之间的互操作
+
+许多 .NET Framework 类都要求操作 `System.IO.Stream` 派生类型，包括序列化和 LINQ to XML 等。只有使用 `System.IO.WindowsRuntimeStorageExtensions` 类定义的扩展方法，实现了 WinRT  `IStorageFile` 或 `IStorageFolder` 接口的 WinRT 对象才能和要求 `Stream` 派生类型 .NET Framework 类一起使用。
+
+```C#
+namespace System.IO { // 在 System.Runtime.WindowsRuntime.dll 中定义
+  public static class WindowsRuntimeStorageExtensions {
+    public static Task<Stream> OpenStreamForReadAsync(this IStorageFile file);
+    public static Task<Stream> OpenStreamForWriteAsync(this IStorageFile file);
+
+    public static Task<Stream> OpenStreamForReadAsync(this IStorageFolder rootDirectory,
+      String relativePath);
+    public static Task<Stream> OpenStreamForWriteAsync(this IStorageFolder rootDirectory,
+      String relativePath, CreationCollisionOption creationCollisionOption);
+  }
+}
+```
+
+下例使用扩展方法打开一个 WinRT `StorageFile`，将内容读入一个 .NET Framework `XElement` 对象。
+
+```C#
+async Task<XElement> FromStorageFileToXElement(StorageFile file) {
+  using (Stream stream = await file.OpenStreamForReadAsync()) {
+    return XElement.Load(stream);
+  }
+}
+```
+
+最后，`System.IO.WindowsRuntimeStreamExtensions` 类提供了一些扩展方法能将 WinRT 流接口(例如 `IRandomAccessStream`，`IInputStream` 和 `IOutputStream`)“转型”为 .NET Framework 的 `Stream` 类型，或者反向转换。
+
+```C#
+namespace System.IO { // 在 System.Runtime.WindowsRuntime.dll 中定义
+  public static class WindowsRuntimeStreamExtensions {
+    public static Stream AsStream(this IRandomAccessStream winRTStream);
+    public static Stream AsStream(this IRandomAccessStream winRTStream, Int32 bufferSize);
+
+    public static Stream AsStreamForRead(this IInputStream winRTStream);
+    public static Stream AsStreamForRead(this IInputStream winRTStream, Int32 bufferSize);
+
+    public static Stream AsStreamForWrite(this IOutputStream winRTStream);
+    public static Stream AsStreamForWrite(this IOutputStream winRTStream, Int32 bufferSize);
+
+    public static IInputStream AsInputStream (this Stream clrStream);
+    public static IOutputStream AsOutputStream(this Stream clrStream);
+  }
+}
+```
+
+下例使用扩展方法将一个 WinRT `IInputStream` “转型” 为 .NET Framework `Stream` 对象。
+
+```C#
+XElement FromWinRTStreamToXElement(IInputStream winRTStream) {
+  Stream netStream = winRTStream.AsStreamForRead(); 
+  return XElement.Load(netStream);
+} 
+```
+
+注意，.NET Framework 提供的“转型”扩展方式幕后不仅仅是执行转型。具体地说，将 WinRT 流转换成 .NET Framework 流时，会在托管堆中为 WinRT 流隐式创建一个缓冲区。结果是大多数操作都向这个缓冲区写入，不需要跨越互操作边界，这提升了性能。涉及大量小的 I/O 操作(比如解析 XML 文档)时，性能的提升尤其明显。
+
+使用 .NET Framework 流投射的好处是，在同一个 WinRT 流实例上多次执行一个 `AsStreamXxx` 方法，不用担心会创建多个相互没有连接的缓冲区，造成向一个缓冲区写入的数据在另一个那里看不见。.NET Framework 的 API 确保每个流对象都有唯一的适配器实例，所有用户共享同一个缓冲区。
+
+虽然默认缓冲区大多数时候都能在性能与内存使用之间获得较好的平衡，但有时还是希望调用缓冲区的大小(而不是默认的 16 KB)。这时可以使用 `AsStreamXxx` 方法的重载版本来达到目的。例如，如果知道要长时间操作一个很大的文件，同时不会使用其他太多的缓冲流，就可为自己的流请求一个很大的缓冲区来获得进一步的性能提升。相反，有的应用程序要求低网络延迟，这时可能希望确保除非应用程序显式请求，否则不要从网络读取更多的字节。这时可考虑完全禁用缓冲区。为 `AsStreamXxx` 方法指定零字节的缓冲区，就不会创建缓冲区对象了。
+
+### 25.2.3 在 CLR 和 WinRT 之间传输数据块
+
+要尽量使用上一节讨论的框架投射，因为它们有不错的性能。但有时需要在 CLR 和 WinRT 组件之间传递原始数据块(raw blocks)。例如，WinRT 的文件和套接字流组就要求读写原始数据块。另外，WinRT 的加密组件要对数据块进行加密和解密，位图像素也要用原始数据块来维护。
+
+.NET Framework 获取数据块的方式一般是通过字节数组(`Byte[]`)，或者通过流(比如在使用 `MemoryStream` 类的时候)。当然，字节数组和 `MemoryStream` 对象都不能直接传给 WinRT 组件。所以，WinRT 定义了 `IBuffer` 接口，实现该接口的对象代表可传给 WinRT API 的原始数据块。WinRt `IBuffer` 接口是这样定义的：
+
+```C#
+namespace Windows.Storage.Streams {
+  public interface IBuffer {
+    UInt32 Capacity { get; }    // 缓冲区最大大小(以字节为单位)
+    UInt32 Length { get; set; } // 缓冲区当前使用的字节数
+  } 
+}
+```
+
 ## <a name="25_3">25.3 用 C# 定义 WinRT 组件</a>
