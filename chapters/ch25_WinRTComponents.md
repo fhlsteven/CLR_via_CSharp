@@ -366,4 +366,64 @@ namespace Windows.Storage.Streams {
 }
 ```
 
+如你所见，`IBuffer` 对象定义了缓冲区的最大大小和实际长度。但奇怪的是，它没有提供实际在缓冲区中读写数据的方式。这主要是由于 WinRT 类型不能在其数据中表示指针，因为指针不能很好地映射到部分语言(比如 JavaScript 和 安全 C# 代码)。所以，`IBuffer` 对象实际只是在 CLR 和 WinRT API 之间传递内存地址对的一种方式。为了访问内存地址处的字节，需要使用一个名为 `IBufferByteAccess` 的内部 COM 接口。注意这是 COM 接口(因为返回指针)而不是 WinRT 接口。.NET Framework 团队为这个 COM 接口定义了一个内部 RCW，如下所示：
+
+```C#
+namespace System.Runtime.InteropServices.WindowsRuntime {
+  [Guid("905a0fef-bc53-11df-8c49-001e4fc686da")]
+  [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  [ComImport]
+  internal interface IBufferByteAccess {
+    unsafe Byte* Buffer { get; }
+  }
+}
+```
+
+CLR 内部获取 `IBuffer` 对象，查询其 `IBufferByteAccess` 接口，再查询 `Buffer` 属性获来得指向缓冲区中的字节数据的不安全指针。利用该指针就能直接访问字节。
+
+为防止开发人员写不安全代码来操作指针，FCL 包含一个 `WindowsRuntimeBufferExtensions` 类，它定义了大量扩展方法，.NET Framework 开发人员可显式调用这些方法在 CLR 字节数组和传给 WinRT `IBuffer` 对象的流之间的传递数据块。调用这些扩展方法要求在源代码中添加 `using System.Runtime.InteropServices.WindowsRuntime;` 指令。
+
+```C#
+namespace System.Runtime.InteropServices.WindowsRuntime {
+  public static class WindowsRuntimeBufferExtensions {
+    public static IBuffer AsBuffer(this Byte[] source);
+    public static IBuffer AsBuffer(this Byte[] source, Int32 offset, Int32 length);
+    public static IBuffer AsBuffer(this Byte[] source, Int32 offset, Int32 length, Int32 capacity);
+    public static IBuffer GetWindowsRuntimeBuffer(this MemoryStream stream);
+    public static IBuffer GetWindowsRuntimeBuffer(this MemoryStream stream, Int32 position, Int32 length);
+  }
+} 
+```
+
+所以，要将一个 `Byte[]` 传给需要一个 `IBuffer` 的 WinRT API，只需在 `Byte[]` 数组上调用 `AsBuffer`。这实际是将对 `Byte[]` 的引用包装到实现了 `IBuffer` 接口的对象中；`Byte[]` 数组的内部不会被复制，所以效率很高。类似地，对于包装了公共 `Byte[]` 数组缓冲区的一个 `MemoryStream` 对象，只需在它上面调用 `GetWindowsRuntimeBuffer` 就可以将对 `MemoryStream` 的缓冲区的引用包装到一个实现了 `IBuffer` 接口的对象中。缓冲区内容同样不会被复制，所有效率很高。以下方法演示了这两种情况。
+
+```C#
+private async Task ByteArrayAndStreamToIBuffer(IRandomAccessStream winRTStream, Int32 count) 
+{
+  Byte[] bytes = new Byte[count];
+  await winRTStream.ReadAsync(bytes.AsBuffer(), (UInt32)bytes.Length, InputStreamOptions.None);
+  Int32 sum = bytes.Sum(b => b); // 访问从 Byte[] 读取的字节
+
+  using (var ms = new MemoryStream())
+  using (var sw = new StreamWriter(ms)) {
+    sw.Write("This string represents data in a stream");
+    sw.Flush();
+    UInt32 bytesWritten = await winRTStream.WriteAsync(ms.GetWindowsRuntimeBuffer());
+  }
+}
+```
+
+WinRT 的 `ITandomAccessStream` 接口实现了 WinRT 的 `IInputStream` 接口。
+
+```C#
+namespace Windows.Storage.Streams {
+  public interface IInputStream : IDisposable {
+    IAsyncOperationWithProgress<IBuffer, UInt32> ReadAsync(
+      IBuffer buffer, 
+      uint count, 
+      InputStreamOption options);
+  }
+} 
+```
+
 ## <a name="25_3">25.3 用 C# 定义 WinRT 组件</a>
