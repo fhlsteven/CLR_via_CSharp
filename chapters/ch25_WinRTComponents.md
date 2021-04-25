@@ -654,7 +654,7 @@ namespace Wintellect.WinRTComponents {
 
 以下 JavaScript 代码演示了如何访问前面的所有 WinRT 组件和功能。
 
-```C#
+```JavaScript
 function () {
   // Make accessing the namespace more convenient in the code
   var WinRTComps = Wintellect.WinRTComponents;

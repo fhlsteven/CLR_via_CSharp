@@ -61,3 +61,21 @@ Jeffrey 最擅长的就是把最基本的东西将清楚。你以前或许知道
 |operator|操作符(而不是文档中的”运算符“)|
 |overload 和 override|重载和重写|
 |preempt|抢占|
+|primitive types|基元类型(文档如此，不是”基本类型“。可以在代码中使用的最简单的构造就称为”基元“，其他构造都是它们符合而成的)
+|provider|提供程序(文档如此，个人不喜欢"程序"二字)|
+|raise an event|引发事件|
+|recursion count 和 recursive lock|递归计数和递归锁(可重入的锁就是递归锁，重入的次数就是递归计数)|
+|scalability|伸缩性(在少量时间里做更多工作的能力，就是所谓的”伸缩性“。作为一个伸缩性好的服务器，理论上应该CPU越多，一个耗时操作所需的时间就越短。通俗地说，在多个 CPU 之间并行执行，执行时间将根据 CPU 的数量成比例地缩短)|
+|self-hosted|自寄宿(应用程序的进程自己容纳CLR，就是所谓的自寄宿)|
+|semaphore|信号量|
+|set accessor method|set 访问器方法(赋值功函或 setter)|
+|side effect|副作用|
+|singleton|单实例(例如，如果某类型在每个 AppDomain 中只能有一个实例，它就是单实例类型)|
+|spinning|自旋(线程不是阻塞，而是原地”打转“，浪费 CPU 时间。但在用于保护执行得非常快的代码区域时性能比较好)|
+|string interning|字符串留用(而不是文档中的”字符串拘留“)|
+|synchronous 和 asynchronous| 同步和异步(同步意味着一个操作开始后必须等待它完成；异步则意味着不用等它完成，可以立即返回做其他事情。不要将”同步“理解成”同时“)|
+|tap(点击)，press and hold(长按)，slide(滑动)，swipe(轻扫)，turn(转动)，pinch(伸缩) 和 stretch(拉伸)|Windows 8 的各种触摸”手势“|
+|throw an exception|抛出异常(而不是文档中的”引发异常“)|
+|unwind|一般翻译成”展开“，但这并不是一个很好的翻译。wind 和 unwind 源于生活。把线缠到线圈上称为 wind；从线圈上松开称为 unwind。同样地，调用方法时压入栈桢，称为 wind；方法执行完毕，弹出栈桢，称为 unwind|
+|volatile|易变(文档将 volatile 翻译成”可变“。其实它是”短暂存在“、”易变“的意思，因为可能有多个线程都对这种字段进行修改，本书采用"易变")|
+|work item 和 worker thread|工作项和工作者线程(线程池术语。工作项是指要由一个线程池线程调用的方法，代表线程实际要做的工作；处理工作项的线程称为工作者线程。工作项被放到一个队列中，工作者线程将工作项从队列中取出并处理)|
