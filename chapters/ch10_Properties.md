@@ -214,7 +214,7 @@ public sealed class SomeType {
         set { }
     }
 
-    static void MethodWithOutParam(out String n） { n = null; }
+    static void MethodWithOutParam(out String n) { n = null; }
 
     public static void Main() {
         // 对于下一代代码，C#编译器将报告一下错误消息：
