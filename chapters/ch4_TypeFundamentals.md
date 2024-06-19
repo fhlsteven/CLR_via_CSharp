@@ -364,7 +364,7 @@ Windows 进程已启动，CLR 已加载到其中，托管堆已初始化，而�
 
 JIT 编译器将 `M3` 的 IL 代码转换成本机 CPU 指令时，会注意到 M3 内部引用的所有类型，包括 `Employee`，`Int32`，`Manager` 以及 `String`(因为 **"Joe"**)。这时 CLR 要确认定义了这些类型的所有程序集都已加载。然后，利用程序集的元数据， CLR 提取与这些类型有关的信息，创建一些数据结构来表示类型本身。图 4-7 展示了为 `Employee` 和 `Manager` 类型对象使用的数据结构。由于线程在调用 `M3` 前已执行了一些代码，所以不妨假定 `Int32` 和 `String` 类型对象已经创建好了(这是极有可能的，因为它们都是很常用的类型)，所以图中没有显示它们。
 
-稍微讨论一下这些类型对象。本章前面讲过，堆上所有对象都包含两个额外成员：类型对象指针(type object pointer)和同步块索引(sync block index)。如图所示， `Employee` 和 `Manager` 类型对象都有这两个成员。定义类型时，可在类型内部定义静态数据字段。为这些静态数据字段提供支援的字节在类型对象自身中分配。每个类型对象最后都包含一个方法表。在方法表中，类型定义的每个方法都有对应的记录项。第 1 章已讨论过该方法表。由于 `Employee` 类型定义了 3 个方法(`GetYearsEmployed`，`GetProgressReport` 和 `Lookup`)，所以 `Employee` 的方法表有 3 个记录项。`Manager` 类型只定义了 1 个方法(`GetProgressReport` 的重写版本)，所以 `Manager` 的方法表只有 1 个记录项。  
+稍微讨论一下这些类型对象。本章前面讲过，堆上所有对象都包含两个额外成员：类型对象指针(type object pointer)和同步块索引(sync block index)。如图所示， `Employee` 和 `Manager` 类型对象都有这两个成员。定义类型时，可在类型内部定义静态数据字段。为这些静态数据字段提供资源的字节在类型对象自身中分配。每个类型对象最后都包含一个方法表。在方法表中，类型定义的每个方法都有对应的记录项。第 1 章已讨论过该方法表。由于 `Employee` 类型定义了 3 个方法(`GetYearsEmployed`，`GetProgressReport` 和 `Lookup`)，所以 `Employee` 的方法表有 3 个记录项。`Manager` 类型只定义了 1 个方法(`GetProgressReport` 的重写版本)，所以 `Manager` 的方法表只有 1 个记录项。  
 ![4_7](../resources/images/4_7.png)  
 图 4-7 Employee 和 Manager 类型对象在 M3 被调用时创建  
 
