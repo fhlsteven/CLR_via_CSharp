@@ -37,7 +37,7 @@ int a = 0;
 表 5-1 C# 基元类型与对应的 FCL 类型
 |C#基元类型|FCL类型|符合CLS|说明|
 |:---:|:---:|:----:|:---:|
-|`sbyte`|`System.SByte`|否|有符合 8 位值|
+|`sbyte`|`System.SByte`|否|有符号 8 位值|
 |`byte`|`System.Byte`|是|无符号 8 位值|
 |`short`|`System.Int16`|是|有符号 16 位值|
 |`ushort`|`System.UInt16`|否|无符号 16 位值|
