@@ -734,7 +734,7 @@ internal struct Point : IComparable {
     // 重写从 System.ValueType 继承的 ToString 方法
     public override string ToString()
     {
-        // 将 point 作为字符创返回。注意：调用 ToString 以避免装箱
+        // 将 point 作为字符串返回。注意：调用 ToString 以避免装箱
         return String.Format("({0}, {1})", m_x.ToString(), m_y.ToString());
     }
      
@@ -759,7 +759,7 @@ public static class Program
 {
     public static void Main()
     {
-        // 在栈上闯将两个 Point 实例
+        // 在栈上创建两个 Point 实例
         Point p1 = new Point(10, 10);
         Point p2 = new Point(20, 20);
 
