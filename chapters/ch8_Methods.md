@@ -336,7 +336,7 @@ internal sealed class SomeType {
 internal sealed class SomeType {
     private static Int32 s_x = 5;
 
-    static SomeType {
+    static SomeType() {
         s_x = 10;
     }
 }
@@ -585,7 +585,7 @@ public static class StringBuilderExtensions {
 Int32 index = sb.IndexOf('X');
 ```
 
-就首先检查 `StringBuilder` 类或者它的任何基类是否提供了获取单个 `Char` 参数、名为 `IndexOf` 的一个实例方法。如果是，就生成 IL 代码来调用它。如果没有找到匹配的实例方法，就继续检查是否有任何静态类定义了名为 `IndexOf` 的静态方法，方法的第一个参数的类型和当前用于调用方法的那个表达式的类型匹配，而且该类型必须用 `this` 关键字标识。在本例中，表达式是 `sb`，类型是 `StringBuilder`。所以编译器会查找一个 `IndexOf` 方法，它有两个参数：一个 `StingBuilder`(用`this`关键字标记)，以及一个 `Char`。编译器找到了这个 `IndexOf` 方法，所以生成相应的 IL 代码来调用这个静态方法。
+就首先检查 `StringBuilder` 类或者它的任何基类是否提供了获取单个 `Char` 参数、名为 `IndexOf` 的一个实例方法。如果是，就生成 IL 代码来调用它。如果没有找到匹配的实例方法，就继续检查是否有任何静态类定义了名为 `IndexOf` 的静态方法，方法的第一个参数的类型和当前用于调用方法的那个表达式的类型匹配，而且该类型必须用 `this` 关键字标识。在本例中，表达式是 `sb`，类型是 `StringBuilder`。所以编译器会查找一个 `IndexOf` 方法，它有两个参数：一个 `StringBuilder`(用`this`关键字标记)，以及一个 `Char`。编译器找到了这个 `IndexOf` 方法，所以生成相应的 IL 代码来调用这个静态方法。
 
 OK——这解释了编译器如何解决前面提到的、会影响代码理解的最后两个问题。但是，还没有说第一个问题是如何解决的：程序员怎么知道有这样的一个 `IndexOf` 方法，可以用它操作 `StringBuilder` 对象呢？这个问题是通过 Microsoft Visual Studio 的“智能感知”功能来解决的。在编辑器中输入句点符号，会弹出 Visual Studio 的“智能感知”窗口，列出当前可用的实例方法。现在，这个窗口还会列出可作用于句点左侧表达式类型的扩展方法。图 8-1 展示了 Visual Studio 的“智能感知”窗口；扩展方法的图标中有一个下箭头，方法旁边的“工具提示”表明该方法实际是一个扩展方法。这是相当实用的一个功能，因为现在可以轻松定义自己的方法来操作各种类型，其他程序员在使用这些类型的对象时，也能轻松地发现你的方法。  
 
