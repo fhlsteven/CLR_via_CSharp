@@ -137,7 +137,7 @@ using System;
 
 public static class Program {
     public static void Main() {
-        String s = "Hi there.";     // 错误
+        String s = "Hi there.";     // 正确
         Console.WriteLine(s);
     }
 }
