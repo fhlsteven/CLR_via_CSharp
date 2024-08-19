@@ -101,7 +101,7 @@ using System;
 public class ThisIsAPublicType { ... }
 
 // 以下类型的可见性为 internal，只可由本程序集中的代码访问
-public class ThisIsAnInternalType { ... }
+internal class ThisIsAnInternalType { ... }
 
 // 由于没有显式声明类型的可见性，所以以下类型的可见性为 internal
 class ThisIsAlsoAnInternalType { ... }
@@ -136,7 +136,7 @@ using System;
 internal sealed class Foo {
     private static Object SomeMethod() {
         // 这个“Wintellect” 程序集能访问另一个程序集的 internal 类型，
-        // 就好像那时 public 类型
+        // 就好像那是 public 类型
         SomeInternalType sit = new SomeInternalType();
         return sit;
     }
@@ -231,7 +231,7 @@ public static class AStaticClass {
 
 如今软件变得相当复杂，而且用户希望应用程序提供更丰富的功能，如 GUI、菜单、鼠标输入、手写板输入、打印输出、网络功能等。正是由于这个原因，操作系统和开发平台在这几年中取得了迅猛发展。另外，应用程序对的开发也必须分工。不能再像以前那样，一个或几个开发人员就能写出一个应用程序需要的全部代码。这样做要么不可能，要么效率太低。现在的应用程序一般都包含了由许多不同的公司生成的代码。这些代码通过面向对象编程机制契合到一起。
 
-**组件软件编程**(Component Sfoteware Programming, CSP)正是 OOP 发展到极致的成果。下面列举组件的一些特点。
+**组件软件编程**(Component Software Programming, CSP)正是 OOP 发展到极致的成果。下面列举组件的一些特点。
 
 * 组件(.NET Framework 称为程序集)有“已经发布”的意思。
 * 组件有自己的标识(名称、版本、语言文化和公钥)
