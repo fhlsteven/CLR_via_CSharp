@@ -296,7 +296,7 @@ private static void Counter(Int32 from, Int32 to, Feedback fb) {
 
 前面说过，编译器是在定义 `Feedback` 类的时候定义 `Invoke` 的。在 `Invoke` 被调用时，它使用私有字段 `_target` 和 `_methodPtr` 在指定对象上调用包装好的回调方法。注意，`Invoke`方法的签名和委托的签名匹配。由于`Feedback`委托要获取一个`Int32`参数并返回`void`，所以编译器生成的`Invoke`方法也要获取一个`Int32`并返回`void`。
 
-## <a name="17_5">17.5 用委托回调多个方法(委托连)</a>
+## <a name="17_5">17.5 用委托回调多个方法(委托链)</a>
 
 委托本身就很有用，再加上对委托链的支持，用处就更大了！委托链是委托对象的集合。可利用委托链调用集合中的委托所代表的全部方法。为了理解这一点，请参考 17.1 节的实例代码中的 `ChainDelegateDemo1` 方法。在 `Console.WriteLine` 语句之后，我构造了三个委托对象并让变量 `fb1`，`fb2` 和 `fb3` 分别引用每个对象，如图 17-3 所示。
 
