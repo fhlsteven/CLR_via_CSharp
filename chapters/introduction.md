@@ -8,7 +8,7 @@
 
 本书围绕Microsoft Visual Studio 2012/2013，.NET Framework 4.5.x 和 C# 5.0 展开。由于Microsoft在发布这些技术的新版本时，会试图保持很大程度的向后兼容性，所以本书描述的许多内容也适合之前的版本。所有示例代码都用C#编程语言写成。但由于CLR可由许多编程语言使用，所以本书内容也适合非C#程序员。
 
-> **注意** 本书代码可从Wintellect网站下载:*[http://wintellect.com/Resource-CLR-Via-CSharp-Fourth-Edition](http://wintellect.com/Resource-CLR-Via-CSharp-Fourth-Edition)*,也可从译者博客下载：[http://transbot.blog.163.com](http://transbot.blog.163.com).
+> **注意** 本书代码可从Wintellect网站下载:*[http://wintellect.com/Resource-CLR-Via-CSharp-Fourth-Edition](http://wintellect.com/Resource-CLR-Via-CSharp-Fourth-Edition)*,也可从译者博客下载：[https://bookzhou.com).
 
 我和我的编辑进行了艰苦卓绝的工作，试图为你提供最准确、最新、最深入、最容易阅读和理解、没有错误的信息。但是，即便有如此完美的团队协作，疏漏和错误也在所难免。如果你发现了本书的任何错误或者想提出一些建设性的意见，请发送邮件到*JeffreyR@Wintellect.com*
 
